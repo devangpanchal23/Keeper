@@ -107,22 +107,22 @@ async function runSuite() {
   console.log("\n3. URL Provider & Platform Detection Tests:");
 
   await test("identifyPlatform identifies YouTube standard URLs", () => {
-    const platform = ProviderService.identifyPlatform("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    const platform = ProviderService.detectPlatform("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
     assertEqual(platform, "youtube", "Must identify standard YouTube video URL");
   });
 
   await test("identifyPlatform identifies YouTube Shorts URLs", () => {
-    const platform = ProviderService.identifyPlatform("https://www.youtube.com/shorts/abcdef12345");
+    const platform = ProviderService.detectPlatform("https://www.youtube.com/shorts/abcdef12345");
     assertEqual(platform, "youtube-shorts", "Must identify YouTube Shorts URL");
   });
 
   await test("identifyPlatform identifies Reddit post URLs", () => {
-    const platform = ProviderService.identifyPlatform("https://www.reddit.com/r/programming/comments/123456/title/");
+    const platform = ProviderService.detectPlatform("https://www.reddit.com/r/programming/comments/123456/title/");
     assertEqual(platform, "reddit", "Must identify Reddit post URL");
   });
 
   await test("identifyPlatform identifies X / Twitter URLs", () => {
-    const platform = ProviderService.identifyPlatform("https://x.com/jack/status/20");
+    const platform = ProviderService.detectPlatform("https://x.com/jack/status/20");
     assertEqual(platform, "twitter", "Must identify X.com tweet URL");
   });
 
@@ -131,8 +131,8 @@ async function runSuite() {
   await test("Multi-user storage keys are properly partitioned", () => {
     const userA = "user-123";
     const userB = "user-456";
-    const keyA = `recall_items_user_${userA}`;
-    const keyB = `recall_items_user_${userB}`;
+    const keyA: string = `recall_items_user_${userA}`;
+    const keyB: string = `recall_items_user_${userB}`;
     assert(keyA !== keyB, "Storage keys for different users must never collide");
     assertEqual(keyA, "recall_items_user_user-123", "Prefix must match specification");
   });

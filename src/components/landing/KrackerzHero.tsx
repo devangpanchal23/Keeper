@@ -227,7 +227,7 @@ export function KrackerzHero() {
                   {/* Scalloped Caption Tab (Alternating White / Maroon) */}
                   <div
                     className={`p-2.5 rounded-xl border border-[#111111]/20 ${
-                      card.tagBg === "maroon"
+                      card.tagBg === "oxblood"
                         ? "bg-[#4E0F15] text-white"
                         : "bg-[#F7F5EE] text-[#111111]"
                     }`}
