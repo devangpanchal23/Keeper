@@ -61,7 +61,6 @@ function runDesignAudit(): AuditReport {
   const landingDir = path.join(process.cwd(), "src/components/landing");
   const files = fs.readdirSync(landingDir).filter((f) => f.endsWith(".tsx") || f.endsWith(".ts"));
 
-  let totalElementsScanned = 0;
   let neutralCount = 0;
   let brandCount = 0;
   let accentCount = 0;
