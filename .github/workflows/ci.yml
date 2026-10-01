@@ -1,0 +1,126 @@
+name: CI — Continuous Integration Quality Gate
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # Job 1: Lint, Type Check & Design Regression Guard
+  # ----------------------------------------------------------------------------
+  validate:
+    name: Lint, Type Check & Design Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Dependencies (Deterministic Lockfile)
+        run: npm ci
+
+      - name: Run Linter (ESLint)
+        run: npm run lint
+
+      - name: Run TypeScript Type Check
+        run: npm run type-check
+
+      - name: Enforce 60:30:10 Palette & Design Rules
+        run: npm run audit:design
+
+  # ----------------------------------------------------------------------------
+  # Job 2: Automated Unit & Core Integration Tests
+  # ----------------------------------------------------------------------------
+  test:
+    name: Automated Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Execute Automated Test Suite
+        run: npm test
+
+  # ----------------------------------------------------------------------------
+  # Job 3: Security & Dependency Vulnerability Audit
+  # ----------------------------------------------------------------------------
+  security:
+    name: Dependency Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run Dependency Vulnerability Audit
+        run: npm audit --audit-level=high
+
+  # ----------------------------------------------------------------------------
+  # Job 4: Next.js Production Build
+  # ----------------------------------------------------------------------------
+  build:
+    name: Production Build Verification
+    needs: [validate, test, security]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      # Next.js build cache between CI runs
+      - name: Cache Next.js Build Artifacts
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**.[jt]s', '**.[jt]sx') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Production Bundle
+        run: npm run build

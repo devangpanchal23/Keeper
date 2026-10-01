@@ -1,0 +1,139 @@
+name: CD — Continuous Deployment to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run deployment without publishing to live production"
+        required: false
+        default: "false"
+        type: boolean
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # Job 1: Pre-Deployment CI Gate
+  # ----------------------------------------------------------------------------
+  ci-gate:
+    name: Pre-Deployment Verification Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Dependencies (Deterministic Lockfile)
+        run: npm ci
+
+      - name: Lint Codebase
+        run: npm run lint
+
+      - name: Check TypeScript Types
+        run: npm run type-check
+
+      - name: Enforce 60:30:10 Palette & Design Rules
+        run: npm run audit:design
+
+      - name: Execute Automated Test Suite
+        run: npm test
+
+      - name: Build Production Next.js Bundle
+        run: npm run build
+
+  # ----------------------------------------------------------------------------
+  # Job 2: Production Deployment
+  # ----------------------------------------------------------------------------
+  deploy-production:
+    name: Deploy to Production
+    needs: [ci-gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: ${{ steps.deploy-step.outputs.deployment_url || 'https://recall.vercel.app' }}
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Execute Deployment
+        id: deploy-step
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "⚠️ [NOTICE] VERCEL_TOKEN secret is not set in GitHub Repository Secrets."
+            echo "ℹ️ If Vercel Git Integration is active, Vercel deploys automatically upon push to main."
+            echo "ℹ️ For GitHub Actions direct deployment, configure VERCEL_TOKEN, VERCEL_ORG_ID, and VERCEL_PROJECT_ID."
+            echo "deployment_url=https://recall.vercel.app" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "ℹ️ Running in DRY_RUN mode. Simulating production deployment..."
+            npx --yes vercel build --token="$VERCEL_TOKEN"
+            echo "deployment_url=https://recall-preview.vercel.app" >> $GITHUB_OUTPUT
+          else
+            echo "🚀 Deploying to Production via Vercel CLI..."
+            DEPLOY_URL=$(npx --yes vercel --prod --token="$VERCEL_TOKEN" --yes)
+            echo "✅ Deployment successful: $DEPLOY_URL"
+            echo "deployment_url=$DEPLOY_URL" >> $GITHUB_OUTPUT
+          fi
+
+  # ----------------------------------------------------------------------------
+  # Job 3: Post-Deployment Smoke Test
+  # ----------------------------------------------------------------------------
+  smoke-test:
+    name: Production Smoke & Health Verification
+    needs: [deploy-production]
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Run Smoke Tests Against Production
+        env:
+          DEPLOY_URL: ${{ needs.deploy-production.outputs.deployment_url || secrets.PRODUCTION_URL || 'https://recall.vercel.app' }}
+        run: |
+          if [ -n "$DEPLOY_URL" ] && [ "$DEPLOY_URL" != "https://recall.vercel.app" ]; then
+            echo "Running smoke test on $DEPLOY_URL..."
+            npx -y tsx scripts/smoke-test.ts
+          else
+            echo "ℹ️ Smoke test target is default placeholder. To test live URL, set DEPLOY_URL or PRODUCTION_URL."
+          fi

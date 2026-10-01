@@ -1,26 +1,372 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Krackerz Design System Typography & Utilities */
+.font-krackerz-display {
+  font-family: 'Bowlby One', Impact, sans-serif;
+  letter-spacing: -0.01em;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+.font-krackerz-script {
+  font-family: 'Caveat', cursive;
 }
 
-@media (prefers-color-scheme: dark) {
+.font-krackerz-body {
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Cream Dot Grid Background */
+.bg-krackerz-cream {
+  background-color: #F7F5EE;
+}
+
+.bg-dot-grid {
+  background-image: radial-gradient(#d3d0c5 1.5px, transparent 1.5px);
+  background-size: 24px 24px;
+}
+
+.bg-dot-grid-white {
+  background-color: #ffffff;
+  background-image: radial-gradient(#e5e3dc 1.5px, transparent 1.5px);
+  background-size: 24px 24px;
+}
+
+/* Ticket Stub Circular Notch (Top Right) */
+.ticket-notch-tr {
+  mask: radial-gradient(circle 20px at top right, transparent 20px, black 20.5px);
+  -webkit-mask: radial-gradient(circle 20px at top right, transparent 20px, black 20.5px);
+}
+
+.ticket-notch-tl {
+  mask: radial-gradient(circle 20px at top left, transparent 20px, black 20.5px);
+  -webkit-mask: radial-gradient(circle 20px at top left, transparent 20px, black 20.5px);
+}
+
+/* Die-Cut Sticker Effect */
+.sticker-diecut {
+  display: inline-block;
+  background-color: #111111;
+  color: #C6FF2E;
+  font-family: 'Bowlby One', Impact, sans-serif;
+  text-transform: uppercase;
+  border: 3px solid #ffffff;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+  transform: rotate(-3deg);
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.sticker-diecut:hover {
+  transform: rotate(0deg) scale(1.05);
+}
+
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    color-scheme: light;
+    --background: #f8fafc;
+    --foreground: #0f172a;
+    --card: #ffffff;
+    --card-foreground: #0f172a;
+    --popover: #ffffff;
+    --popover-foreground: #0f172a;
+    --primary: #4f46e5;
+    --primary-foreground: #ffffff;
+    --secondary: #f1f5f9;
+    --secondary-foreground: #1e293b;
+    --muted: #f1f5f9;
+    --muted-foreground: #64748b;
+    --accent: #eef2ff;
+    --accent-foreground: #4338ca;
+    --destructive: #ef4444;
+    --destructive-foreground: #ffffff;
+    --border: #e2e8f0;
+    --input: #e2e8f0;
+    --ring: #4f46e5;
+    --sidebar-bg: #ffffff;
+    --sidebar-border: #e2e8f0;
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    color-scheme: dark;
+    --background: #090a0f;
+    --foreground: #f8fafc;
+    --card: #11131a;
+    --card-foreground: #f8fafc;
+    --popover: #11131a;
+    --popover-foreground: #f8fafc;
+    --primary: #6366f1;
+    --primary-foreground: #ffffff;
+    --secondary: #1a1d28;
+    --secondary-foreground: #f1f5f9;
+    --muted: #1e2230;
+    --muted-foreground: #94a3b8;
+    --accent: #232738;
+    --accent-foreground: #818cf8;
+    --destructive: #f43f5e;
+    --destructive-foreground: #ffffff;
+    --border: #262b3d;
+    --input: #262b3d;
+    --ring: #6366f1;
+    --sidebar-bg: #0d0f17;
+    --sidebar-border: #1e2230;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+html {
+  scroll-behavior: smooth;
+  overflow-x: clip;
 }
+
+body {
+  overflow-x: clip;
+  background-color: var(--background);
+  color: var(--foreground);
+  font-feature-settings: "rlig" 1, "calt" 1;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Custom modern scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.45);
+}
+
+/* Glassmorphism helpers */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(226, 232, 240, 0.8);
+}
+
+.dark .glass-panel {
+  background: rgba(17, 19, 26, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(38, 43, 61, 0.7);
+}
+
+/* Subtle glow effects */
+.glow-primary {
+  box-shadow: 0 0 25px -5px rgba(99, 102, 241, 0.35);
+}
+
+.glow-card:hover {
+  box-shadow: 0 10px 30px -10px rgba(99, 102, 241, 0.15);
+}
+
+.dark .glow-card:hover {
+  box-shadow: 0 10px 30px -10px rgba(99, 102, 241, 0.25);
+}
+
+/* Pulse keyframes for simulated AI steps */
+@keyframes ai-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(0.97);
+  }
+}
+
+.animate-ai-pulse {
+  animation: ai-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Shimmer animation */
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.shimmer-bg {
+  position: relative;
+  overflow: hidden;
+}
+
+.shimmer-bg::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0,
+    rgba(255, 255, 255, 0.08) 20%,
+    rgba(255, 255, 255, 0.15) 60%,
+    rgba(255, 255, 255, 0)
+  );
+  animation: shimmer 2s infinite;
+  content: '';
+}
+
+/* Infinite horizontal marquee for editorial platform stream */
+@keyframes marquee {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-marquee {
+  display: flex;
+  width: max-content;
+  animation: marquee 50s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
+
+/* Subtle organic floating animations */
+@keyframes float-subtle-1 {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-8px) rotate(0.4deg);
+  }
+}
+
+@keyframes float-subtle-2 {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(9px) rotate(-0.4deg);
+  }
+}
+
+.animate-float-1 {
+  animation: float-subtle-1 7s ease-in-out infinite;
+}
+
+.animate-float-2 {
+  animation: float-subtle-2 9s ease-in-out infinite;
+}
+
+/* Masked text reveal animation */
+@keyframes line-reveal {
+  0% {
+    transform: translateY(115%) rotate(1.5deg);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0%) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+.line-mask {
+  overflow: hidden;
+  display: block;
+}
+
+.animate-line-reveal {
+  animation: line-reveal 0.95s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.delay-100 {
+  animation-delay: 100ms;
+}
+
+.delay-200 {
+  animation-delay: 200ms;
+}
+
+.delay-300 {
+  animation-delay: 300ms;
+}
+
+/* Playful sticker slap overshoot bounce */
+@keyframes sticker-slap {
+  0% {
+    transform: scale(0.65) rotate(-16deg);
+    opacity: 0;
+  }
+  65% {
+    transform: scale(1.08) rotate(-1deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) rotate(-4deg);
+    opacity: 1;
+  }
+}
+
+.animate-sticker-slap {
+  animation: sticker-slap 0.75s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
+}
+
+/* Silky folder tab panel switch animation */
+@keyframes tab-fade {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.995);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-tab-fade {
+  animation: tab-fade 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Tactile price number pop on monthly/yearly toggle */
+@keyframes price-pop {
+  0% {
+    transform: translateY(6px);
+    opacity: 0.2;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-price-pop {
+  animation: price-pop 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Respect user's reduced motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto !important;
+  }
+  .animate-marquee,
+  .animate-float-1,
+  .animate-float-2,
+  .animate-ai-pulse,
+  .animate-line-reveal,
+  .animate-sticker-slap,
+  .animate-tab-fade,
+  .animate-price-pop,
+  .shimmer-bg::after {
+    animation: none !important;
+    transform: none !important;
+  }
+}
+
