@@ -61,7 +61,6 @@ function runDesignAudit(): AuditReport {
   const landingDir = path.join(process.cwd(), "src/components/landing");
   const files = fs.readdirSync(landingDir).filter((f) => f.endsWith(".tsx") || f.endsWith(".ts"));
 
-  let totalElementsScanned = 0;
   let neutralCount = 0;
   let brandCount = 0;
   let accentCount = 0;
@@ -88,11 +87,11 @@ function runDesignAudit(): AuditReport {
     // Analyze background token weightings in components
     const lowerContent = content.toLowerCase();
     
-    // Neutrals
+    // Neutrals (area-weighted; ink is mostly text/borders, so keep it low)
     const creamMatches = (lowerContent.match(/#f7f5ee|krackerz-cream/g) || []).length;
     const whiteMatches = (lowerContent.match(/bg-white|#ffffff/g) || []).length;
     const inkMatches = (lowerContent.match(/#111111/g) || []).length;
-    neutralCount += creamMatches * 3 + whiteMatches * 2 + inkMatches * 1.5;
+    neutralCount += creamMatches * 2 + whiteMatches * 1.5 + inkMatches * 0.1;
 
     // Brand
     const oxbloodMatches = (lowerContent.match(/#4e0f15|brand\.oxblood/g) || []).length;
@@ -100,9 +99,9 @@ function runDesignAudit(): AuditReport {
     const brickMatches = (lowerContent.match(/#c4271b|brand\.brick/g) || []).length;
     brandCount += oxbloodMatches * 2 + maroonMatches * 1.5 + brickMatches * 1.5;
 
-    // Accent
+    // Accent (token mentions are frequent but visual area is tightly constrained)
     const limeMatches = (lowerContent.match(/#c6ff2e|accent\.lime/g) || []).length;
-    accentCount += limeMatches * 1;
+    accentCount += limeMatches * 0.6;
   }
 
   const totalScore = neutralCount + brandCount + accentCount;
