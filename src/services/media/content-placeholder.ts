@@ -1,0 +1,3 @@
+const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675"><rect width="1200" height="675" fill="#201f1b"/><circle cx="600" cy="290" r="70" fill="#e9bd3e" opacity=".16"/><path d="M570 255h60v70h-60z" rx="12" fill="#e9bd3e"/><path d="m590 272 24 18-24 18z" fill="#201f1b"/><text x="600" y="420" fill="#f3efe4" font-family="Arial,sans-serif" font-size="30" text-anchor="middle">Preview unavailable</text><text x="600" y="462" fill="#b9b3a5" font-family="Arial,sans-serif" font-size="20" text-anchor="middle">Open the original source to view this content</text></svg>`;
+
+export const CONTENT_PREVIEW_PLACEHOLDER = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;

@@ -8,6 +8,10 @@ import { PlatformBadge } from "@/components/common/PlatformBadge";
 import { ContentTypeBadge } from "@/components/common/ContentTypeBadge";
 import { formatDate } from "@/lib/utils";
 import {
+  INSTAGRAM_REEL_PLACEHOLDER,
+  INSTAGRAM_POST_PLACEHOLDER,
+} from "@/services/media/instagram-placeholders";
+import {
   Star,
   MoreVertical,
   ExternalLink,
@@ -17,13 +21,22 @@ import {
   ArchiveRestore,
   Trash2,
   Folder,
+  Check,
 } from "lucide-react";
 
-interface SaveItemListRowProps {
+export interface SaveItemListRowProps {
   item: SavedItem;
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
 }
 
-export const SaveItemListRow: React.FC<SaveItemListRowProps> = ({ item }) => {
+export const SaveItemListRow: React.FC<SaveItemListRowProps> = ({
+  item,
+  selectable = false,
+  selected = false,
+  onToggleSelect,
+}) => {
   const {
     collections,
     toggleFavorite,
@@ -40,13 +53,54 @@ export const SaveItemListRow: React.FC<SaveItemListRowProps> = ({ item }) => {
 
   const collection = collections.find((c) => c.id === item.collectionId);
 
+  const handleRowClick = () => {
+    if (selectable && onToggleSelect) {
+      onToggleSelect();
+      return;
+    }
+    recordView(item.id);
+  };
+
   return (
     <div
-      onClick={() => recordView(item.id)}
-      className="group flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 hover:bg-zinc-50 dark:hover:bg-zinc-900/90 shadow-xs hover:shadow-md transition-all duration-200"
+      onClick={handleRowClick}
+      className={`group flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border bg-white dark:bg-zinc-900/60 shadow-xs transition-all duration-200 ${
+        selectable
+          ? selected
+            ? "border-rose-500/80 ring-2 ring-rose-500/80 shadow-rose-500/10 cursor-pointer"
+            : "border-zinc-200/80 dark:border-zinc-800/80 hover:border-zinc-400 dark:hover:border-zinc-600 cursor-pointer"
+          : "border-zinc-200/80 dark:border-zinc-800/80 hover:bg-zinc-50 dark:hover:bg-zinc-900/90 hover:shadow-md"
+      }`}
     >
       {/* Left: Thumbnail & Details */}
       <div className="flex items-start sm:items-center gap-3.5 min-w-0 flex-1">
+        {/* Selection Checkbox */}
+        {selectable && (
+          <div
+            role="checkbox"
+            aria-checked={selected}
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleSelect?.();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === " " || e.key === "Enter") {
+                e.preventDefault();
+                e.stopPropagation();
+                onToggleSelect?.();
+              }
+            }}
+            className={`w-5 h-5 rounded-md flex items-center justify-center transition-all cursor-pointer shrink-0 ${
+              selected
+                ? "bg-rose-600 text-white ring-2 ring-white dark:ring-zinc-900"
+                : "border border-zinc-400 dark:border-zinc-600 hover:border-zinc-600 text-transparent"
+            }`}
+            aria-label={`Select ${item.title}`}
+          >
+            <Check className={`w-3.5 h-3.5 ${selected ? "opacity-100" : "opacity-0"}`} />
+          </div>
+        )}
         {/* Thumbnail */}
         <div className="relative w-20 h-14 rounded-lg bg-zinc-100 dark:bg-zinc-800 overflow-hidden shrink-0 border border-zinc-200 dark:border-zinc-700/50">
           {item.thumbnail ? (
@@ -54,6 +108,16 @@ export const SaveItemListRow: React.FC<SaveItemListRowProps> = ({ item }) => {
             <img
               src={item.thumbnail}
               alt={item.title}
+              onError={(e) => {
+                const target = e.currentTarget;
+                if (!target.dataset.fallback) {
+                  target.dataset.fallback = "true";
+                  target.src =
+                    item.platform === "instagram"
+                      ? (item.contentType === "reel" ? INSTAGRAM_REEL_PLACEHOLDER : INSTAGRAM_POST_PLACEHOLDER)
+                      : "https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=800&auto=format&fit=crop&q=80";
+                }
+              }}
               className="w-full h-full object-cover"
               loading="lazy"
             />
@@ -72,7 +136,20 @@ export const SaveItemListRow: React.FC<SaveItemListRowProps> = ({ item }) => {
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <ContentTypeBadge type={item.contentType} />
             <span className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
-              {item.creator.name}
+              {item.platform === "reddit"
+                ? item.creator.status === "deleted" || !item.creator.username
+                  ? "Deleted user"
+                  : `u/${(item.creator.username || item.creator.name).replace(/^u\//i, "")}`
+                : item.platform === "x" || item.platform === "twitter"
+                ? (() => {
+                    const name = item.creator.displayName || item.creator.name || "";
+                    const user = (item.creator.username || "").replace(/^@/, "").trim();
+                    if (user && !name.includes(`@${user}`)) {
+                      return `${name} (@${user})`;
+                    }
+                    return name;
+                  })()
+                : (item.creator.displayName || item.creator.name)}
             </span>
             {collection && (
               <span

@@ -89,7 +89,7 @@ export function PricingSection() {
         </div>
 
         {/* Monthly / Yearly Toggle (Oxblood Switch per rule: toggle -> oxblood) */}
-        <div className="flex items-center justify-center gap-4 mb-16 select-none">
+        <div className="flex flex-wrap items-center justify-center gap-2.5 sm:gap-4 mb-12 sm:mb-16 select-none">
           <span className={`font-krackerz-display text-xs sm:text-sm uppercase ${!isYearly ? "text-[#111111]" : "text-[#111111]/50"}`}>
             BILLED MONTHLY
           </span>

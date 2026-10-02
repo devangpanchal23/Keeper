@@ -1,4 +1,5 @@
 import { Collection, ContentType, Platform, SavedItem, SearchFilters, SearchResult } from "@/types";
+import { StorageService } from "./storage-service";
 
 export interface ParsedQueryIntent {
   rawQuery: string;
@@ -292,6 +293,16 @@ export class SearchService {
     const creatorName = item.creator.name.toLowerCase();
     const creatorHandle = (item.creator.handle || "").toLowerCase();
     const colName = (item.collectionId && collectionsMap?.get(item.collectionId)) || "";
+    const transcriptValue = typeof item.metadata?.transcript === "string"
+      ? item.metadata.transcript
+      : typeof item.metadata?.transcript?.text === "string"
+        ? item.metadata.transcript.text
+        : (typeof item.provenance?.transcript?.value === "string" ? item.provenance.transcript.value : "");
+    const transcriptLower = transcriptValue.toLowerCase();
+    const contentRepresentationLower = (item.metadata?.contentRepresentation?.text || "").toLowerCase();
+    const captionLower = (item.metadata?.caption || (typeof item.provenance?.caption?.value === "string" ? item.provenance.caption.value : "")).toLowerCase();
+    const visualTextLower = (item.metadata?.visualText || (typeof item.provenance?.visualText?.value === "string" ? item.provenance.visualText.value : "")).toLowerCase();
+    const intentLower = (item.metadata?.contentIntent || "").toLowerCase();
 
     // 3. Multi-Word Exact Phrase Matches (Highest boost for cohesive phrases)
     intent.phrases.forEach((phrase) => {
@@ -299,13 +310,29 @@ export class SearchService {
         score += 50;
         if (!matchedFields.includes("title")) matchedFields.push("title");
       }
+      if (transcriptLower.includes(phrase)) {
+        score += 45;
+        if (!matchedFields.includes("transcript")) matchedFields.push("transcript");
+      }
+      if (contentRepresentationLower.includes(phrase)) {
+        score += 42;
+        if (!matchedFields.includes("source content")) matchedFields.push("source content");
+      }
       if (notesLower.includes(phrase)) {
         score += 40;
         if (!matchedFields.includes("notes")) matchedFields.push("notes");
       }
+      if (captionLower.includes(phrase)) {
+        score += 35;
+        if (!matchedFields.includes("caption")) matchedFields.push("caption");
+      }
       if (tagsJoined.includes(phrase) || topicsJoined.includes(phrase)) {
         score += 35;
         if (!matchedFields.includes("topics")) matchedFields.push("topics");
+      }
+      if (visualTextLower.includes(phrase)) {
+        score += 30;
+        if (!matchedFields.includes("visual-text")) matchedFields.push("visual-text");
       }
       if (summaryStd.includes(phrase) || summaryQuick.includes(phrase)) {
         score += 25;
@@ -330,11 +357,30 @@ export class SearchService {
         if (!matchedFields.includes("title")) matchedFields.push("title");
       }
 
+      // Spoken Transcript Match (Weight: 24 - Crucial for speech retrieval!)
+      if (transcriptLower && matchTokenInText(transcriptLower, kw)) {
+        score += 24;
+        kwHit = true;
+        if (!matchedFields.includes("transcript")) matchedFields.push("transcript");
+      }
+      if (contentRepresentationLower && matchTokenInText(contentRepresentationLower, kw)) {
+        score += 23;
+        kwHit = true;
+        if (!matchedFields.includes("source content")) matchedFields.push("source content");
+      }
+
       // Personal Notes Match (Weight: 22)
       if (notesLower && matchTokenInText(notesLower, kw)) {
         score += 22;
         kwHit = true;
         if (!matchedFields.includes("notes")) matchedFields.push("notes");
+      }
+
+      // Caption Match (Weight: 20)
+      if (captionLower && matchTokenInText(captionLower, kw)) {
+        score += 20;
+        kwHit = true;
+        if (!matchedFields.includes("caption")) matchedFields.push("caption");
       }
 
       // Tag Match (Weight: 22 exact, 14 partial)
@@ -348,6 +394,13 @@ export class SearchService {
         if (!matchedFields.includes("tags")) matchedFields.push("tags");
       }
 
+      // Visual Text OCR Match (Weight: 18)
+      if (visualTextLower && matchTokenInText(visualTextLower, kw)) {
+        score += 18;
+        kwHit = true;
+        if (!matchedFields.includes("visual-text")) matchedFields.push("visual-text");
+      }
+
       // Topic Match (Weight: 20)
       if (topicsLower.some((tp) => matchTokenInText(tp, kw))) {
         score += 20;
@@ -357,6 +410,13 @@ export class SearchService {
         score += 14;
         kwHit = true;
         if (!matchedFields.includes("topics")) matchedFields.push("topics");
+      }
+
+      // Intent Match (Weight: 16)
+      if (intentLower && matchTokenInText(intentLower, kw)) {
+        score += 16;
+        kwHit = true;
+        if (!matchedFields.includes("intent")) matchedFields.push("intent");
       }
 
       // Key Points Match (Weight: 16)
@@ -458,10 +518,22 @@ export class SearchService {
    * Used by Global Search, Command Palette, and Library Filters.
    */
   static search(
-    items: SavedItem[],
-    filters: SearchFilters,
+    itemsOrQuery: SavedItem[] | string,
+    filtersOrUserId?: SearchFilters | string,
     collections: Collection[] = []
   ): SearchResult[] {
+    let items: SavedItem[];
+    let filters: SearchFilters;
+
+    if (typeof itemsOrQuery === "string") {
+      const userId = typeof filtersOrUserId === "string" ? filtersOrUserId : "user-demo-1";
+      items = StorageService.getItems(userId);
+      filters = { query: itemsOrQuery };
+    } else {
+      items = itemsOrQuery || [];
+      filters = (typeof filtersOrUserId === "object" ? filtersOrUserId : {}) as SearchFilters;
+    }
+
     const {
       query = "",
       platform = "all",

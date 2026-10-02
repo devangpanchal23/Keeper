@@ -4,7 +4,12 @@ import React, { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRecall } from "@/context/RecallContext";
-import { Zap, ArrowRight, Sparkles, AlertCircle, Loader2 } from "lucide-react";
+import { ArrowRight, Sparkles, AlertCircle, Loader2 } from "lucide-react";
+
+function getPostAuthDestination(): string {
+  const next = new URLSearchParams(window.location.search).get("next");
+  return next?.startsWith("/") && !next.startsWith("//") ? next : "/app";
+}
 
 export default function SignUpPage() {
   const router = useRouter();
@@ -15,6 +20,7 @@ export default function SignUpPage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [confirmationMessage, setConfirmationMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
 
@@ -60,10 +66,13 @@ export default function SignUpPage() {
         email: cleanEmail,
         password,
       });
-      router.push("/app");
+      router.push(getPostAuthDestination());
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to create account. Please try again.";
-      setError(msg);
+      if (msg.startsWith("CONFIRMATION_REQUIRED:")) {
+        setConfirmationMessage(msg.replace("CONFIRMATION_REQUIRED:", "").trim());
+        setError(null);
+      } else setError(msg);
     } finally {
       setLoading(false);
     }
@@ -74,7 +83,7 @@ export default function SignUpPage() {
     setDemoLoading(true);
     try {
       await demoLogin();
-      router.push("/app");
+      router.push(getPostAuthDestination());
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to initialize demo workspace.";
       setError(msg);
@@ -84,16 +93,14 @@ export default function SignUpPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center px-4 relative overflow-hidden">
+    <div className="keeper-auth min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center px-4 relative overflow-hidden">
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] bg-purple-600/15 blur-3xl rounded-full pointer-events-none" />
 
       <div className="relative z-10 w-full max-w-md">
         <div className="text-center mb-8">
           <Link href="/" className="inline-flex items-center gap-2.5 mb-3 group">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-cyan-400 flex items-center justify-center text-white shadow-lg shadow-indigo-500/30 group-hover:scale-105 transition-transform">
-              <Zap className="w-5 h-5 fill-current" />
-            </div>
-            <span className="text-2xl font-bold text-white tracking-tight">Recall</span>
+            <span className="keeper-auth-mark">K</span>
+            <span className="keeper-auth-wordmark">Keeper</span>
           </Link>
           <h1 className="text-xl font-semibold text-slate-100">Create your workspace</h1>
           <p className="text-xs text-slate-400 mt-1">
@@ -101,7 +108,7 @@ export default function SignUpPage() {
           </p>
         </div>
 
-        <div className="rounded-3xl border border-slate-800 bg-slate-900/90 shadow-2xl p-6 sm:p-8 backdrop-blur-xl space-y-5">
+        <div className="keeper-auth-card rounded-3xl border border-slate-800 bg-slate-900/90 shadow-2xl p-5 sm:p-8 backdrop-blur-xl space-y-5">
           <button
             type="button"
             onClick={handleDemoSignUp}
@@ -117,7 +124,7 @@ export default function SignUpPage() {
                   Instant Demo Setup
                 </div>
                 <div className="text-[11px] text-slate-400">
-                  Initialize workspace with 30+ pre-analyzed links
+                  Explore a ready-to-browse sample library
                 </div>
               </div>
             </div>
@@ -133,6 +140,12 @@ export default function SignUpPage() {
           </div>
 
           {/* Error Alert */}
+          {confirmationMessage && (
+            <div className="signup-confirmation p-3.5 rounded-xl flex items-start gap-2.5" role="status" aria-live="polite">
+              <Sparkles className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+              <div className="flex-1 font-medium leading-relaxed">{confirmationMessage}</div>
+            </div>
+          )}
           {error && (
             <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-start gap-2.5 animate-in fade-in">
               <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
@@ -142,11 +155,12 @@ export default function SignUpPage() {
 
           <form onSubmit={handleSignUp} className="space-y-4">
             <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+              <label htmlFor="keeper-signup-name" className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
                 Full Name
               </label>
               <input
                 type="text"
+                id="keeper-signup-name"
                 required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -156,11 +170,12 @@ export default function SignUpPage() {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+              <label htmlFor="keeper-signup-email" className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
                 Email
               </label>
               <input
                 type="email"
+                id="keeper-signup-email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -170,11 +185,12 @@ export default function SignUpPage() {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+              <label htmlFor="keeper-signup-password" className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
                 Password
               </label>
               <input
                 type="password"
+                id="keeper-signup-password"
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -184,11 +200,12 @@ export default function SignUpPage() {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+              <label htmlFor="keeper-signup-confirm-password" className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
                 Confirm Password
               </label>
               <input
                 type="password"
+                id="keeper-signup-confirm-password"
                 required
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
@@ -208,7 +225,7 @@ export default function SignUpPage() {
                   <span>Creating Workspace...</span>
                 </>
               ) : (
-                "Create Free Account"
+                "Create your Keeper account"
               )}
             </button>
           </form>
@@ -216,7 +233,13 @@ export default function SignUpPage() {
           <div className="text-center pt-2">
             <span className="text-xs text-slate-400">
               Already have an account?{" "}
-              <Link href="/sign-in" className="text-indigo-400 font-semibold hover:underline">
+              <Link href="/sign-in" onClick={(event) => {
+                const next = new URLSearchParams(window.location.search).get("next");
+                if (next?.startsWith("/") && !next.startsWith("//")) {
+                  event.preventDefault();
+                  router.push(`/sign-in?next=${encodeURIComponent(next)}`);
+                }
+              }} className="text-indigo-400 font-semibold hover:underline">
                 Sign in
               </Link>
             </span>

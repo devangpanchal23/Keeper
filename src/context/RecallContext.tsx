@@ -1,18 +1,26 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useState } from "react";
-import { Collection, SavedItem, SearchFilters, ToastMessage, User, ViewMode } from "@/types";
+import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { Collection, DeleteCollectionItemsResult, ImportLimits, SavedItem, SearchFilters, ToastMessage, User, ViewMode } from "@/types";
 import { StorageService } from "@/services/storage-service";
 import { ContentService } from "@/services/content-service";
 import { CollectionService } from "@/services/collection-service";
 import { AIService } from "@/services/ai-service";
 import { AuthService } from "@/services/auth-service";
+import { MigrationService } from "@/services/migration-service";
 
 export interface RecallContextType {
   // Auth State
   user: User | null;
   isAuthenticated: boolean;
   authLoading: boolean;
+
+  // Import Limits State & Quota
+  importLimits: ImportLimits;
+  deductImportLimits: (count?: number) => boolean;
+  canImport: (count?: number) => boolean;
+  refreshImportLimits: () => void;
+  addImportCredits: (count: number) => void;
 
   // Content & Workspace State
   items: SavedItem[];
@@ -35,6 +43,8 @@ export interface RecallContextType {
   login: (credentials: { email: string; password: string }) => Promise<void>;
   signup: (data: { name: string; email: string; password: string }) => Promise<void>;
   logout: () => void;
+  updatePlan: (tier: "basic" | "pro") => Promise<void>;
+  syncBillingTier: (tier: "free" | "basic" | "pro") => void;
   updateProfile: (updates: { name?: string; email?: string; avatar?: string }) => Promise<void>;
   updatePassword: (data: { currentPassword: string; newPassword: string }) => Promise<void>;
   demoLogin: () => Promise<void>;
@@ -71,8 +81,10 @@ export interface RecallContextType {
   emptyTrash: () => void;
 
   createCollection: (col: Omit<Collection, "id" | "createdAt" | "updatedAt">) => Collection;
+  refreshWorkspaceCollections: () => Promise<void>;
   updateCollection: (id: string, updates: Partial<Omit<Collection, "id" | "createdAt">>) => void;
   deleteCollection: (id: string) => void;
+  deleteCollectionItems: (collectionId: string, itemIds?: string[], selectAll?: boolean) => Promise<DeleteCollectionItemsResult>;
 
   resetDemoData: () => void;
   recordView: (id: string) => void;
@@ -107,6 +119,7 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
   const [searchFilters, setSearchFilters] = useState<SearchFilters>(defaultSearchFilters);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [importLimits, setImportLimits] = useState<ImportLimits>({ total: 30, used: 0, remaining: 30 });
 
   // Modals state
   const [isAddContentOpen, setIsAddContentOpen] = useState(false);
@@ -148,6 +161,54 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const refreshPlanFromBilling = useCallback(async (userId: string) => {
+    if (userId.startsWith("user-demo")) return;
+    try {
+      const response = await fetch("/api/billing", { cache: "no-store" });
+      if (!response.ok) return;
+      const billing = await response.json() as { tier?: User["tier"] };
+      if (billing.tier) setUser((current) => current?.id === userId ? { ...current, tier: billing.tier as User["tier"] } : current);
+    } catch (error) {
+      console.warn("Could not refresh account plan from billing:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated || !user) return;
+    const userId = user.id;
+    const syncUsage = () => {
+      void fetch("/api/usage", { cache: "no-store" }).then(async (response) => {
+        if (!response.ok) return;
+        const usage = await response.json() as { total: number | null; used: number };
+        const current = StorageService.getImportLimits(userId);
+        const total = usage.total ?? Math.max(current.total, usage.used + 1);
+        setImportLimits(StorageService.setImportLimits({ total, used: usage.used }, userId));
+      }).catch((error: unknown) => {
+        console.warn("Could not load server import usage.", error);
+      });
+    };
+    syncUsage();
+    const timer = window.setInterval(syncUsage, 5 * 60 * 1000);
+    window.addEventListener("focus", syncUsage);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", syncUsage);
+    };
+  }, [isAuthenticated, user?.id]);
+
+  const activeUserId = user?.id;
+  useEffect(() => {
+    if (!activeUserId || activeUserId.startsWith("user-demo")) return;
+    const refresh = () => { void refreshPlanFromBilling(activeUserId); };
+    refresh();
+    const timer = window.setInterval(refresh, 5 * 60 * 1000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [activeUserId, refreshPlanFromBilling]);
+
   // Listen to OS system color scheme changes when theme is "system"
   useEffect(() => {
     if (theme !== "system" || typeof window === "undefined") return;
@@ -159,17 +220,42 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
 
   // Load user from active session on initial mount
   useEffect(() => {
-    try {
-      const activeUser = AuthService.getCurrentUser();
+    void (async () => {
+      try {
+      const activeUser = await AuthService.getCurrentUserAsync();
       if (activeUser) {
         setUser(activeUser);
         setIsAuthenticated(true);
+        // Automatically check and repair any corrupted HTML entity records safely and idempotently
+        MigrationService.repairUserData(activeUser.id);
         const userItems = StorageService.getItems(activeUser.id);
         const userCollections = StorageService.getCollections(activeUser.id);
         const userSearches = StorageService.getRecentSearches(activeUser.id);
-        setItems(userItems);
+        const storedLimits = StorageService.getImportLimits(activeUser.id);
+        const userLimits = activeUser.tier === "free" && storedLimits.total === 10
+          ? StorageService.setImportLimits({ total: 30, used: storedLimits.used }, activeUser.id)
+          : storedLimits;
+        let hydratedItems = userItems;
+        try {
+          const mediaResponse = await fetch("/api/media", { cache: "no-store" });
+          if (mediaResponse.ok) {
+            const payload = await mediaResponse.json() as { items?: SavedItem[] };
+            const localByUrl = new Map(userItems.map((item) => [item.url, item]));
+            const serverItems = (payload.items || []).map((serverItem) => {
+              const localItem = localByUrl.get(serverItem.url);
+              if (localItem) localByUrl.delete(serverItem.url);
+              return localItem ? ContentService.safeMerge(localItem, serverItem) : serverItem;
+            });
+            hydratedItems = [...serverItems, ...localByUrl.values()];
+            StorageService.saveItems(hydratedItems, activeUser.id);
+          }
+        } catch (error) {
+          console.warn("Could not hydrate durable workspace media; keeping the local library available.", error);
+        }
+        setItems(hydratedItems);
         setCollections(userCollections);
         setRecentSearches(userSearches);
+        setImportLimits(userLimits);
 
         const savedTheme = activeUser.settings?.theme || "dark";
         setThemeState(savedTheme);
@@ -179,11 +265,13 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
         setIsAuthenticated(false);
         setItems([]);
         setCollections([]);
+        setImportLimits({ total: 30, used: 0, remaining: 30 });
         applyThemeClass("dark");
       }
-    } finally {
-      setAuthLoading(false);
-    }
+      } finally {
+        setAuthLoading(false);
+      }
+    })();
   }, []);
 
   // ---------------------------------------------------------------------------
@@ -198,9 +286,11 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     const userItems = StorageService.getItems(authedUser.id);
     const userCollections = StorageService.getCollections(authedUser.id);
     const userSearches = StorageService.getRecentSearches(authedUser.id);
+    const userLimits = StorageService.getImportLimits(authedUser.id);
     setItems(userItems);
     setCollections(userCollections);
     setRecentSearches(userSearches);
+    setImportLimits(userLimits);
 
     const savedTheme = authedUser.settings?.theme || "dark";
     setThemeState(savedTheme);
@@ -215,25 +305,33 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     // Brand new accounts start with isolated storage
     const userItems = StorageService.getItems(newUser.id);
     const userCollections = StorageService.getCollections(newUser.id);
+    const userLimits = StorageService.getImportLimits(newUser.id);
     setItems(userItems);
     setCollections(userCollections);
     setRecentSearches([]);
+    setImportLimits(userLimits);
 
     const savedTheme = newUser.settings?.theme || "dark";
     setThemeState(savedTheme);
     applyThemeClass(savedTheme);
+    addToast(
+      "Account created successfully",
+      `Welcome to Keeper, ${newUser.name}. Your workspace is ready to use.`,
+      "success",
+    );
   };
 
   const demoLogin = async () => {
     await login({ email: "devang@recall.ai", password: "••••••••••••" });
   };
 
-  const logout = () => {
-    AuthService.logout();
+  const logout = async () => {
+    await AuthService.logout();
     setUser(null);
     setIsAuthenticated(false);
     setItems([]);
     setCollections([]);
+    setImportLimits({ total: 30, used: 0, remaining: 30 });
   };
 
   const updateProfile = async (updates: { name?: string; email?: string; avatar?: string }) => {
@@ -242,6 +340,16 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     setUser(updated);
     addToast("Profile updated", "Your account information was successfully updated.", "success");
   };
+
+  const updatePlan = async (tier: "basic" | "pro") => {
+    if (!user) throw new Error("Not authenticated");
+    const updated = await AuthService.updatePlan(user.id, tier);
+    setUser(updated);
+  };
+
+  const syncBillingTier = useCallback((tier: "free" | "basic" | "pro") => {
+    setUser((current) => current ? { ...current, tier } : current);
+  }, []);
 
   const updatePassword = async (data: { currentPassword: string; newPassword: string }) => {
     if (!user) throw new Error("Not authenticated");
@@ -329,17 +437,85 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     setQuickNoteItem(null);
   };
 
+  // Import limits handlers
+  const deductImportLimits = (count = 1): boolean => {
+    const result = StorageService.deductImportLimit(count, user?.id);
+    setImportLimits(result.limits);
+    return result.success;
+  };
+
+  const canImport = (count = 1): boolean => {
+    const current = StorageService.getImportLimits(user?.id);
+    return current.remaining >= count;
+  };
+
+  const refreshImportLimits = () => {
+    const current = StorageService.getImportLimits(user?.id);
+    setImportLimits(current);
+    if (isAuthenticated) {
+      void fetch("/api/usage", { cache: "no-store" }).then(async (response) => {
+        if (!response.ok) return;
+        const usage = await response.json() as { total: number | null; used: number; remaining: number | null };
+        const total = usage.total ?? Math.max(current.total, usage.used + 1);
+        const limits = StorageService.setImportLimits({ total, used: usage.used }, user?.id);
+        setImportLimits(limits);
+      }).catch((error: unknown) => {
+        console.warn("Could not refresh server import usage.", error);
+      });
+    }
+  };
+
+  const addImportCredits = (count: number) => {
+    if (!user || !Number.isInteger(count) || count <= 0) return;
+    const current = StorageService.getImportLimits(user.id);
+    const updated = StorageService.setImportLimits({ total: current.total + count, used: current.used }, user.id);
+    setImportLimits(updated);
+  };
+
   // Content actions
   const addItem = (itemData: Omit<SavedItem, "id" | "savedDate"> & { id?: string; savedDate?: string }): SavedItem => {
+    const currentLimits = StorageService.getImportLimits(user?.id);
+    if (currentLimits.remaining <= 0) {
+      addToast(
+        "Import limit reached",
+        `You have used all ${currentLimits.total} imports. Please reset or upgrade your quota to import more items.`,
+        "error"
+      );
+      throw new Error("Import limit reached: 0 remaining imports.");
+    }
+
     const created = ContentService.addItem(itemData);
     setItems(ContentService.getAll());
-    addToast("Item saved to Recall", `"${created.title}" is now analyzed and indexed.`, "success");
+    const deductResult = StorageService.deductImportLimit(1, user?.id);
+    setImportLimits(deductResult.limits);
+    addToast(
+      "Item saved to Recall",
+      `"${created.title}" is now analyzed and indexed. (${deductResult.limits.remaining} imports remaining)`,
+      "success"
+    );
     return created;
   };
 
   const updateItem = (id: string, updates: Partial<SavedItem>) => {
+    const previousItem = items.find((item) => item.id === id);
     ContentService.updateItem(id, updates);
     setItems(ContentService.getAll());
+    const serverMediaId = previousItem?.metadata?.serverMediaId;
+    if (typeof serverMediaId === "string" && Object.prototype.hasOwnProperty.call(updates, "collectionId") && updates.collectionId !== previousItem?.collectionId) {
+      void fetch(`/api/media/${encodeURIComponent(serverMediaId)}/collection`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ collectionId: updates.collectionId ?? null }),
+      }).then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({})) as { error?: string };
+          addToast("AI learning update failed", body.error || "Your local move is saved, but this correction could not be synchronized.", "warning");
+        }
+      }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Network error.";
+        addToast("AI learning update failed", message, "warning");
+      });
+    }
     addToast("Updated successfully", undefined, "info");
   };
 
@@ -430,6 +606,38 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     return newCol;
   };
 
+  const refreshWorkspaceCollections = async () => {
+    if (!user?.id) return;
+    try {
+      const response = await fetch("/api/collections/sync", { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = await response.json() as { collections?: Array<{ id: string; name: string; description?: string | null; profile?: Record<string, unknown>; updated_at?: string }> };
+      const local = StorageService.getCollections(user.id);
+      const localById = new Map(local.map((collection) => [collection.id, collection]));
+      const serverCollections = (payload.collections || []).map((entry) => {
+        const existing = localById.get(entry.id);
+        if (existing) return existing;
+        const profile = entry.profile || {};
+        return {
+          id: entry.id,
+          name: entry.name,
+          description: entry.description || "",
+          color: typeof profile.color === "string" ? profile.color : "#d9ad32",
+          icon: typeof profile.icon === "string" ? profile.icon : "Folder",
+          createdAt: entry.updated_at || new Date().toISOString(),
+          updatedAt: entry.updated_at || new Date().toISOString(),
+          ...(profile.isSystem === true ? { isSystem: true } : {}),
+        } as Collection;
+      });
+      const serverIds = new Set(serverCollections.map((collection) => collection.id));
+      const merged = [...serverCollections, ...local.filter((collection) => !serverIds.has(collection.id))];
+      StorageService.saveCollections(merged, user.id);
+      setCollections(merged);
+    } catch (error) {
+      console.warn("Workspace collection refresh failed; keeping local collections.", error);
+    }
+  };
+
   const updateCollection = (id: string, updates: Partial<Omit<Collection, "id" | "createdAt">>) => {
     CollectionService.update(id, updates);
     setCollections(CollectionService.getAll());
@@ -443,14 +651,41 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     addToast("Collection deleted", "Items have been unlinked.", "warning");
   };
 
+  const deleteCollectionItems = async (
+    collectionId: string,
+    itemIds?: string[],
+    selectAll?: boolean
+  ): Promise<DeleteCollectionItemsResult> => {
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    const result = ContentService.deleteCollectionItems({
+      userId: activeUserId,
+      collectionId,
+      itemIds,
+      selectAll,
+    });
+    setItems(ContentService.getAll(activeUserId));
+    const totalCount = result.deleted + result.removedFromCollection;
+    const targetCol = collections.find((c) => c.id === collectionId);
+    const colName = targetCol ? `"${targetCol.name}"` : "collection";
+    addToast(
+      "Collection updated",
+      `${totalCount} item(s) processed in ${colName} (${result.deleted} moved to Trash, ${result.removedFromCollection} kept in other collections).`,
+      "info"
+    );
+    return result;
+  };
+
   const resetDemoData = () => {
     StorageService.resetToDefaults();
     if (user) {
       setItems(StorageService.getItems(user.id));
       setCollections(StorageService.getCollections(user.id));
       setRecentSearches(StorageService.getRecentSearches(user.id));
+      setImportLimits(StorageService.getImportLimits(user.id));
+    } else {
+      setImportLimits(StorageService.getImportLimits("anonymous"));
     }
-    addToast("Demo data restored", "Loaded 30+ curated seed bookmarks and collections.", "success");
+    addToast("Sample library restored", "Sample items and collections were restored. Your plan and purchased credits were kept.", "success");
   };
 
   return (
@@ -459,6 +694,11 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
         user,
         isAuthenticated,
         authLoading,
+        importLimits,
+        deductImportLimits,
+        canImport,
+        refreshImportLimits,
+        addImportCredits,
         items,
         collections,
         viewMode,
@@ -477,6 +717,8 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
         login,
         signup,
         logout,
+        updatePlan,
+        syncBillingTier,
         updateProfile,
         updatePassword,
         demoLogin,
@@ -504,9 +746,11 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
         restoreItem,
         permanentDeleteItem,
         emptyTrash,
-        createCollection,
+      createCollection,
+      refreshWorkspaceCollections,
         updateCollection,
         deleteCollection,
+        deleteCollectionItems,
         resetDemoData,
         recordView,
         reprocessItem,
@@ -534,6 +778,7 @@ export function useAuth() {
     login,
     signup,
     logout,
+    updatePlan,
     updateProfile,
     updatePassword,
     demoLogin,
@@ -546,6 +791,7 @@ export function useAuth() {
     login,
     signup,
     logout,
+    updatePlan,
     updateProfile,
     updatePassword,
     demoLogin,

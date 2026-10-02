@@ -30,14 +30,14 @@ export const QuickNoteModal: React.FC = () => {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
       onClick={closeQuickNoteModal}
     >
       <div
         className="w-full max-w-md rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200 dark:border-zinc-800">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 sm:py-4 border-b border-zinc-200 dark:border-zinc-800">
           <div className="flex items-center gap-2">
             <StickyNote className="w-4 h-4 text-amber-500" />
             <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
@@ -52,7 +52,7 @@ export const QuickNoteModal: React.FC = () => {
           </button>
         </div>
 
-        <form onSubmit={handleSave} className="p-6 space-y-4">
+        <form onSubmit={handleSave} className="p-4 sm:p-6 space-y-4">
           <div>
             <p className="text-xs text-zinc-500 mb-2 line-clamp-1 font-medium">
               &quot;{quickNoteItem.title}&quot;

@@ -41,7 +41,7 @@ export function CoreFeaturesStack() {
         </div>
 
         {/* Trapezoid Folder-Tab Switcher Row */}
-        <div className="flex items-center justify-center gap-2 sm:gap-4 mb-0 select-none overflow-x-auto pb-2">
+        <div className="flex items-center justify-start sm:justify-center gap-2 sm:gap-4 mb-0 select-none overflow-x-auto no-scrollbar pb-2 px-2">
           {FEATURE_TABS.map((tab, idx) => {
             const isActive = idx === activeTabIndex;
 

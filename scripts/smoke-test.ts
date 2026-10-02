@@ -53,6 +53,19 @@ const CHECKS: EndpointCheck[] = [
     expectedContentType: "text/html",
     validateBody: (text) => text.includes("Create") || text.includes("<html"),
   },
+  {
+    path: "/api/bulk-import/capabilities?platform=youtube",
+    expectedStatus: 200,
+    expectedContentType: "application/json",
+    validateBody: (text) => {
+      try {
+        const json = JSON.parse(text);
+        return json.success === true && json.platform === "youtube";
+      } catch {
+        return false;
+      }
+    },
+  },
 ];
 
 async function sleep(ms: number) {
@@ -67,19 +80,22 @@ async function runCheckWithRetry(check: EndpointCheck, maxRetries = 4): Promise<
     try {
       const response = await fetch(url, {
         headers: { "User-Agent": "Recall-Production-SmokeTest/1.0" },
+        signal: AbortSignal.timeout(12_000),
       });
       const latency = Date.now() - startTime;
       const text = await response.text();
 
       const statusMatch = response.status === check.expectedStatus;
+      const contentType = response.headers.get("content-type") || "";
+      const contentTypeMatch = !check.expectedContentType || contentType.includes(check.expectedContentType);
       const bodyValid = check.validateBody ? check.validateBody(text) : true;
 
-      if (statusMatch && bodyValid) {
+      if (statusMatch && contentTypeMatch && bodyValid) {
         console.log(`  ✓ [HTTP ${response.status}] ${check.path} (${latency}ms)`);
         return true;
       }
 
-      console.warn(`  ⚠ Attempt ${attempt}/${maxRetries} failed for ${check.path}: HTTP ${response.status}`);
+      console.warn(`  ⚠ Attempt ${attempt}/${maxRetries} failed for ${check.path}: HTTP ${response.status}, content-type ${contentType || "missing"}`);
     } catch (err) {
       console.warn(`  ⚠ Attempt ${attempt}/${maxRetries} connection error for ${check.path}:`, err instanceof Error ? err.message : err);
     }

@@ -72,7 +72,7 @@ export const FilterBar: React.FC = () => {
         </div>
 
         {/* Right Controls: Sort & View Toggle */}
-        <div className="flex items-center gap-2 self-end sm:self-auto">
+        <div className="flex items-center justify-between sm:justify-end gap-2 w-full sm:w-auto">
           {/* Sort Selector */}
           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-xs text-zinc-600 dark:text-zinc-400">
             <ArrowUpDown className="w-3.5 h-3.5 text-zinc-400" />

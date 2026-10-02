@@ -45,7 +45,7 @@ export default function AIAssistantPage() {
       id: "msg-welcome",
       sender: "assistant",
       content:
-        "Hello! I am your **Recall Knowledge Assistant**. Ask me anything about what you've saved across YouTube, Instagram, Reddit, X, LinkedIn, TikTok, and blogs. I synthesize answers directly from your library with source citations.",
+        "Hello! I am your **Keeper Knowledge Assistant**. Ask me anything about what you've saved across YouTube, Instagram, Reddit, X, LinkedIn, and the web. I synthesize answers directly from your library with source citations.",
     },
   ]);
 
@@ -92,23 +92,23 @@ export default function AIAssistantPage() {
   };
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-6 flex flex-col h-[calc(100vh-4rem)]">
+    <div className="p-3 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-4 sm:space-y-6 flex flex-col h-[calc(100dvh-8rem)] md:h-[calc(100dvh-4rem)] mb-16 md:mb-0">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-4 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-cyan-400 flex items-center justify-center text-white shadow-lg shadow-indigo-600/25">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 dark:border-zinc-800 pb-4 shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-cyan-400 flex items-center justify-center text-white shadow-lg shadow-indigo-600/25 shrink-0">
             <Brain className="w-5 h-5" />
           </div>
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-zinc-900 dark:text-zinc-100">
+              <h1 className="text-lg sm:text-2xl font-extrabold tracking-tight text-zinc-900 dark:text-zinc-100 truncate">
                 AI Library Assistant
               </h1>
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/10 text-indigo-500">
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/10 text-indigo-500 shrink-0">
                 SEMANTIC
               </span>
             </div>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
               Natural language queries grounded on your saved bookmarks
             </p>
           </div>
@@ -159,7 +159,7 @@ export default function AIAssistantPage() {
               <div className="max-w-3xl w-full p-5 rounded-3xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/80 shadow-xs space-y-4">
                 <div className="flex items-center gap-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400">
                   <Sparkles className="w-4 h-4" />
-                  Recall Knowledge Synthesis
+                  Keeper Knowledge Synthesis
                 </div>
 
                 <div className="text-sm text-zinc-800 dark:text-zinc-200 leading-relaxed font-normal whitespace-pre-line">
@@ -245,7 +245,7 @@ export default function AIAssistantPage() {
         {loading && (
           <div className="flex items-center gap-3 p-4 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/60 text-zinc-500 text-xs">
             <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />
-            <span>Recall AI is searching your bookmarks and synthesizing answers...</span>
+            <span>Keeper is searching your saves and synthesizing an answer...</span>
           </div>
         )}
       </div>

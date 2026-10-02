@@ -1,6 +1,11 @@
 import { AISummary, Collection, ContentProcessingStatus, ExtractedContent, FieldProvenance, SavedItem } from "@/types";
 import { SearchService } from "@/services/search-service";
 import { ProviderService } from "@/services/provider-service";
+import { ReprocessingService } from "./reprocessing/reprocessing-service";
+import { ContentService } from "./content-service";
+import { ContentAnalysisService } from "./content-analysis-service";
+import { CollectionMatchingService } from "./collection-matching-service";
+import { ContentIntelligenceService } from "./content-intelligence";
 
 export interface AIAnalysisResult {
   summary: AISummary;
@@ -35,259 +40,76 @@ export class AIService {
     extracted: ExtractedContent,
     existingCollections: Collection[]
   ): Promise<AIAnalysisResult> {
-    // Artificial small delay for realistic processing feel
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    const savedRepresentation = extracted.metadata?.contentRepresentation as { source?: string; status?: string; transcript?: string } | undefined;
+    const transcriptSource = extracted.provenance?.transcript?.source;
+    const trustedTranscriptSources = new Set(["faster-whisper", "openai-audio-transcriptions", "platform_caption_track", "youtube_caption_track", "speech_to_text"]);
+    const transcript = trustedTranscriptSources.has(transcriptSource || "") && typeof extracted.transcript === "string" ? extracted.transcript.trim() : "";
+    const platformTranscript = savedRepresentation?.source === "platform_transcript" && savedRepresentation.status === "completed" && typeof savedRepresentation.transcript === "string"
+      ? savedRepresentation.transcript.trim()
+      : "";
+    const isVideo = ["video", "reel", "short"].includes(extracted.contentType) || extracted.platform === "youtube-shorts";
+    const verifiedTranscript = transcript || platformTranscript;
+    const ocrProvenance = extracted.provenance?.visualText;
+    const hasVerifiedOcr = extracted.metadata?.visualOcr?.status === "analyzed"
+      && Array.isArray(ocrProvenance?.basedOn) && ocrProvenance.basedOn.includes("mediaUrl");
+    const representation = ContentIntelligenceService.normalizeRepresentation({
+      transcript: verifiedTranscript ? { status: "transcribed", text: verifiedTranscript, segments: [], provider: "verified_source", modelVersion: "persisted" } : undefined,
+      sourceTranscript: platformTranscript || undefined,
+      bodyText: extracted.bodyText,
+      caption: extracted.caption,
+      description: extracted.description,
+      ocrText: hasVerifiedOcr && typeof extracted.metadata.visualText === "string" ? extracted.metadata.visualText : undefined,
+      title: undefined,
+    });
+    const verifiedText = representation.text;
 
-    const title = extracted.title || "";
-    const description = extracted.description || "";
-    const bodyText = extracted.bodyText || "";
-    const transcript = extracted.transcript || "";
-    const caption = extracted.caption || "";
-    const platform = extracted.platform;
-
-    // Aggregate all genuinely available text
-    const availableText = `${title} ${description} ${bodyText} ${transcript} ${caption}`.toLowerCase().trim();
-
-    // 1. INSUFFICIENT CONTENT STATE
-    // If no meaningful text could be extracted, do not fabricate generic summaries!
-    if (extracted.status === "INSUFFICIENT_CONTENT" || (!title && !description && !bodyText)) {
-      return {
-        status: "INSUFFICIENT_CONTENT",
-        isLimited: true,
-        limitedReason: extracted.limitedReason || "No readable content or transcript was accessible from the source URL.",
-        summary: {
-          quick: "Limited content available for this resource.",
-          standard: "We saved this link, but source text or media details could not be extracted due to platform privacy or access restrictions.",
-          detailed: "No groundable content was retrieved from the source. Add personal notes or open the original link directly to review.",
-        },
-        keyPoints: [], // Empty: Never invent fake takeaways!
-        tags: [extracted.platform.replace("-", " ")],
-        topics: [extracted.metadata.domain],
-        suggestedCollectionId: undefined,
-        suggestedCollectionName: "Watch Later",
-        provenance: {
-          ...extracted.provenance,
-          summary: {
-            value: "Limited content available",
-            source: "ai",
-            basedOn: ["source_status"],
-            retrievedAt: new Date().toISOString(),
-          },
-        },
-      };
-    }
-
-    // 2. METADATA ONLY STATE
-    // If only basic metadata is known (e.g. video title or link slug without transcript/body),
-    // summarize ONLY the verified metadata. Do NOT pretend AI watched or read the entire post!
-    if (extracted.status === "METADATA_ONLY" || (bodyText.length === 0 && transcript.length === 0 && description.length < 50)) {
-      const words = title
-        .replace(/[^\w\s]/g, "")
-        .split(/\s+/)
-        .filter((w) => w.length > 3)
-        .slice(0, 4);
-
-      const dynamicTags = words.length > 0
-        ? words.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-        : [extracted.platform];
-
-      const topicName = words.slice(0, 2).map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ") || extracted.metadata.domain;
-
-      const matchedCollection = existingCollections.find(
-        (c) => c.name.toLowerCase().includes(dynamicTags[0]?.toLowerCase() || "")
-      );
-
-      return {
-        status: "METADATA_ONLY",
-        isLimited: true,
-        limitedReason: extracted.limitedReason || "Full body text or transcript was not accessible for deep AI analysis.",
-        summary: {
-          quick: `Saved ${extracted.contentType}: "${title}" from ${extracted.metadata.domain}.`,
-          standard: `Saved ${extracted.platform} ${extracted.contentType} titled "${title}"${extracted.creator?.name ? ` by ${extracted.creator.name}` : ""}. Full text was not accessible for in-depth AI analysis.`,
-          detailed: `1. Title: ${title}\n2. Platform: ${extracted.platform}\n3. Domain: ${extracted.metadata.domain}\n4. Content Type: ${extracted.contentType}\n5. Note: Deep transcript or text understanding is limited.`,
-        },
-        keyPoints: [], // Empty: Do not pretend AI read full contents!
-        tags: dynamicTags,
-        topics: [topicName],
-        suggestedCollectionId: matchedCollection?.id,
-        suggestedCollectionName: matchedCollection?.name || "Useful Tools",
-        provenance: {
-          ...extracted.provenance,
-          summary: {
-            value: `Metadata summary of ${title}`,
-            source: "ai",
-            basedOn: ["title", "domain"],
-            retrievedAt: new Date().toISOString(),
-          },
-        },
-      };
-    }
-
-    // 3. PARTIAL / FULL CONTENT STATE
-    // Grounded synthesis strictly based on extracted text!
-    let tags: string[] = [];
-    let topics: string[] = [];
-    let suggestedCollectionName = "Useful Tools";
-    let keyPoints: string[] = [];
-
-    if (
-      availableText.includes("react") ||
-      availableText.includes("next") ||
-      availableText.includes("javascript") ||
-      availableText.includes("compiler")
-    ) {
-      tags = ["React", "Frontend", "JavaScript", "Performance"];
-      topics = ["React Architecture", "Frontend Performance"];
-      suggestedCollectionName = "React Learning";
-      keyPoints = [
-        "Focuses on modern React patterns, state separation, and build optimization",
-        "Reduces unnecessary render cycles by structuring components cleanly",
-        "Emphasizes verified profiling metrics before refactoring production code",
-      ];
-    } else if (
-      availableText.includes("ai") ||
-      availableText.includes("agent") ||
-      availableText.includes("llm") ||
-      availableText.includes("langchain") ||
-      availableText.includes("langgraph")
-    ) {
-      tags = ["AI", "LLM", "Agents", "Architecture"];
-      topics = ["AI Agents", "System Reliability"];
-      suggestedCollectionName = "AI & Automation";
-      keyPoints = [
-        "Advocates strict deterministic verification to prevent multi-agent divergence",
-        "Recommends finite loop execution budgets to stop uncontrolled retries",
-        "Enforces structured schema validation for external tool invocations",
-      ];
-    } else if (
-      availableText.includes("saas") ||
-      availableText.includes("mrr") ||
-      availableText.includes("startup") ||
-      availableText.includes("pricing") ||
-      availableText.includes("b2b")
-    ) {
-      tags = ["SaaS", "Startups", "Pricing", "Bootstrapping"];
-      topics = ["SaaS Growth", "Product Validation"];
-      suggestedCollectionName = "Business Ideas";
-      keyPoints = [
-        "Solves painful compliance or operational requirements for targeted buyers",
-        "Validates buyer urgency with upfront paid tiers rather than free plans",
-        "Focuses on direct outreach to industry professionals for early traction",
-      ];
-    } else if (
-      availableText.includes("ui") ||
-      availableText.includes("ux") ||
-      availableText.includes("framer") ||
-      availableText.includes("css") ||
-      availableText.includes("design")
-    ) {
-      tags = ["UI", "UX", "CSS", "MicroInteractions"];
-      topics = ["Design Systems", "Visual Interaction"];
-      suggestedCollectionName = "UI Inspiration";
-      keyPoints = [
-        "Implements smooth cursor and hover interactions without lag",
-        "Mutates CSS custom variables directly to avoid costly UI re-renders",
-        "Creates clean visual polish for interactive interface components",
-      ];
-    } else if (
-      availableText.includes("recipe") ||
-      availableText.includes("protein") ||
-      availableText.includes("salmon") ||
-      availableText.includes("meal") ||
-      availableText.includes("cooking")
-    ) {
-      tags = ["Recipes", "HighProtein", "Healthy", "MealPrep"];
-      topics = ["Healthy Cooking", "Fitness Meals"];
-      suggestedCollectionName = "Healthy Recipes";
-      keyPoints = [
-        "Streamlines cooking time using air-fryer or prep techniques under 15 minutes",
-        "Focuses on macro-dense ingredients with high protein and whole foods",
-        "Designed for simple batch meal prep and container storage",
-      ];
-    } else if (
-      availableText.includes("sleep") ||
-      availableText.includes("circadian") ||
-      availableText.includes("huberman") ||
-      availableText.includes("sunlight")
-    ) {
-      tags = ["Health", "Sleep", "Biohacking", "Habits"];
-      topics = ["Circadian Rhythms", "Performance Optimization"];
-      suggestedCollectionName = "Watch Later";
-      keyPoints = [
-        "Uses morning sunlight viewing to set daytime alertness and night melatonin timing",
-        "Recommends delaying caffeine post-waking to eliminate afternoon crashes",
-        "Maintains a cool sleeping environment for optimal sleep cycles",
-      ];
-    } else if (
-      availableText.includes("japan") ||
-      availableText.includes("travel") ||
-      availableText.includes("tokyo") ||
-      availableText.includes("itinerary")
-    ) {
-      tags = ["Travel", "Japan", "Itinerary", "CityGuide"];
-      topics = ["Global Travel", "City Itineraries"];
-      suggestedCollectionName = "Travel";
-      keyPoints = [
-        "Balances vibrant urban neighborhoods with traditional ryokan stays",
-        "Provides logistics advice for luggage delivery and ticket bookings ahead of time",
-        "Recommends early morning visits to popular sights to avoid crowds",
-      ];
-    } else {
-      // Dynamic extraction from title & text
-      const words = title
-        .replace(/[^\w\s]/g, "")
-        .split(/\s+/)
-        .filter((w) => w.length > 3)
-        .slice(0, 4);
-
-      tags = words.length > 0
-        ? words.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-        : [extracted.platform];
-
-      topics = [title.slice(0, 32)];
-      suggestedCollectionName = "Useful Tools";
-      keyPoints = description && description.length > 30
-        ? [
-            description.slice(0, 100).trim(),
-            `Verified ${extracted.platform} link from ${extracted.metadata.domain}`,
-          ]
-        : [];
-    }
-
-    const matchedCollection = existingCollections.find(
-      (c) => c.name.toLowerCase() === suggestedCollectionName.toLowerCase()
-    );
-
-    const snippet = description.slice(0, 160).trim();
-    const quick = snippet
-      ? `TL;DR: ${snippet}`
-      : `TL;DR: Verified save of "${title}" from ${extracted.metadata.domain}.`;
-    const standard = snippet
-      ? `"${title}"${extracted.creator?.name ? ` by ${extracted.creator.name}` : ""} on ${extracted.platform.toUpperCase()}: ${snippet}${description.length > 160 ? "..." : ""}`
-      : `Saved ${extracted.platform.toUpperCase()} resource titled "${title}"${extracted.creator?.name ? ` by ${extracted.creator.name}` : ""}.`;
-    const detailed = `${title}\n\nCreator: ${extracted.creator?.name || "Verified Creator"}\nPlatform: ${extracted.platform}\nDomain: ${extracted.metadata.domain}\n\nExtracted Content:\n${description || "No full description retrieved."}`;
-
-    const provenance: Record<string, FieldProvenance> = {
-      ...extracted.provenance,
+    const unavailable = (reason: string): AIAnalysisResult => ({
+      status: "INSUFFICIENT_CONTENT",
+      isLimited: true,
+      limitedReason: reason,
       summary: {
-        value: standard,
-        source: "ai",
-        basedOn: transcript ? ["transcript", "description"] : (description ? ["description", "title"] : ["title"]),
-        retrievedAt: new Date().toISOString(),
+        quick: "Verified content unavailable",
+        standard: "Keeper did not generate AI analysis because it could not verify readable source content.",
+        detailed: "Retry after the source text, a real transcript, or OCR text is available. The source URL and factual metadata remain saved.",
       },
-    };
+      keyPoints: [],
+      tags: [],
+      topics: [],
+      suggestedCollectionId: undefined,
+      suggestedCollectionName: undefined,
+      provenance: {
+        ...extracted.provenance,
+        aiProcessing: { value: { status: "failed", reason }, source: "content_gate", basedOn: [], retrievedAt: new Date().toISOString() },
+      },
+    });
 
+    if (isVideo && !verifiedTranscript) {
+      return unavailable("A video requires a verified transcript or platform-provided caption track. Title and description are not transcripts.");
+    }
+    if (verifiedText.length < 30) {
+      return unavailable("No verified source text, transcript, or OCR content was available. No AI output was generated.");
+    }
+
+    const analysis = await ContentAnalysisService.analyze(representation);
+    const collectionMatches = CollectionMatchingService.match(verifiedText, analysis.tags, existingCollections);
+    const match = collectionMatches[0];
+    const retrievedAt = new Date().toISOString();
     return {
-      status: extracted.status,
-      isLimited: extracted.isLimited,
-      limitedReason: extracted.limitedReason,
-      summary: { quick, standard, detailed },
-      keyPoints,
-      tags,
-      topics,
-      suggestedCollectionId: matchedCollection?.id,
-      suggestedCollectionName,
-      provenance,
+      status: "FULL_CONTENT",
+      isLimited: false,
+      summary: analysis.summary,
+      keyPoints: analysis.keyPoints.map((point) => point.text),
+      tags: analysis.tags.map((tag) => tag.name),
+      topics: analysis.topics,
+      suggestedCollectionId: match?.confidence && match.confidence >= 0.62 ? match.collectionId : undefined,
+      suggestedCollectionName: match?.confidence && match.confidence >= 0.62 ? match.name : undefined,
+      provenance: {
+        ...extracted.provenance,
+        summary: { value: analysis.summary.standard, source: "content_ai:" + analysis.model, basedOn: analysis.summaryEvidence, retrievedAt },
+        generatedTags: { value: analysis.tags, source: "content_ai:" + analysis.model, basedOn: analysis.tags.map((tag) => tag.evidence), retrievedAt },
+        assetClassification: { value: analysis.assetClassification, source: "content_ai:" + analysis.model, basedOn: analysis.assetClassification.evidence, retrievedAt },
+        collectionDecision: { value: match || null, source: "verified_content_collection_matcher", basedOn: analysis.tags.map((tag) => tag.name), retrievedAt },
+      },
     };
   }
 
@@ -335,34 +157,44 @@ export class AIService {
     item: SavedItem,
     collections: Collection[]
   ): Promise<SavedItem> {
+    if (item.platform === "instagram" && ReprocessingService.isEligible(item)) {
+      return ReprocessingService.reprocessItem(item);
+    }
+
     // Fetch real source data
     const extracted = await ProviderService.extractContent(item.url);
 
     // AI analyzes ONLY verified extracted data
     const aiAnalysis = await this.analyzeExtractedContent(extracted, collections);
+    const userTags = Array.isArray(item.metadata?.userTags)
+      ? item.metadata.userTags.filter((tag: unknown): tag is string => typeof tag === "string")
+      : [];
 
-    // Form updated item preserving user's personal notes, favorites, etc.
-    const updated: SavedItem = {
-      ...item,
-      title: extracted.title || item.title,
-      creator: extracted.creator || item.creator,
-      thumbnail: extracted.thumbnail || item.thumbnail,
-      platform: extracted.platform || item.platform,
-      contentType: extracted.contentType || item.contentType,
-      description: extracted.description || item.description,
+    // Form updated item preserving authoritative fields and user state
+    const updated = ContentService.safeMerge(item, {
+      title: extracted.title,
+      creator: extracted.creator,
+      thumbnail: extracted.thumbnail,
+      platform: extracted.platform,
+      contentType: extracted.contentType,
+      description: extracted.description,
       metadata: {
-        ...item.metadata,
         ...extracted.metadata,
+        aiGeneratedTags: aiAnalysis.provenance.generatedTags?.value || [],
+        aiProcessingStatus: aiAnalysis.status === "INSUFFICIENT_CONTENT"
+          ? (["video", "reel", "short"].includes(item.contentType) || item.platform === "youtube-shorts" ? "TRANSCRIPTION_FAILED" : "EXTRACTION_FAILED")
+          : "COMPLETED",
+        aiProcessingError: aiAnalysis.limitedReason,
       },
       aiSummary: aiAnalysis.summary,
       keyPoints: aiAnalysis.keyPoints,
-      tags: aiAnalysis.tags.length > 0 ? aiAnalysis.tags : item.tags,
-      topics: aiAnalysis.topics.length > 0 ? aiAnalysis.topics : item.topics,
+      tags: [...new Set([...aiAnalysis.tags, ...userTags])],
+      topics: aiAnalysis.topics,
       contentStatus: aiAnalysis.status,
       isLimited: aiAnalysis.isLimited,
       limitedReason: aiAnalysis.limitedReason,
       provenance: aiAnalysis.provenance,
-    };
+    });
 
     return updated;
   }

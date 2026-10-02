@@ -110,7 +110,7 @@ export default function SearchPage() {
           )}
 
           {/* Filters */}
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-between sm:justify-end">
             <select
               value={platform}
               onChange={(e) => setPlatform(e.target.value)}

@@ -3,18 +3,17 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { useRecall } from "@/context/RecallContext";
+import { getPlanLabel } from "@/lib/user-plan";
 import { generateInitialsAvatar } from "@/services/auth-service";
 import { formatDate } from "@/lib/utils";
+import { BillingSection } from "@/components/profile/BillingSection";
 import {
   User as UserIcon,
-  Mail,
   Lock,
   Upload,
   Camera,
   Check,
   AlertCircle,
-  ShieldCheck,
-  Sparkles,
   ArrowLeft,
   RotateCcw,
   Loader2,
@@ -161,7 +160,7 @@ export default function ProfilePage() {
         setAvatarUploading(false);
       };
       reader.readAsDataURL(file);
-    } catch (err) {
+    } catch {
       setAvatarError("Failed to process image.");
       setAvatarUploading(false);
     }
@@ -204,13 +203,13 @@ export default function ProfilePage() {
       {/* Hero Profile Overview Card */}
       <div className="p-6 rounded-3xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 min-w-0">
             <div className="relative group shrink-0">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={user.avatar}
                 alt={user.name}
-                className="w-20 h-20 rounded-2xl object-cover border-2 border-indigo-500 shadow-md"
+                className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover border-2 border-indigo-500 shadow-md"
               />
               <label
                 htmlFor="avatar-upload"
@@ -221,23 +220,23 @@ export default function ProfilePage() {
               </label>
             </div>
 
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base sm:text-lg font-bold text-zinc-900 dark:text-zinc-100 truncate">
                   {user.name}
                 </h2>
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-indigo-500/10 text-indigo-500 border border-indigo-500/20">
-                  {user.tier} Tier
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-indigo-500/10 text-indigo-500 border border-indigo-500/20 shrink-0">
+                  {getPlanLabel(user.tier)} Plan
                 </span>
               </div>
-              <p className="text-xs text-zinc-500 dark:text-zinc-400 font-mono mt-0.5">{user.email}</p>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 font-mono mt-0.5 truncate">{user.email}</p>
               <p className="text-[11px] text-zinc-400 mt-1">
                 Joined {formatDate(user.joinedDate)}
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <input
               id="avatar-upload"
               type="file"
@@ -247,7 +246,7 @@ export default function ProfilePage() {
             />
             <label
               htmlFor="avatar-upload"
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition-all cursor-pointer"
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition-all cursor-pointer whitespace-nowrap"
             >
               {avatarUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
               <span>Upload Photo</span>
@@ -255,7 +254,7 @@ export default function ProfilePage() {
             <button
               type="button"
               onClick={handleResetToInitials}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors whitespace-nowrap"
               title="Reset avatar to initials"
             >
               <RotateCcw className="w-3.5 h-3.5" />
@@ -271,6 +270,8 @@ export default function ProfilePage() {
           </div>
         )}
       </div>
+
+      <BillingSection />
 
       {/* Section 1: Edit Profile Information */}
       <div className="p-6 rounded-3xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs space-y-4">

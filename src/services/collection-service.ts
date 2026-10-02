@@ -2,24 +2,43 @@ import { Collection, SavedItem } from "@/types";
 import { StorageService } from "./storage-service";
 
 export class CollectionService {
-  static getAll(): Collection[] {
-    return StorageService.getCollections();
+  static getAll(userId?: string): Collection[] {
+    return StorageService.getCollections(userId);
   }
 
-  static getById(id: string): Collection | undefined {
-    const list = this.getAll();
+  static getById(id: string, userId?: string): Collection | undefined {
+    const list = this.getAll(userId);
     return list.find((c) => c.id === id);
   }
 
-  static create(collection: Omit<Collection, "id" | "createdAt" | "updatedAt">): Collection {
-    const collections = this.getAll();
+  static findByName(name: string, userId?: string): Collection | undefined {
+    const list = this.getAll(userId);
+    const clean = name.trim().toLowerCase();
+    return list.find((c) => c.name.trim().toLowerCase() === clean);
+  }
+
+  static create(collection: Omit<Collection, "id" | "createdAt" | "updatedAt">, userId?: string): Collection {
+    const trimmedName = collection.name.trim();
+    if (!trimmedName) {
+      throw new Error("Collection name cannot be empty");
+    }
+    const collections = this.getAll(userId);
+    const existing = collections.find(
+      (c) => c.name.trim().toLowerCase() === trimmedName.toLowerCase()
+    );
+    if (existing) {
+      return existing;
+    }
     const newCollection: Collection = {
       ...collection,
-      id: `col-${Date.now()}`,
+      name: trimmedName,
+      color: collection.color || "#6366f1",
+      icon: collection.icon || "Folder",
+      id: `col-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    StorageService.saveCollections([newCollection, ...collections]);
+    StorageService.saveCollections([newCollection, ...collections], userId);
     return newCollection;
   }
 

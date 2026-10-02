@@ -4,7 +4,7 @@ import { Globe, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // Custom resilient SVG brand icons to avoid third-party library deprecations
-const YoutubeIcon: React.FC<{ className?: string }> = ({ className = "w-3.5 h-3.5" }) => (
+export const YoutubeIcon: React.FC<{ className?: string }> = ({ className = "w-3.5 h-3.5" }) => (
   <svg
     viewBox="0 0 24 24"
     fill="currentColor"
@@ -15,7 +15,7 @@ const YoutubeIcon: React.FC<{ className?: string }> = ({ className = "w-3.5 h-3.
   </svg>
 );
 
-const YoutubeShortsIcon: React.FC<{ className?: string }> = ({ className = "w-3.5 h-3.5" }) => (
+export const YoutubeShortsIcon: React.FC<{ className?: string }> = ({ className = "w-3.5 h-3.5" }) => (
   <svg
     viewBox="0 0 24 24"
     fill="currentColor"
@@ -26,7 +26,7 @@ const YoutubeShortsIcon: React.FC<{ className?: string }> = ({ className = "w-3.
   </svg>
 );
 
-const InstagramIcon: React.FC<{ className?: string }> = ({ className = "w-3.5 h-3.5" }) => (
+export const InstagramIcon: React.FC<{ className?: string }> = ({ className = "w-3.5 h-3.5" }) => (
   <svg
     viewBox="0 0 24 24"
     fill="currentColor"
@@ -151,9 +151,10 @@ export const PlatformBadge: React.FC<PlatformBadgeProps> = ({
           icon: <LinkedinIcon className="w-3.5 h-3.5" />,
           color: "bg-blue-600/10 text-blue-500 border-blue-500/20",
         };
+      case "x":
       case "twitter":
         return {
-          label: "X (Twitter)",
+          label: "X",
           icon: <XTwitterIcon className="w-3 h-3" />,
           color: "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300 border-zinc-500/20",
         };

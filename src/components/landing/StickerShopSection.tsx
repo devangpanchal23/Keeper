@@ -62,13 +62,16 @@ export function StickerShopSection() {
     const deltaX = e.clientX - dragStartRef.current.mouseX;
     const deltaY = e.clientY - dragStartRef.current.mouseY;
 
+    const maxBoundX = Math.max(30, boardRef.current.clientWidth - 140);
+    const maxBoundY = Math.max(30, boardRef.current.clientHeight - 60);
+
     setStickers((prev) =>
       prev.map((s) => {
         if (s.id !== draggingId) return s;
         return {
           ...s,
-          x: Math.max(10, Math.min(620, dragStartRef.current!.initialX + deltaX)),
-          y: Math.max(10, Math.min(300, dragStartRef.current!.initialY + deltaY)),
+          x: Math.max(8, Math.min(maxBoundX, dragStartRef.current!.initialX + deltaX)),
+          y: Math.max(8, Math.min(maxBoundY, dragStartRef.current!.initialY + deltaY)),
         };
       })
     );
@@ -130,12 +133,13 @@ export function StickerShopSection() {
             Drag the stickers around on the silver lid mockup. Every sticker reflects a core Recall architectural guarantee.
           </p>
 
-          <div className="mt-8 flex items-center justify-center gap-4">
+          <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4">
             {/* Mid-page CTA: Secondary Cream or Ink */}
             <CTAButton
               onClick={() => openAddContent()}
               variant="secondary-cream"
               size="md"
+              className="w-full sm:w-auto"
             >
               SAVE A LINK NOW
             </CTAButton>
@@ -143,7 +147,7 @@ export function StickerShopSection() {
             <button
               type="button"
               onClick={resetStickers}
-              className="inline-flex items-center gap-2 font-krackerz-display text-xs uppercase px-5 py-3 rounded-full bg-white text-[#111111] border-2 border-white shadow-[0_3px_0_#111111] hover:scale-105 transition-transform"
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 font-krackerz-display text-xs uppercase px-5 py-3 rounded-full bg-white text-[#111111] border-2 border-white shadow-[0_3px_0_#111111] hover:scale-105 transition-transform"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               <span>RESET STICKERS</span>
@@ -155,13 +159,13 @@ export function StickerShopSection() {
         <div className="relative max-w-4xl mx-auto">
           {/* Tooltip Pill */}
           {!tooltipDismissed && (
-            <div className="absolute -top-12 left-1/2 -translate-x-1/2 z-30 inline-flex items-center gap-2 bg-[#111111] text-[#C6FF2E] font-krackerz-display text-xs px-4 py-2 rounded-full border-2 border-white shadow-[0_4px_0_#ffffff] animate-bounce">
-              <Move className="w-3.5 h-3.5" />
-              <span>DRAG THE STICKERS TO CUSTOMIZE THE LID!</span>
+            <div className="absolute -top-14 sm:-top-12 left-1/2 -translate-x-1/2 z-30 inline-flex items-center gap-2 bg-[#111111] text-[#C6FF2E] font-krackerz-display text-[10px] sm:text-xs px-3 sm:px-4 py-1.5 sm:py-2 rounded-full border-2 border-white shadow-[0_4px_0_#ffffff] animate-bounce max-w-[92vw]">
+              <Move className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate sm:whitespace-normal">DRAG THE STICKERS TO CUSTOMIZE THE LID!</span>
               <button
                 type="button"
                 onClick={() => setTooltipDismissed(true)}
-                className="w-4 h-4 rounded-full bg-white text-[#111111] flex items-center justify-center ml-2"
+                className="w-4 h-4 rounded-full bg-white text-[#111111] flex items-center justify-center shrink-0 ml-1 sm:ml-2"
                 aria-label="Dismiss tooltip"
               >
                 <X className="w-2.5 h-2.5" />
@@ -174,7 +178,7 @@ export function StickerShopSection() {
             ref={boardRef}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
-            className={`relative w-full h-[380px] sm:h-[460px] rounded-[36px] bg-gradient-to-b from-[#E2E4E9] to-[#C8CCD5] border-4 border-[#111111] shadow-[0_24px_60px_rgba(0,0,0,0.6)] p-6 overflow-hidden select-none ${
+            className={`relative w-full h-[320px] sm:h-[460px] rounded-[24px] sm:rounded-[36px] bg-gradient-to-b from-[#E2E4E9] to-[#C8CCD5] border-3 sm:border-4 border-[#111111] shadow-[0_24px_60px_rgba(0,0,0,0.6)] p-4 sm:p-6 overflow-hidden select-none ${
               draggingId ? "touch-none" : ""
             }`}
           >

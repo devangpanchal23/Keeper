@@ -32,7 +32,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   // Loading state: Never flash dummy user data
   if (authLoading) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-zinc-950 text-zinc-100">
+      <div className="flex h-screen h-[100dvh] w-full max-w-full overflow-hidden items-center justify-center bg-zinc-950 text-zinc-100">
         <div className="flex flex-col items-center gap-3 animate-in fade-in duration-300">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-cyan-400 flex items-center justify-center text-white shadow-xl shadow-indigo-600/30 animate-pulse">
             <Zap className="w-6 h-6 fill-current" />
@@ -52,7 +52,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-zinc-50 dark:bg-[#090a0f] text-zinc-900 dark:text-zinc-100 transition-colors">
+    <div className="flex h-screen h-[100dvh] w-full max-w-full overflow-hidden bg-zinc-50 dark:bg-[#090a0f] text-zinc-900 dark:text-zinc-100 transition-colors">
       {/* Desktop Sidebar */}
       <div className="hidden md:flex shrink-0 h-full">
         <Sidebar />
@@ -65,7 +65,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
           onClick={() => setMobileMenuOpen(false)}
         >
           <div
-            className="w-72 h-full bg-white dark:bg-zinc-950 shadow-2xl animate-in slide-in-from-left duration-200"
+            className="w-72 max-w-[85vw] h-full bg-white dark:bg-zinc-950 shadow-2xl animate-in slide-in-from-left duration-200"
             onClick={(e) => e.stopPropagation()}
           >
             <Sidebar onCloseMobile={() => setMobileMenuOpen(false)} />

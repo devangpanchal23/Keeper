@@ -4,7 +4,12 @@ import React, { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRecall } from "@/context/RecallContext";
-import { Zap, ArrowRight, Sparkles, AlertCircle, Loader2 } from "lucide-react";
+import { ArrowRight, Sparkles, AlertCircle, Loader2 } from "lucide-react";
+
+function getPostAuthDestination(): string {
+  const next = new URLSearchParams(window.location.search).get("next");
+  return next?.startsWith("/") && !next.startsWith("//") ? next : "/app";
+}
 
 export default function SignInPage() {
   const router = useRouter();
@@ -23,7 +28,7 @@ export default function SignInPage() {
 
     try {
       await login({ email, password });
-      router.push("/app");
+      router.push(getPostAuthDestination());
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to sign in. Please try again.";
       setError(msg);
@@ -37,7 +42,7 @@ export default function SignInPage() {
     setDemoLoading(true);
     try {
       await demoLogin();
-      router.push("/app");
+      router.push(getPostAuthDestination());
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to launch demo workspace.";
       setError(msg);
@@ -47,7 +52,7 @@ export default function SignInPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center px-4 relative overflow-hidden">
+    <div className="keeper-auth min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center px-4 relative overflow-hidden">
       {/* Background ambient glow */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] bg-indigo-600/15 blur-3xl rounded-full pointer-events-none" />
 
@@ -55,19 +60,17 @@ export default function SignInPage() {
         {/* Brand */}
         <div className="text-center mb-8">
           <Link href="/" className="inline-flex items-center gap-2.5 mb-3 group">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-cyan-400 flex items-center justify-center text-white shadow-lg shadow-indigo-500/30 group-hover:scale-105 transition-transform">
-              <Zap className="w-5 h-5 fill-current" />
-            </div>
-            <span className="text-2xl font-bold text-white tracking-tight">Recall</span>
+            <span className="keeper-auth-mark">K</span>
+            <span className="keeper-auth-wordmark">Keeper</span>
           </Link>
           <h1 className="text-xl font-semibold text-slate-100">Welcome back</h1>
-          <p className="text-xs text-slate-400 mt-1">
-            Access your AI universal bookmark workspace
+            <p className="text-xs text-slate-400 mt-1">
+            Come back to your personal library
           </p>
         </div>
 
         {/* Card */}
-        <div className="rounded-3xl border border-slate-800 bg-slate-900/90 shadow-2xl p-6 sm:p-8 backdrop-blur-xl space-y-5">
+        <div className="keeper-auth-card rounded-3xl border border-slate-800 bg-slate-900/90 shadow-2xl p-5 sm:p-8 backdrop-blur-xl space-y-5">
           {/* Quick Demo Sign-In Banner */}
           <button
             type="button"
@@ -84,7 +87,7 @@ export default function SignInPage() {
                   Instant Demo Access
                 </div>
                 <div className="text-[11px] text-slate-400">
-                  Explore pre-analyzed library with 30+ bookmarks
+                  Explore a ready-to-browse sample library
                 </div>
               </div>
             </div>
@@ -109,11 +112,12 @@ export default function SignInPage() {
 
           <form onSubmit={handleSignIn} className="space-y-4">
             <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+              <label htmlFor="keeper-signin-email" className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
                 Email
               </label>
               <input
                 type="email"
+                id="keeper-signin-email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -124,12 +128,13 @@ export default function SignInPage() {
 
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                <label htmlFor="keeper-signin-password" className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
                   Password
                 </label>
               </div>
               <input
                 type="password"
+                id="keeper-signin-password"
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -149,7 +154,7 @@ export default function SignInPage() {
                   <span>Signing In...</span>
                 </>
               ) : (
-                "Sign In to Recall"
+              "Sign in to Keeper"
               )}
             </button>
           </form>
@@ -157,7 +162,13 @@ export default function SignInPage() {
           <div className="text-center pt-2">
             <span className="text-xs text-slate-400">
               Don&apos;t have an account?{" "}
-              <Link href="/sign-up" className="text-indigo-400 font-semibold hover:underline">
+              <Link href="/sign-up" onClick={(event) => {
+                const next = new URLSearchParams(window.location.search).get("next");
+                if (next?.startsWith("/") && !next.startsWith("//")) {
+                  event.preventDefault();
+                  router.push(`/sign-up?next=${encodeURIComponent(next)}`);
+                }
+              }} className="text-indigo-400 font-semibold hover:underline">
                 Create one now
               </Link>
             </span>

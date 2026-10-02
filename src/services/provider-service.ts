@@ -1,6 +1,7 @@
 import {
   ContentType,
   Creator,
+  Community,
   ItemMetadata,
   Platform,
   ContentProcessingStatus,
@@ -9,6 +10,10 @@ import {
   ExtractedContent,
   ContentValidationResult,
 } from "@/types";
+import {
+  INSTAGRAM_REEL_PLACEHOLDER,
+  INSTAGRAM_POST_PLACEHOLDER,
+} from "./media/instagram-placeholders";
 
 export interface CanonicalIdentity {
   platform: Platform;
@@ -144,8 +149,8 @@ export const FALLBACK_THUMBNAILS: Record<Platform, string[]> = {
     "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=800&auto=format&fit=crop&q=80",
   ],
   instagram: [
-    "https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=800&auto=format&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1518455027359-f3f8164ba6bd?w=800&auto=format&fit=crop&q=80",
+    INSTAGRAM_REEL_PLACEHOLDER,
+    INSTAGRAM_POST_PLACEHOLDER,
   ],
   tiktok: [
     "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=800&auto=format&fit=crop&q=80",
@@ -160,6 +165,10 @@ export const FALLBACK_THUMBNAILS: Record<Platform, string[]> = {
     "https://images.unsplash.com/photo-1557804506-669a67965ba0?w=800&auto=format&fit=crop&q=80",
   ],
   twitter: [
+    "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80",
+    "https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=800&auto=format&fit=crop&q=80",
+  ],
+  x: [
     "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80",
     "https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=800&auto=format&fit=crop&q=80",
   ],
@@ -428,7 +437,7 @@ export function extractInstagramDetails(url: string): {
 } {
   try {
     const trimmed = url.trim();
-    const isReel = /instagram\.com\/reel\//i.test(trimmed);
+    const isReel = /instagram\.com\/(?:reel|reels)\//i.test(trimmed);
 
     // Check for username in URL path: instagram.com/username/(p|reel)/code
     const userPathMatch = trimmed.match(/instagram\.com\/([a-zA-Z0-9_\.]+)\/(?:reel|reels|p)\/([a-zA-Z0-9_\-]+)/i);
@@ -474,9 +483,9 @@ export class InstagramProvider extends BasePlatformProvider {
     return details.code;
   }
 
-  getThumbnail(url: string, contentId?: string | null): string {
-    const id = contentId || this.extractContentId(url);
-    return getDeterministicFallbackImage("instagram", id || url);
+  getThumbnail(url: string, _contentId?: string | null): string {
+    const details = extractInstagramDetails(url);
+    return details.isReel ? INSTAGRAM_REEL_PLACEHOLDER : INSTAGRAM_POST_PLACEHOLDER;
   }
 
   normalizeUrl(url: string): string {
@@ -488,85 +497,64 @@ export class InstagramProvider extends BasePlatformProvider {
   }
 
   async fetchMetadata(url: string, contentId?: string | null): Promise<VerifiedSourceMetadata> {
-    const { code, username, isReel, canonicalUrl } = extractInstagramDetails(url);
-    const id = contentId || code;
-    const thumbnail = this.getThumbnail(url, id);
-    const contentType: ContentType = isReel ? "reel" : "post";
-    const domain = "instagram.com";
+    const { InstagramProvider: ModularInstagramProvider } = await import("./providers/instagram-provider");
+    const modular = new ModularInstagramProvider();
+    try {
+      const sourceData = await modular.fetchAuthoritativeData(url);
 
-    const provenance: Record<string, FieldProvenance> = {
-      thumbnail: { value: thumbnail, source: "platform_preview", retrievedAt: new Date().toISOString() },
-    };
-
-    if (username) {
-      const title = `Instagram ${isReel ? "Reel" : "Post"} by @${username}`;
-      provenance.title = { value: title, source: "url_parse", retrievedAt: new Date().toISOString() };
-      provenance.creator = { value: username, source: "url_parse", retrievedAt: new Date().toISOString() };
-
+      return {
+        contentId: sourceData.contentId,
+        platform: "instagram",
+        contentType: sourceData.contentType,
+        url,
+        canonicalUrl: sourceData.canonicalUrl,
+        title: sourceData.title,
+        creator: sourceData.creator,
+        description: sourceData.description || sourceData.caption || "",
+        thumbnail: sourceData.thumbnailUrl,
+        metadata: {
+          domain: "instagram.com",
+          publishedAt: sourceData.publishedAt,
+          likes: sourceData.likeCount,
+          comments: sourceData.commentCount,
+        },
+        suggestedTags: sourceData.contentType === "reel" ? ["Instagram", "Reel"] : ["Instagram", "Post"],
+        suggestedCollectionName: "UI Inspiration",
+        status: sourceData.isRestricted ? "METADATA_ONLY" : "FULL_CONTENT",
+        isLimited: sourceData.isRestricted,
+        limitedReason: sourceData.restrictionReason,
+        provenance: sourceData.provenance,
+      };
+    } catch {
+      // Fallback
+      const { code, isReel, canonicalUrl } = extractInstagramDetails(url);
+      const id = contentId || code;
+      const thumbnail = this.getThumbnail(url, id);
       return {
         contentId: id,
         platform: "instagram",
-        contentType,
+        contentType: isReel ? "reel" : "post",
         url,
         canonicalUrl,
-        title,
+        title: id ? `Instagram ${isReel ? "Reel" : "Post"} • ${id}` : "Instagram Post",
         creator: {
-          name: `@${username}`,
-          handle: `@${username}`,
+          name: "Instagram Creator",
           avatar: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&auto=format&fit=crop&q=80",
           verified: false,
         },
-        description: `Instagram ${isReel ? "Reel" : "Post"} from @${username} (${id || "post"}).`,
+        description: `Instagram ${isReel ? "Reel" : "post"} (${id}) saved to Keeper.`,
         thumbnail,
-        metadata: {
-          domain,
-          publishedAt: undefined,
-        },
+        metadata: { domain: "instagram.com" },
         suggestedTags: isReel ? ["Instagram", "Reel"] : ["Instagram", "Post"],
         suggestedCollectionName: "UI Inspiration",
-        status: "PARTIAL_CONTENT",
+        status: "METADATA_ONLY",
         isLimited: true,
-        limitedReason: "Instagram requires login for full caption and audio transcript",
-        provenance,
+        limitedReason: "Instagram content restricted by platform",
+        provenance: {
+          title: { value: "Instagram Post", source: "url_parse", retrievedAt: new Date().toISOString() },
+        },
       };
     }
-
-    // Never display fake "@instagram_user" or "Instagram Creator"!
-    const title = id
-      ? (isReel ? `Instagram Reel • ${id}` : `Instagram Post • ${id}`)
-      : "Instagram Post";
-
-    provenance.title = { value: title, source: "url_parse", retrievedAt: new Date().toISOString() };
-    provenance.creator = { value: "Instagram User", source: "restricted_platform", retrievedAt: new Date().toISOString() };
-
-    return {
-      contentId: id,
-      platform: "instagram",
-      contentType,
-      url,
-      canonicalUrl,
-      title,
-      creator: {
-        name: "Instagram User",
-        handle: undefined, // Honest: no fabricated handle
-        avatar: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&auto=format&fit=crop&q=80",
-        verified: false,
-      },
-      description: id
-        ? `Instagram ${isReel ? "Reel" : "post"} (${id}) saved to Recall.`
-        : "Instagram content saved to Recall.",
-      thumbnail,
-      metadata: {
-        domain,
-        publishedAt: undefined,
-      },
-      suggestedTags: isReel ? ["Instagram", "Reel"] : ["Instagram", "Post"],
-      suggestedCollectionName: "UI Inspiration",
-      status: "METADATA_ONLY",
-      isLimited: true,
-      limitedReason: "Instagram requires authentication to view creator profile and full caption",
-      provenance,
-    };
   }
 
   async extractContent(url: string, contentId?: string | null): Promise<ExtractedContent> {
@@ -752,11 +740,30 @@ export function extractRedditDetails(url: string): {
 } {
   try {
     const trimmed = url.trim();
-    const match = trimmed.match(/reddit\.com\/r\/([a-zA-Z0-9_\-]+)\/comments\/([a-zA-Z0-9_\-]+)(?:\/([a-zA-Z0-9_\-]+))?/i);
-    if (match) {
-      const subreddit = match[1];
-      const postId = match[2];
-      const slug = match[3] || null;
+    const urlObj = new URL(trimmed.startsWith("http") ? trimmed : `https://${trimmed}`);
+    const pathname = urlObj.pathname;
+    const hostname = urlObj.hostname.toLowerCase().replace(/^(?:www\.|m\.|old\.|new\.|np\.)/, "");
+
+    if (hostname === "redd.it") {
+      const shortMatch = pathname.match(/^\/([a-zA-Z0-9_\-]+)/);
+      if (shortMatch) {
+        const postId = shortMatch[1];
+        return {
+          subreddit: null,
+          postId,
+          slug: null,
+          canonicalUrl: `https://redd.it/${postId}`,
+        };
+      }
+    }
+
+    const standardMatch = pathname.match(
+      /^\/r\/([a-zA-Z0-9_\-]+)\/comments\/([a-zA-Z0-9_\-]+)(?:\/([a-zA-Z0-9_\-]+))?/i
+    );
+    if (standardMatch) {
+      const subreddit = standardMatch[1];
+      const postId = standardMatch[2];
+      const slug = standardMatch[3] || null;
       return {
         subreddit,
         postId,
@@ -764,15 +771,28 @@ export function extractRedditDetails(url: string): {
         canonicalUrl: `https://www.reddit.com/r/${subreddit}/comments/${postId}`,
       };
     }
-    const shortMatch = trimmed.match(/redd\.it\/([a-zA-Z0-9_\-]+)/i);
-    if (shortMatch) {
+
+    const shareMatch = pathname.match(/^\/r\/([a-zA-Z0-9_\-]+)\/s\/([a-zA-Z0-9_\-]+)/i);
+    if (shareMatch) {
       return {
-        subreddit: null,
-        postId: shortMatch[1],
+        subreddit: shareMatch[1],
+        postId: shareMatch[2],
         slug: null,
-        canonicalUrl: `https://redd.it/${shortMatch[1]}`,
+        canonicalUrl: `https://www.reddit.com/r/${shareMatch[1]}/s/${shareMatch[2]}`,
       };
     }
+
+    const directCommentsMatch = pathname.match(/^\/comments\/([a-zA-Z0-9_\-]+)/i);
+    if (directCommentsMatch) {
+      const postId = directCommentsMatch[1];
+      return {
+        subreddit: null,
+        postId,
+        slug: null,
+        canonicalUrl: `https://www.reddit.com/comments/${postId}`,
+      };
+    }
+
     return { subreddit: null, postId: null, slug: null, canonicalUrl: trimmed };
   } catch {
     return { subreddit: null, postId: null, slug: null, canonicalUrl: url };
@@ -805,214 +825,108 @@ export class RedditProvider extends BasePlatformProvider {
   }
 
   async fetchMetadata(url: string, contentId?: string | null): Promise<VerifiedSourceMetadata> {
-    const { subreddit, postId, slug, canonicalUrl } = extractRedditDetails(url);
-    const id = contentId || postId;
-    let thumbnail = this.getThumbnail(url, id);
-    const domain = "reddit.com";
-
-    const provenance: Record<string, FieldProvenance> = {
-      thumbnail: { value: thumbnail, source: "platform_preview", retrievedAt: new Date().toISOString() },
-    };
-
-    // 1. Primary Strategy: Try Reddit public .json API for full post data (body, real author, timestamp, score)
-    let redditPostData: {
-      title?: string;
-      author?: string;
-      selftext?: string;
-      created_utc?: number;
-      subreddit?: string;
-      ups?: number;
-      score?: number;
-      num_comments?: number;
-      thumbnail?: string;
-      url?: string;
-      link_flair_text?: string;
-    } | null = null;
-
-    if (id) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2400);
-        const jsonEndpoint = subreddit
-          ? `https://www.reddit.com/r/${subreddit}/comments/${id}.json`
-          : `https://www.reddit.com/comments/${id}.json`;
-        const res = await fetch(jsonEndpoint, {
-          signal: controller.signal,
-          headers: { Accept: "application/json" },
-        });
-        clearTimeout(timeoutId);
-        if (res.ok) {
-          const json = await res.json();
-          if (Array.isArray(json) && json[0]?.data?.children?.[0]?.data) {
-            redditPostData = json[0].data.children[0].data;
-          }
-        }
-      } catch {
-        // Proceed to oEmbed fallback
-      }
-    }
-
-    if (redditPostData && redditPostData.title) {
-      const realSubreddit = redditPostData.subreddit || subreddit || "reddit";
-      const author = redditPostData.author
-        ? (redditPostData.author.startsWith("u/") ? redditPostData.author : `u/${redditPostData.author}`)
-        : `r/${realSubreddit}`;
-
-      const rawBody = (redditPostData.selftext || "").trim();
-      const realPublishedAt = redditPostData.created_utc
-        ? new Date(redditPostData.created_utc * 1000).toISOString().split("T")[0]
-        : undefined;
-
-      const upvotes = redditPostData.ups !== undefined ? String(redditPostData.ups) : (redditPostData.score !== undefined ? String(redditPostData.score) : undefined);
-      const comments = redditPostData.num_comments !== undefined ? String(redditPostData.num_comments) : undefined;
-
-      if (redditPostData.thumbnail && redditPostData.thumbnail.startsWith("http")) {
-        thumbnail = redditPostData.thumbnail;
-      }
-
-      provenance.title = { value: redditPostData.title, source: "reddit_api", retrievedAt: new Date().toISOString() };
-      provenance.creator = { value: author, source: "reddit_api", retrievedAt: new Date().toISOString() };
-      if (rawBody) {
-        provenance.body = { value: rawBody.slice(0, 100) + "...", source: "reddit_api", retrievedAt: new Date().toISOString() };
-      }
-      if (realPublishedAt) {
-        provenance.publishedAt = { value: realPublishedAt, source: "reddit_api", retrievedAt: new Date().toISOString() };
-      }
-
-      return {
-        contentId: id,
-        platform: "reddit",
-        contentType: "post",
-        url,
-        canonicalUrl,
-        title: redditPostData.title,
-        creator: {
-          name: author,
-          handle: author,
-          avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80",
-          verified: false,
-        },
-        description: rawBody || `Reddit discussion in r/${realSubreddit}: ${redditPostData.title}`,
-        thumbnail,
-        metadata: {
-          domain,
-          publishedAt: realPublishedAt,
-          upvotes,
-          comments,
-          authorUrl: redditPostData.author ? `https://www.reddit.com/user/${redditPostData.author}` : undefined,
-        },
-        suggestedTags: [realSubreddit, "Reddit", "Discussion"],
-        suggestedCollectionName: "Business Ideas",
-        status: rawBody ? "FULL_CONTENT" : "PARTIAL_CONTENT",
-        isLimited: false,
-        provenance,
-      };
-    }
-
-    // 2. Secondary Strategy: Try fetching Reddit oEmbed metadata
-    let oEmbedData: { title?: string; author_name?: string; author_url?: string } | null = null;
+    const { RedditProvider: ModularRedditProvider } = await import("./providers/reddit-provider");
+    const modular = new ModularRedditProvider();
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 1800);
-      const res = await fetch(
-        `https://www.reddit.com/oembed?url=${encodeURIComponent(canonicalUrl)}`,
-        { signal: controller.signal }
-      );
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        oEmbedData = await res.json();
-      }
-    } catch {
-      // offline / blocked
-    }
-
-    if (oEmbedData && oEmbedData.title) {
-      const author = oEmbedData.author_name ? `u/${oEmbedData.author_name}` : (subreddit ? `r/${subreddit}` : "Reddit User");
-      provenance.title = { value: oEmbedData.title, source: "reddit_oembed", retrievedAt: new Date().toISOString() };
-      provenance.creator = { value: author, source: "reddit_oembed", retrievedAt: new Date().toISOString() };
+      const sourceData = await modular.fetchAuthoritativeData(url);
+      const rawMeta = sourceData.rawPlatformMetadata || {};
+      const subreddit = rawMeta.subreddit || extractRedditDetails(url).subreddit;
+      const isRailways = subreddit?.toLowerCase().includes("railway") || sourceData.title?.toLowerCase().includes("railway");
 
       return {
-        contentId: id,
+        contentId: sourceData.contentId,
         platform: "reddit",
-        contentType: "post",
+        contentType: sourceData.contentType,
         url,
-        canonicalUrl,
-        title: oEmbedData.title,
-        creator: {
-          name: author,
-          handle: author,
-          avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80",
-          verified: false,
-        },
-        description: `Reddit discussion in ${subreddit ? `r/${subreddit}` : "community"}: ${oEmbedData.title}`,
-        thumbnail,
+        canonicalUrl: sourceData.canonicalUrl,
+        title: sourceData.title,
+        creator: sourceData.creator,
+        community: sourceData.community,
+        description: sourceData.description || sourceData.bodyText || "",
+        thumbnail: sourceData.thumbnailUrl,
         metadata: {
-          domain,
-          publishedAt: undefined, // oEmbed does not expose dates; never fabricate today's date
-          authorUrl: oEmbedData.author_url,
+          domain: "reddit.com",
+          publishedAt: sourceData.publishedAt,
+          likes: sourceData.likeCount,
+          comments: sourceData.commentCount,
+          upvotes: sourceData.likeCount,
         },
         suggestedTags: subreddit ? [subreddit, "Reddit", "Discussion"] : ["Reddit", "Discussion"],
-        suggestedCollectionName: "Business Ideas",
-        status: "PARTIAL_CONTENT",
-        isLimited: false,
-        provenance,
+        suggestedCollectionName: isRailways ? "Travel" : "Inspiration",
+        status: sourceData.isRestricted ? "METADATA_ONLY" : (sourceData.bodyText ? "FULL_CONTENT" : "PARTIAL_CONTENT"),
+        isLimited: sourceData.isRestricted,
+        limitedReason: sourceData.restrictionReason,
+        provenance: sourceData.provenance,
       };
-    }
+    } catch {
+      // Offline fallback
+      const { subreddit, postId, slug, canonicalUrl } = extractRedditDetails(url);
+      const id = contentId || postId;
+      const thumbnail = this.getThumbnail(url, id);
+      const title = slug ? formatSlugToTitle(slug) : (subreddit ? `Discussion on r/${subreddit}` : (id ? `Reddit Post • ${id}` : "Reddit Post"));
+      const author = subreddit ? `r/${subreddit}` : "Reddit User";
+      const cleanSub = (subreddit || "reddit").replace(/^r\//i, "").toLowerCase();
+      const cleanAuthor = author.replace(/^u\//i, "");
 
-    // 3. Fallback using URL slug
-    let title: string;
-    if (slug) {
-      title = formatSlugToTitle(slug);
-    } else if (subreddit) {
-      title = `Discussion on r/${subreddit}`;
-    } else if (id) {
-      title = `Reddit Post • ${id}`;
-    } else {
-      title = "Reddit Community Discussion";
-    }
+      const community: Community = {
+        id: null,
+        name: cleanSub,
+        displayName: `r/${cleanSub}`,
+        url: `https://www.reddit.com/r/${cleanSub}`,
+      };
 
-    const creatorName = subreddit ? `r/${subreddit}` : "Reddit Community";
-    provenance.title = { value: title, source: "url_parse", retrievedAt: new Date().toISOString() };
-    provenance.creator = { value: creatorName, source: "url_parse", retrievedAt: new Date().toISOString() };
-
-    return {
-      contentId: id,
-      platform: "reddit",
-      contentType: "post",
-      url,
-      canonicalUrl,
-      title,
-      creator: {
-        name: creatorName,
-        handle: subreddit ? `r/${subreddit}` : undefined,
+      const creator: Creator = {
+        name: cleanAuthor,
+        username: cleanAuthor,
+        displayName: cleanAuthor,
+        source: "reddit",
         avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80",
         verified: false,
-      },
-      description: `Community post on Reddit ${subreddit ? `in r/${subreddit}` : ""}: ${title}.`,
-      thumbnail,
-      metadata: {
-        domain,
-        publishedAt: undefined,
-      },
-      suggestedTags: subreddit ? [subreddit, "Reddit", "Discussion"] : ["Reddit", "Discussion"],
-      suggestedCollectionName: "Business Ideas",
-      status: slug ? "PARTIAL_CONTENT" : "METADATA_ONLY",
-      isLimited: !slug,
-      limitedReason: !slug ? "Reddit post body requires network access" : undefined,
-      provenance,
-    };
+      };
+
+      return {
+        contentId: id,
+        platform: "reddit",
+        contentType: "post",
+        url,
+        canonicalUrl,
+        title,
+        creator,
+        community,
+        description: `Reddit discussion in r/${cleanSub}: ${title}`,
+        thumbnail,
+        metadata: { domain: "reddit.com" },
+        suggestedTags: subreddit ? [subreddit, "Reddit"] : ["Reddit"],
+        suggestedCollectionName: subreddit?.toLowerCase().includes("railway") ? "Travel" : "Inspiration",
+        status: "METADATA_ONLY",
+        isLimited: true,
+        limitedReason: "Reddit network access restricted",
+        provenance: {
+          title: { value: title, source: "url_parse", retrievedAt: new Date().toISOString() },
+        },
+      };
+    }
   }
 
   async extractContent(url: string, contentId?: string | null): Promise<ExtractedContent> {
     const meta = await this.fetchMetadata(url, contentId);
     const { subreddit } = extractRedditDetails(url);
+    const canonicalSub = (meta.community?.name || subreddit || "reddit").replace(/^r\//i, "").toLowerCase();
+    const community = meta.community || {
+      id: null,
+      name: canonicalSub,
+      displayName: `r/${canonicalSub}`,
+      url: `https://www.reddit.com/r/${canonicalSub}`,
+    };
+
     return {
       ...meta,
+      community,
+      subreddit: canonicalSub,
       bodyText: meta.description || null,
       caption: null,
       transcript: null,
-      hashtags: [],
-      subreddit: subreddit || undefined,
+      hashtags: meta.suggestedTags || [],
     };
   }
 }
@@ -1157,7 +1071,7 @@ export function extractTwitterDetails(url: string): {
 }
 
 export class TwitterProvider extends BasePlatformProvider {
-  platform: Platform = "twitter";
+  platform: Platform = "x";
 
   detect(url: string): boolean {
     return /twitter\.com|x\.com/i.test(url);
@@ -1272,8 +1186,12 @@ export class TwitterProvider extends BasePlatformProvider {
         creator: {
           name: authorName,
           handle: authorHandle,
+          username: (authorHandle || username || "").replace(/^@/, ""),
+          displayName: authorName,
+          profileUrl: authorHandle ? `https://x.com/${authorHandle.replace(/^@/, "")}` : undefined,
           avatar: "https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?w=100&auto=format&fit=crop&q=80",
           verified: true,
+          source: "x",
         },
         description: postText || `X (Twitter) post by ${authorName}.`,
         thumbnail,
@@ -1297,16 +1215,20 @@ export class TwitterProvider extends BasePlatformProvider {
 
     return {
       contentId: id,
-      platform: "twitter",
+      platform: "x",
       contentType: "post",
       url,
       canonicalUrl,
       title,
       creator: {
-        name: username ? `@${username}` : "X User",
+        name: username || "X User",
         handle: username ? `@${username}` : undefined,
+        username: username || "x_user",
+        displayName: username || "X User",
+        profileUrl: username ? `https://x.com/${username}` : undefined,
         avatar: "https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?w=100&auto=format&fit=crop&q=80",
         verified: false,
+        source: "x",
       },
       description: username ? `Post shared by @${username} on X.` : "Post shared on X (Twitter).",
       thumbnail,
@@ -1781,7 +1703,7 @@ export class ProviderService {
     if (cleanUrl.includes("instagram.com") || cleanUrl.includes("instagr.am")) return "instagram";
     if (cleanUrl.includes("reddit.com") || cleanUrl.includes("redd.it")) return "reddit";
     if (cleanUrl.includes("linkedin.com")) return "linkedin";
-    if (cleanUrl.includes("twitter.com") || cleanUrl.includes("x.com")) return "twitter";
+    if (cleanUrl.includes("twitter.com") || cleanUrl.includes("x.com")) return "x";
     if (cleanUrl.includes("tiktok.com")) return "tiktok";
     if (cleanUrl.includes("pinterest.com") || cleanUrl.includes("pin.it")) return "pinterest";
     if (cleanUrl.includes("facebook.com") || cleanUrl.includes("fb.watch") || cleanUrl.includes("fb.com")) return "facebook";
@@ -1789,6 +1711,10 @@ export class ProviderService {
     if (cleanUrl.includes("github.com")) return "github";
     if (cleanUrl.includes("medium.com") || cleanUrl.includes("dev.to") || cleanUrl.includes("substack.com") || cleanUrl.includes("blog")) return "blog";
     return "website";
+  }
+
+  static identifyPlatform(url: string): Platform {
+    return this.detectPlatform(url);
   }
 
   static extractYouTubeVideoId(url: string): string | null {
@@ -1850,7 +1776,7 @@ export class ProviderService {
       };
     }
 
-    if (platform === "twitter") {
+    if (platform === "twitter" || platform === "x") {
       const { statusId, canonicalUrl } = extractTwitterDetails(trimmed);
       return {
         platform,

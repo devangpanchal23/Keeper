@@ -8,6 +8,10 @@ import { PlatformBadge } from "@/components/common/PlatformBadge";
 import { ContentTypeBadge } from "@/components/common/ContentTypeBadge";
 import { formatDate } from "@/lib/utils";
 import {
+  INSTAGRAM_REEL_PLACEHOLDER,
+  INSTAGRAM_POST_PLACEHOLDER,
+} from "@/services/media/instagram-placeholders";
+import {
   Star,
   MoreVertical,
   ExternalLink,
@@ -18,13 +22,22 @@ import {
   Trash2,
   Folder,
   Sparkles,
+  Check,
 } from "lucide-react";
 
-interface SaveItemCardProps {
+export interface SaveItemCardProps {
   item: SavedItem;
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
 }
 
-export const SaveItemCard: React.FC<SaveItemCardProps> = ({ item }) => {
+export const SaveItemCard: React.FC<SaveItemCardProps> = ({
+  item,
+  selectable = false,
+  selected = false,
+  onToggleSelect,
+}) => {
   const {
     collections,
     toggleFavorite,
@@ -42,14 +55,52 @@ export const SaveItemCard: React.FC<SaveItemCardProps> = ({ item }) => {
   const collection = collections.find((c) => c.id === item.collectionId);
 
   const handleCardClick = () => {
+    if (selectable && onToggleSelect) {
+      onToggleSelect();
+      return;
+    }
     recordView(item.id);
   };
 
   return (
     <div
       onClick={handleCardClick}
-      className="group relative flex flex-col rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 hover:bg-zinc-50/50 dark:hover:bg-zinc-900/90 shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden glow-card"
+      className={`group relative flex flex-col rounded-2xl border bg-white dark:bg-zinc-900/60 shadow-sm transition-all duration-300 overflow-hidden glow-card ${
+        selectable
+          ? selected
+            ? "border-rose-500/80 ring-2 ring-rose-500/80 shadow-rose-500/10 cursor-pointer"
+            : "border-zinc-200/80 dark:border-zinc-800/80 hover:border-zinc-400 dark:hover:border-zinc-600 cursor-pointer"
+          : "border-zinc-200/80 dark:border-zinc-800/80 hover:bg-zinc-50/50 dark:hover:bg-zinc-900/90 hover:shadow-xl"
+      }`}
     >
+      {/* Selection Checkbox (if selectable mode is on) */}
+      {selectable && (
+        <div
+          role="checkbox"
+          aria-checked={selected}
+          tabIndex={0}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleSelect?.();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === " " || e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              onToggleSelect?.();
+            }
+          }}
+          className={`absolute top-2.5 left-2.5 z-20 w-6 h-6 rounded-lg flex items-center justify-center transition-all cursor-pointer shadow-md ${
+            selected
+              ? "bg-rose-600 text-white ring-2 ring-white dark:ring-zinc-900"
+              : "bg-black/60 text-transparent border border-white/60 hover:bg-black/80"
+          }`}
+          aria-label={`Select ${item.title}`}
+        >
+          <Check className={`w-3.5 h-3.5 ${selected ? "opacity-100" : "opacity-0"}`} />
+        </div>
+      )}
+
       {/* Thumbnail & Badges Container */}
       <div className="relative w-full h-44 bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
         {item.thumbnail ? (
@@ -57,6 +108,16 @@ export const SaveItemCard: React.FC<SaveItemCardProps> = ({ item }) => {
           <img
             src={item.thumbnail}
             alt={item.title}
+            onError={(e) => {
+              const target = e.currentTarget;
+              if (!target.dataset.fallback) {
+                target.dataset.fallback = "true";
+                target.src =
+                  item.platform === "instagram"
+                    ? (item.contentType === "reel" ? INSTAGRAM_REEL_PLACEHOLDER : INSTAGRAM_POST_PLACEHOLDER)
+                    : "https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=800&auto=format&fit=crop&q=80";
+              }
+            }}
             className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
             loading="lazy"
           />
@@ -67,14 +128,14 @@ export const SaveItemCard: React.FC<SaveItemCardProps> = ({ item }) => {
         )}
 
         {/* Top Overlay Badges */}
-        <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between pointer-events-none">
-          <div className="flex items-center gap-1.5 pointer-events-auto">
+        <div className={`absolute top-2.5 right-2.5 flex items-center justify-between gap-1 pointer-events-none ${selectable ? "left-10" : "left-2.5"}`}>
+          <div className="flex flex-wrap items-center gap-1 pointer-events-auto min-w-0 pr-1">
             <PlatformBadge platform={item.platform} />
             <ContentTypeBadge type={item.contentType} />
           </div>
 
           {/* Quick Actions (Favorite) */}
-          <div className="flex items-center gap-1 pointer-events-auto">
+          <div className="flex items-center gap-1 pointer-events-auto shrink-0">
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -130,7 +191,20 @@ export const SaveItemCard: React.FC<SaveItemCardProps> = ({ item }) => {
                 />
               )}
               <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400 truncate">
-                {item.creator.name}
+                {item.platform === "reddit"
+                  ? item.creator.status === "deleted" || !item.creator.username
+                    ? "Deleted user"
+                    : `u/${(item.creator.username || item.creator.name).replace(/^u\//i, "")}`
+                  : item.platform === "x" || item.platform === "twitter"
+                  ? (() => {
+                      const name = item.creator.displayName || item.creator.name || "";
+                      const user = (item.creator.username || "").replace(/^@/, "").trim();
+                      if (user && !name.includes(`@${user}`)) {
+                        return `${name} (@${user})`;
+                      }
+                      return name;
+                    })()
+                  : (item.creator.displayName || item.creator.name)}
               </span>
               {item.isLimited && (
                 <span className="shrink-0 px-1.5 py-0.2 rounded text-[9px] font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20" title="Limited content available">

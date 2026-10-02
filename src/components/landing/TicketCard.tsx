@@ -35,7 +35,7 @@ export function TicketCard({
         backgroundColor: color,
         transform: `rotate(${rotation}deg)`,
       }}
-      className={`relative p-7 sm:p-9 text-white rounded-2xl border-2 border-[#111111] shadow-[0_12px_24px_rgba(0,0,0,0.18)] transition-all duration-300 hover:rotate-0 hover:scale-[1.02] hover:shadow-[0_16px_32px_rgba(0,0,0,0.25)] ${notchClass} ${className}`}
+      className={`relative p-5 sm:p-9 text-white rounded-2xl border-2 border-[#111111] shadow-[0_12px_24px_rgba(0,0,0,0.18)] transition-all duration-300 hover:rotate-0 hover:scale-[1.02] hover:shadow-[0_16px_32px_rgba(0,0,0,0.25)] ${notchClass} ${className}`}
     >
       {/* Decorative Ticket Punch Hole Ring */}
       <div

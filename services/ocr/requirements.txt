@@ -1,0 +1,4 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+pillow>=11,<12
+pytesseract>=0.3.13,<1

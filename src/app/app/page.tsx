@@ -55,8 +55,8 @@ export default function DashboardPage() {
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8">
       {/* Top Greeting & Quick Actions */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-zinc-900 dark:text-zinc-100">
+        <div className="min-w-0">
+          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-zinc-900 dark:text-zinc-100 truncate">
             Workspace Overview
           </h1>
           <p className="text-xs sm:text-sm text-zinc-500 dark:text-zinc-400 mt-1">
@@ -64,44 +64,44 @@ export default function DashboardPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
           <Link
             href="/app/ai-assistant"
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-medium border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-200 transition-colors shadow-2xs"
+            className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-2 px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-200 transition-colors shadow-2xs whitespace-nowrap"
           >
-            <Brain className="w-4 h-4 text-purple-500" />
+            <Brain className="w-4 h-4 text-purple-500 shrink-0" />
             Ask AI Assistant
           </Link>
 
           <button
             onClick={() => openAddContent()}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/20 transition-all hover:scale-105 active:scale-95"
+            className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-2 px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/20 transition-all hover:scale-105 active:scale-95 whitespace-nowrap"
           >
-            <Plus className="w-4 h-4" />
+            <Plus className="w-4 h-4 shrink-0" />
             + Add Content
           </button>
         </div>
       </div>
 
       {/* 4 Stat Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
         {/* Total Saves */}
         <Link
           href="/app/library"
-          className="p-4 sm:p-5 rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs hover:border-indigo-500/40 hover:shadow-md transition-all group"
+          className="p-3.5 sm:p-5 rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs hover:border-indigo-500/40 hover:shadow-md transition-all group"
         >
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
               Total Saves
             </span>
-            <div className="w-8 h-8 rounded-xl bg-blue-500/10 text-blue-500 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-xl bg-blue-500/10 text-blue-500 flex items-center justify-center shrink-0">
               <Bookmark className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-3 text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-zinc-100">
+          <div className="mt-2.5 sm:mt-3 text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-zinc-100">
             {activeItems.length}
           </div>
-          <span className="text-[11px] text-zinc-400 mt-1 block">
+          <span className="text-[11px] text-zinc-400 mt-1 block truncate">
             Across 10 platforms
           </span>
         </Link>
@@ -109,20 +109,20 @@ export default function DashboardPage() {
         {/* Collections */}
         <Link
           href="/app/collections"
-          className="p-4 sm:p-5 rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs hover:border-emerald-500/40 hover:shadow-md transition-all group"
+          className="p-3.5 sm:p-5 rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs hover:border-emerald-500/40 hover:shadow-md transition-all group"
         >
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
               Collections
             </span>
-            <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center shrink-0">
               <Folder className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-3 text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-zinc-100">
+          <div className="mt-2.5 sm:mt-3 text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-zinc-100">
             {collections.length}
           </div>
-          <span className="text-[11px] text-zinc-400 mt-1 block">
+          <span className="text-[11px] text-zinc-400 mt-1 block truncate">
             Curated categories
           </span>
         </Link>
@@ -130,20 +130,20 @@ export default function DashboardPage() {
         {/* Favorites */}
         <Link
           href="/app/favorites"
-          className="p-4 sm:p-5 rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs hover:border-amber-500/40 hover:shadow-md transition-all group"
+          className="p-3.5 sm:p-5 rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs hover:border-amber-500/40 hover:shadow-md transition-all group"
         >
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
               Favorites
             </span>
-            <div className="w-8 h-8 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center shrink-0">
               <Star className="w-4 h-4 fill-current" />
             </div>
           </div>
-          <div className="mt-3 text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-zinc-100">
+          <div className="mt-2.5 sm:mt-3 text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-zinc-100">
             {favoriteItems.length}
           </div>
-          <span className="text-[11px] text-zinc-400 mt-1 block">
+          <span className="text-[11px] text-zinc-400 mt-1 block truncate">
             {insights.favoriteRatio} of your library
           </span>
         </Link>
@@ -151,20 +151,20 @@ export default function DashboardPage() {
         {/* AI Processed */}
         <Link
           href="/app/ai-assistant"
-          className="p-4 sm:p-5 rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs hover:border-purple-500/40 hover:shadow-md transition-all group"
+          className="p-3.5 sm:p-5 rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs hover:border-purple-500/40 hover:shadow-md transition-all group"
         >
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
               AI Processed
             </span>
-            <div className="w-8 h-8 rounded-xl bg-purple-500/10 text-purple-500 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-xl bg-purple-500/10 text-purple-500 flex items-center justify-center shrink-0">
               <Sparkles className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-3 text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-zinc-100">
+          <div className="mt-2.5 sm:mt-3 text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-zinc-100">
             {aiProcessedCount}
           </div>
-          <span className="text-[11px] text-zinc-400 mt-1 block">
+          <span className="text-[11px] text-zinc-400 mt-1 block truncate">
             100% indexed with summaries
           </span>
         </Link>
@@ -176,7 +176,7 @@ export default function DashboardPage() {
           <div className="space-y-1.5 max-w-2xl">
             <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-500 dark:text-indigo-400 border border-indigo-500/20">
               <Sparkles className="w-3 h-3" />
-              Recall Intelligence
+              Keeper Intelligence
             </div>
             <h3 className="text-base sm:text-lg font-bold text-zinc-900 dark:text-zinc-100">
               AI Knowledge Graph Highlight

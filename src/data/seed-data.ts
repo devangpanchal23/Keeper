@@ -1,11 +1,15 @@
 import { Collection, SavedItem, User } from "@/types";
+import {
+  INSTAGRAM_REEL_PLACEHOLDER,
+  INSTAGRAM_POST_PLACEHOLDER,
+} from "@/services/media/instagram-placeholders";
 
 export const INITIAL_USER: User = {
   id: "user-1",
   name: "Devang Patel",
   email: "devang@recall.ai",
   avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
-  tier: "pro",
+  tier: "free",
   joinedDate: "2024-01-15T00:00:00.000Z",
   settings: {
     theme: "dark",
@@ -206,7 +210,7 @@ export const INITIAL_SAVED_ITEMS: SavedItem[] = [
     id: "save-3",
     title: "Sleek Button Hover States with Framer Motion & CSS Variables",
     url: "https://instagram.com/reel/C3x90ZaLkPq",
-    thumbnail: "https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=800&auto=format&fit=crop&q=80",
+    thumbnail: INSTAGRAM_REEL_PLACEHOLDER,
     platform: "instagram",
     contentType: "reel",
     creator: {
@@ -811,7 +815,7 @@ export const INITIAL_SAVED_ITEMS: SavedItem[] = [
     id: "save-17",
     title: "Cinematic Moody Green & Teal Color Grade in Lightroom Mobile",
     url: "https://instagram.com/p/C4m092aQx8y",
-    thumbnail: "https://images.unsplash.com/photo-1511497584788-87676104235f?w=800&auto=format&fit=crop&q=80",
+    thumbnail: INSTAGRAM_POST_PLACEHOLDER,
     platform: "instagram",
     contentType: "post",
     creator: {

@@ -11,7 +11,7 @@ export default function NotFoundPage() {
   return (
     <div className="min-h-screen bg-[#F7F5EE] bg-dot-grid text-[#111111] flex flex-col items-center justify-center p-4 sm:p-8 font-krackerz-body select-none">
       {/* Central Ticket Card Container */}
-      <div className="relative max-w-lg w-full bg-white border-3 border-[#111111] rounded-3xl p-8 sm:p-12 shadow-[0_16px_36px_rgba(17,17,17,0.18)] text-center ticket-notch-tr">
+      <div className="relative max-w-lg w-full bg-white border-3 border-[#111111] rounded-3xl p-5 sm:p-12 shadow-[0_16px_36px_rgba(17,17,17,0.18)] text-center ticket-notch-tr">
         {/* Decorative Ticket Punch Hole */}
         <div className="absolute top-3 right-3 w-8 h-8 rounded-full border border-dashed border-[#111111]/30 pointer-events-none" />
 

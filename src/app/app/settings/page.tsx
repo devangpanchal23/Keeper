@@ -3,8 +3,9 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { useRecall } from "@/context/RecallContext";
-import { formatDate } from "@/lib/utils";
+import { getPlanLabel } from "@/lib/user-plan";
 import { StorageService } from "@/services/storage-service";
+import { formatDate } from "@/lib/utils";
 import {
   Settings,
   Sun,
@@ -17,6 +18,7 @@ import {
   Check,
   RefreshCw,
   ShieldCheck,
+  Zap,
 } from "lucide-react";
 
 export default function SettingsPage() {
@@ -29,6 +31,7 @@ export default function SettingsPage() {
     collections,
     reprocessAllItems,
     addToast,
+    importLimits,
   } = useRecall();
 
   const [summaryMode, setSummaryMode] = useState<"quick" | "standard" | "detailed">(
@@ -74,7 +77,7 @@ export default function SettingsPage() {
   };
 
   const handleResetData = () => {
-    if (confirm("Reset prototype to default demo data with 30+ seed items?")) {
+    if (confirm("Restore the sample library? This replaces your saved items and collections. Your plan and purchased credits will remain unchanged.")) {
       resetDemoData();
     }
   };
@@ -144,7 +147,7 @@ export default function SettingsPage() {
                 {user.name}
               </h3>
               <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-indigo-500/10 text-indigo-500 border border-indigo-500/20">
-                {user.tier} Plan
+                {getPlanLabel(user.tier)} Plan
               </span>
             </div>
             <p className="text-xs text-zinc-500 dark:text-zinc-400">{user.email}</p>
@@ -340,8 +343,73 @@ export default function SettingsPage() {
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 transition-colors"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            Reset to 30+ Seed Items
+            Restore Sample Library
           </button>
+        </div>
+      </div>
+
+      {/* Import Limits & Quota Management */}
+      <div className="p-6 rounded-3xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Zap className="w-4 h-4 text-indigo-500" />
+            <h2 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">
+              Import Limits &amp; Allocation
+            </h2>
+          </div>
+          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
+            {importLimits?.remaining ?? 0} Left
+          </span>
+        </div>
+
+        <p className="text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed">
+          Each imported video, Reel, post, or link deducts exactly 1 limit from your allocation. When remaining limits reach 0, further imports are suspended.
+        </p>
+
+        {/* Quota Flow Breakdown: Total -> Used -> Remaining */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+          <div className="p-3.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-100 dark:border-zinc-800 text-center">
+            <span className="text-zinc-400 block text-[11px] uppercase font-bold">Total Limit</span>
+            <span className="font-bold text-lg text-zinc-900 dark:text-zinc-100 mt-0.5 block">
+              {importLimits?.total ?? 10}
+            </span>
+          </div>
+          <div className="p-3.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-100 dark:border-zinc-800 text-center">
+            <span className="text-zinc-400 block text-[11px] uppercase font-bold">Used Imports</span>
+            <span className="font-bold text-lg text-indigo-600 dark:text-indigo-400 mt-0.5 block">
+              {importLimits?.used ?? 2}
+            </span>
+          </div>
+          <div className="p-3.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-100 dark:border-zinc-800 text-center">
+            <span className="text-zinc-400 block text-[11px] uppercase font-bold">Remaining</span>
+            <span className={`font-bold text-lg mt-0.5 block ${(importLimits?.remaining ?? 0) <= 0 ? "text-rose-600" : "text-emerald-600 dark:text-emerald-400"}`}>
+              {importLimits?.remaining ?? 8}
+            </span>
+          </div>
+        </div>
+
+        {/* Progress Bar */}
+        <div className="space-y-1.5 pt-1">
+          <div className="flex justify-between text-[11px] text-zinc-500">
+            <span>Quota Usage</span>
+            <span className="font-medium text-zinc-700 dark:text-zinc-300">
+              {Math.min(100, Math.round(((importLimits?.used ?? 0) / Math.max(1, importLimits?.total ?? 10)) * 100))}%
+            </span>
+          </div>
+          <div className="w-full h-2 bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+            <div
+              className={`h-full transition-all duration-300 rounded-full ${(importLimits?.remaining ?? 0) <= 0 ? "bg-rose-500" : "bg-indigo-600"}`}
+              style={{
+                width: `${Math.min(100, Math.round(((importLimits?.used ?? 0) / Math.max(1, importLimits?.total ?? 10)) * 100))}%`,
+              }}
+            />
+          </div>
+        </div>
+
+        <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <span className="text-xs text-zinc-400">
+            Current status: {importLimits?.total ?? 10} total → {importLimits?.used ?? 2} used → {importLimits?.remaining ?? 8} remaining
+          </span>
         </div>
       </div>
 

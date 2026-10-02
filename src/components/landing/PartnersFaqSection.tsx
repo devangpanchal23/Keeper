@@ -20,7 +20,7 @@ export function PartnersFaqSection() {
     <section id="faq" className="relative py-28 sm:py-36 px-4 sm:px-6 lg:px-8 bg-white border-b-2 border-[#111111] overflow-hidden">
       <div className="max-w-6xl mx-auto space-y-24">
         {/* Oxblood Partners / Studio Banner Panel */}
-        <div id="partners" className="relative rounded-3xl sm:rounded-[36px] bg-[#4E0F15] text-white p-8 sm:p-14 border-3 border-[#111111] shadow-[0_16px_36px_rgba(0,0,0,0.25)] overflow-hidden">
+        <div id="partners" className="relative rounded-3xl sm:rounded-[36px] bg-[#4E0F15] text-white p-5 sm:p-14 border-3 border-[#111111] shadow-[0_16px_36px_rgba(0,0,0,0.25)] overflow-hidden">
           {/* Subtle Dark Blob Accent */}
           <div className="absolute -bottom-24 -right-24 w-96 h-96 bg-[#111111]/40 rounded-full blur-3xl pointer-events-none" />
 
@@ -51,8 +51,8 @@ export function PartnersFaqSection() {
             </div>
 
             {/* 3 Circular Scalloped Photos */}
-            <div className="lg:col-span-4 flex items-center justify-center lg:justify-end gap-3 sm:gap-4 select-none">
-              <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full overflow-hidden border-3 border-white shadow-xl hover:scale-105 transition-transform bg-[#111111]">
+            <div className="lg:col-span-4 flex items-center justify-center lg:justify-end gap-2 sm:gap-4 select-none">
+              <div className="w-16 h-16 sm:w-24 sm:h-24 rounded-full overflow-hidden border-2 sm:border-3 border-white shadow-xl hover:scale-105 transition-transform bg-[#111111]">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=80"
@@ -60,7 +60,7 @@ export function PartnersFaqSection() {
                   className="w-full h-full object-cover"
                 />
               </div>
-              <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full overflow-hidden border-3 border-white shadow-xl hover:scale-105 transition-transform -translate-y-4 bg-[#111111]">
+              <div className="w-20 h-20 sm:w-28 sm:h-28 rounded-full overflow-hidden border-2 sm:border-3 border-white shadow-xl hover:scale-105 transition-transform -translate-y-2 sm:-translate-y-4 bg-[#111111]">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300&auto=format&fit=crop&q=80"
@@ -68,7 +68,7 @@ export function PartnersFaqSection() {
                   className="w-full h-full object-cover"
                 />
               </div>
-              <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full overflow-hidden border-3 border-white shadow-xl hover:scale-105 transition-transform bg-[#111111]">
+              <div className="w-16 h-16 sm:w-24 sm:h-24 rounded-full overflow-hidden border-2 sm:border-3 border-white shadow-xl hover:scale-105 transition-transform bg-[#111111]">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src="https://images.unsplash.com/photo-1517841905240-472988babdf9?w=300&auto=format&fit=crop&q=80"

@@ -9,8 +9,6 @@ on:
 
 permissions:
   contents: read
-  checks: write
-  pull-requests: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -23,23 +21,23 @@ jobs:
   validate:
     name: Lint, Type Check & Design Audit
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20 LTS
+      - name: Set up Node.js 24 LTS
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: "npm"
 
       - name: Install Dependencies (Deterministic Lockfile)
         run: npm ci
 
       - name: Run Linter (ESLint)
-        run: npm run lint
+        run: npm run lint -- --max-warnings=262
 
       - name: Run TypeScript Type Check
         run: npm run type-check
@@ -53,16 +51,16 @@ jobs:
   test:
     name: Automated Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20 LTS
+      - name: Set up Node.js 24 LTS
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: "npm"
 
       - name: Install Dependencies
@@ -77,16 +75,16 @@ jobs:
   security:
     name: Dependency Security Audit
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20 LTS
+      - name: Set up Node.js 24 LTS
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Run Dependency Vulnerability Audit
         run: npm audit --audit-level=high
@@ -98,16 +96,16 @@ jobs:
     name: Production Build Verification
     needs: [validate, test, security]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20 LTS
+      - name: Set up Node.js 24 LTS
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: "npm"
 
       # Next.js build cache between CI runs

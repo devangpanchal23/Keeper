@@ -54,20 +54,20 @@ export function FinalCtaFooter() {
         </div>
 
         {/* Giant Deep Oxblood Cloud Shape Rising from Below */}
-        <div className="relative max-w-5xl mx-auto rounded-[40px] sm:rounded-[60px] bg-[#4E0F15] text-white p-10 sm:p-20 text-center border-4 border-[#111111] shadow-[0_24px_60px_rgba(0,0,0,0.35)] overflow-hidden">
+        <div className="relative max-w-5xl mx-auto rounded-[32px] sm:rounded-[60px] bg-[#4E0F15] text-white p-6 sm:p-20 text-center border-3 sm:border-4 border-[#111111] shadow-[0_24px_60px_rgba(0,0,0,0.35)] overflow-hidden">
           {/* Subtle Inner Accent Blob */}
           <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-[#C4271B]/20 rounded-full blur-3xl pointer-events-none" />
 
           <div className="relative z-10 max-w-3xl mx-auto">
             {/* Stamp Tag */}
-            <div className="inline-block bg-[#111111] text-[#C6FF2E] font-krackerz-display text-xs uppercase px-4 py-1.5 rounded-full border-2 border-white shadow-[0_3px_0_#ffffff] mb-8">
+            <div className="inline-block bg-[#111111] text-[#C6FF2E] font-krackerz-display text-xs uppercase px-4 py-1.5 rounded-full border-2 border-white shadow-[0_3px_0_#ffffff] mb-6 sm:mb-8 max-w-full truncate">
               PERMANENT MEMORY // INSTANT SETUP
             </div>
 
             {/* Headline with script & sticker */}
-            <h2 className="text-4xl sm:text-6xl md:text-7xl font-krackerz-display text-white tracking-tight uppercase leading-[0.98] mb-8 select-none">
+            <h2 className="text-3xl sm:text-6xl md:text-7xl font-krackerz-display text-white tracking-tight uppercase leading-[0.98] mb-6 sm:mb-8 select-none">
               BE THE{" "}
-              <span className="font-krackerz-script font-bold text-5xl sm:text-7xl text-[#C4271B] lowercase mx-1 inline-block -rotate-6">
+              <span className="font-krackerz-script font-bold text-4xl sm:text-7xl text-[#C4271B] lowercase mx-1 inline-block -rotate-6">
                 first
               </span>{" "}
               TO
@@ -77,7 +77,7 @@ export function FinalCtaFooter() {
               </StickerLabel>
             </h2>
 
-            <p className="text-base sm:text-xl font-krackerz-body font-medium text-white/85 max-w-xl mx-auto leading-relaxed mb-10">
+            <p className="text-sm sm:text-xl font-krackerz-body font-medium text-white/85 max-w-xl mx-auto leading-relaxed mb-8 sm:mb-10">
               Stop losing breakthrough ideas to the endless scroll. Start saving and retrieving in seconds with genuine metadata.
             </p>
 

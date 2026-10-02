@@ -123,10 +123,10 @@ export function KrackerzNav() {
                 R
               </div>
               <div className="flex items-center">
-                <span className="font-krackerz-display text-xl sm:text-2xl text-[#111111] tracking-tight uppercase">
+                <span className="font-krackerz-display text-lg sm:text-2xl text-[#111111] tracking-tight uppercase">
                   RECALL
                 </span>
-                <span className="text-[#C4271B] font-krackerz-display text-xl sm:text-2xl animate-pulse ml-0.5">
+                <span className="text-[#C4271B] font-krackerz-display text-lg sm:text-2xl animate-pulse ml-0.5">
                   ✱
                 </span>
               </div>
@@ -162,8 +162,16 @@ export function KrackerzNav() {
                 aria-label="Go to product dashboard"
                 className="inline-flex items-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-full bg-[#F7F5EE] text-[#111111] border border-[#111111] font-krackerz-display text-xs uppercase tracking-wide shadow-[0_2px_0_#111111] hover:shadow-[0_3px_0_#111111] hover:-translate-y-0.5 active:translate-y-0.5 active:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#C4271B] transition-all"
               >
-                <span>{user?.name ? "Open Dashboard" : "Dashboard"}</span>
-                <ArrowUpRight className="w-3.5 h-3.5 stroke-[2.5]" />
+                <span className="whitespace-nowrap">
+                  {user?.name ? (
+                    <>
+                      <span className="hidden sm:inline">Open </span>Dashboard
+                    </>
+                  ) : (
+                    "Dashboard"
+                  )}
+                </span>
+                <ArrowUpRight className="w-3.5 h-3.5 stroke-[2.5] shrink-0" />
               </Link>
 
               {/* Primary Waitlist / Ingestion CTA (Lime fill, single primary CTA of viewport) */}

@@ -1,4 +1,6 @@
 import { AuthSession, User, UserRecord } from "@/types";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import type { User as SupabaseUser } from "@supabase/supabase-js";
 
 const STORAGE_KEYS = {
   USERS_DB: "recall_users_db_v1",
@@ -87,7 +89,8 @@ export function generateInitialsAvatar(name: string): string {
  * Sanitizes UserRecord into safe public User (omits passwordHash).
  */
 export function sanitizeUser(record: UserRecord): User {
-  const { passwordHash: _discard, ...safe } = record;
+  const { passwordHash, ...safe } = record;
+  void passwordHash;
   return safe;
 }
 
@@ -102,9 +105,13 @@ function getDefaultUsers(): UserRecord[] {
       email: "devang@recall.ai",
       passwordHash: DEMO_PASSWORD_HASH,
       avatar: generateInitialsAvatar("Devang Patel"),
-      tier: "pro",
+      tier: "free",
       joinedDate: "2024-01-15T00:00:00.000Z",
       updatedAt: "2024-03-29T14:32:00.000Z",
+      importLimits: {
+        total: 10,
+        used: 2,
+      },
       settings: {
         theme: "dark",
         defaultSummaryMode: "standard",
@@ -182,8 +189,11 @@ export class AuthService {
     if (!this.isClient()) return;
     try {
       localStorage.setItem(STORAGE_KEYS.SESSION, JSON.stringify(session));
-      // Set cookie for route protection / middleware readiness
-      document.cookie = `${COOKIE_NAME}=${session.token}; path=/; max-age=604800; SameSite=Lax`;
+      if (session.token.startsWith("tok_")) {
+        document.cookie = `${COOKIE_NAME}=${session.token}; path=/; max-age=604800; SameSite=Lax`;
+      } else {
+        document.cookie = `${COOKIE_NAME}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax`;
+      }
     } catch (err) {
       console.error("AuthService.setSession error:", err);
     }
@@ -222,6 +232,22 @@ export class AuthService {
     return sanitizeUser(userRecord);
   }
 
+  static async getCurrentUserAsync(): Promise<User | null> {
+    try {
+      const client = createSupabaseBrowserClient();
+      const { data, error } = await client.auth.getSession();
+      if (error) throw error;
+      if (data.session?.user) {
+        return this.cacheSupabaseUser(data.session.user, data.session.access_token, data.session.expires_at).user;
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("Supabase is not configured")) {
+        console.warn("Supabase session could not be restored:", error);
+      }
+    }
+    return this.getCurrentUser();
+  }
+
   /**
    * Register a new user account.
    * Performs validation, email normalization, uniqueness checks, and salted hashing.
@@ -250,53 +276,21 @@ export class AuthService {
       throw new Error("Password must be at least 6 characters long.");
     }
 
-    // Check duplicate
-    const existing = this.findUserByEmail(cleanEmail);
-    if (existing) {
-      throw new Error("An account with this email already exists.");
+    let client: ReturnType<typeof createSupabaseBrowserClient>;
+    try { client = createSupabaseBrowserClient(); }
+    catch (err) {
+      if (err instanceof Error && err.message.includes("Supabase is not configured")) return this.signupLocalPrototype(cleanName, cleanEmail, password);
+      throw err;
     }
-
-    // Hash password securely
-    const passwordHash = await hashPassword(password);
-    const userId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const avatar = generateInitialsAvatar(cleanName);
-    const now = new Date().toISOString();
-
-    const newUserRecord: UserRecord = {
-      id: userId,
-      name: cleanName,
+    const { data: result, error } = await client.auth.signUp({
       email: cleanEmail,
-      passwordHash,
-      avatar,
-      tier: "free",
-      joinedDate: now,
-      updatedAt: now,
-      settings: {
-        theme: "dark",
-        defaultSummaryMode: "standard",
-        autoTagging: true,
-        aiModel: "Recall Intelligence v2.5 (Fast)",
-        notificationsEnabled: true,
-      },
-    };
-
-    const users = this.getUsers();
-    this.saveUsers([...users, newUserRecord]);
-
-    // Create session token
-    const token = `tok_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const session: AuthSession = {
-      token,
-      userId: newUserRecord.id,
-      email: newUserRecord.email,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-    };
-    this.setSession(session);
-
-    return {
-      user: sanitizeUser(newUserRecord),
-      token,
-    };
+      password,
+      options: { data: { full_name: cleanName, name: cleanName }, emailRedirectTo: `${window.location.origin}/auth/callback?next=%2Fapp` },
+    });
+    if (error) throw new Error(error.message);
+    if (!result.user) throw new Error("Keeper could not create your account. Please try again.");
+    if (!result.session) throw new Error("CONFIRMATION_REQUIRED: Account created. Check your email to confirm your address, then sign in to continue.");
+    return this.cacheSupabaseUser(result.user, result.session.access_token, result.session.expires_at);
   }
 
   /**
@@ -319,44 +313,95 @@ export class AuthService {
       throw new Error("Please enter your password.");
     }
 
-    const userRecord = this.findUserByEmail(cleanEmail);
-    if (!userRecord) {
-      // Exact UX requirement
-      throw new Error("Account not found. You need to create an account first to log in.");
+    if (cleanEmail === "devang@recall.ai" && (password === "demo1234" || password === "••••••••••••")) {
+      const demoRecord = this.findUserByEmail(cleanEmail);
+      if (demoRecord) {
+        const token = `tok_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        this.setSession({ token, userId: demoRecord.id, email: demoRecord.email, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() });
+        return { user: sanitizeUser(demoRecord), token };
+      }
     }
-
-    // Special check for demo account if password is "demo1234" or "••••••••••••"
-    let passwordMatches = false;
-    if (userRecord.email === "devang@recall.ai" && (password === "demo1234" || password === "••••••••••••")) {
-      passwordMatches = true;
-    } else {
-      passwordMatches = await verifyPassword(password, userRecord.passwordHash);
+    let client: ReturnType<typeof createSupabaseBrowserClient>;
+    try { client = createSupabaseBrowserClient(); }
+    catch (err) {
+      if (err instanceof Error && err.message.includes("Supabase is not configured")) return this.loginLocalPrototype(cleanEmail, password);
+      throw err;
     }
+    const { data: result, error } = await client.auth.signInWithPassword({ email: cleanEmail, password });
+    if (error) throw new Error(error.message);
+    if (!result.user || !result.session) throw new Error("Keeper could not verify this account. Please try again.");
+    return this.cacheSupabaseUser(result.user, result.session.access_token, result.session.expires_at);
+  }
 
-    if (!passwordMatches) {
-      throw new Error("Incorrect password.");
-    }
-
-    // Create session
+  private static async signupLocalPrototype(name: string, email: string, password: string): Promise<{ user: User; token: string }> {
+    if (this.findUserByEmail(email)) throw new Error("An account with this email already exists.");
+    const now = new Date().toISOString();
+    const record: UserRecord = {
+      id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      email,
+      passwordHash: await hashPassword(password),
+      avatar: generateInitialsAvatar(name),
+      tier: "free",
+      joinedDate: now,
+      updatedAt: now,
+      importLimits: { total: 10, used: 0 },
+      settings: { theme: "dark", defaultSummaryMode: "standard", autoTagging: true, aiModel: "Recall Intelligence v2.5 (Fast)", notificationsEnabled: true },
+    };
+    this.saveUsers([...this.getUsers(), record]);
     const token = `tok_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    this.setSession({ token, userId: record.id, email, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() });
+    return { user: sanitizeUser(record), token };
+  }
+
+  private static async loginLocalPrototype(email: string, password: string): Promise<{ user: User; token: string }> {
+    const record = this.findUserByEmail(email);
+    if (!record) throw new Error("Account not found. You need to create an account first to log in.");
+    if (!(await verifyPassword(password, record.passwordHash))) throw new Error("Incorrect password.");
+    const token = `tok_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    this.setSession({ token, userId: record.id, email: record.email, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() });
+    return { user: sanitizeUser(record), token };
+  }
+
+  private static cacheSupabaseUser(authUser: SupabaseUser, accessToken: string, expiresAt?: number): { user: User; token: string } {
+    const now = new Date().toISOString();
+    const name = String(authUser.user_metadata?.full_name || authUser.user_metadata?.name || authUser.email?.split("@")[0] || "Keeper user");
+    const existing = this.findUserById(authUser.id);
+    const record: UserRecord = {
+      ...(existing || {
+        id: authUser.id,
+        avatar: generateInitialsAvatar(name),
+        tier: "free" as const,
+        joinedDate: authUser.created_at || now,
+        settings: { theme: "dark" as const, defaultSummaryMode: "standard", autoTagging: true, aiModel: "Recall Intelligence v2.5 (Fast)", notificationsEnabled: true },
+        passwordHash: "",
+      }),
+      id: authUser.id,
+      name,
+      email: authUser.email || "",
+      updatedAt: now,
+    };
+    const users = this.getUsers().filter((user) => user.id !== authUser.id);
+    this.saveUsers([...users, record]);
     const session: AuthSession = {
-      token,
-      userId: userRecord.id,
-      email: userRecord.email,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      token: accessToken,
+      userId: authUser.id,
+      email: record.email,
+      expiresAt: new Date((expiresAt || Math.floor(Date.now() / 1000 + 3600)) * 1000).toISOString(),
     };
     this.setSession(session);
-
-    return {
-      user: sanitizeUser(userRecord),
-      token,
-    };
+    return { user: sanitizeUser(record), token: accessToken };
   }
 
   /**
    * Log out current user and invalidate session.
    */
-  static logout(): void {
+  static async logout(): Promise<void> {
+    try {
+      await createSupabaseBrowserClient().auth.signOut();
+    } catch (err) {
+      if (!(err instanceof Error) || !err.message.includes("Supabase is not configured")) throw err;
+    }
     this.clearSession();
   }
 
@@ -418,6 +463,19 @@ export class AuthService {
       updatedAvatar = updates.avatar.trim();
     }
 
+    const isSupabaseAccount = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId);
+    if (isSupabaseAccount) {
+      const { data, error } = await createSupabaseBrowserClient().auth.updateUser({
+        ...(updates.email !== undefined ? { email: updatedEmail } : {}),
+        data: { full_name: updatedName, name: updatedName },
+      });
+      if (error) throw new Error(error.message);
+      if (updates.email !== undefined && data.user.new_email) {
+        throw new Error(`Confirm the email change using the link sent to ${data.user.new_email}.`);
+      }
+      updatedEmail = data.user.email || updatedEmail;
+    }
+
     const updatedRecord: UserRecord = {
       ...currentRecord,
       name: updatedName,
@@ -435,6 +493,30 @@ export class AuthService {
       email: updatedEmail,
     });
 
+    return sanitizeUser(updatedRecord);
+  }
+
+  static async updatePlan(userId: string, tier: Extract<User["tier"], "basic" | "pro">): Promise<User> {
+    const session = this.getSession();
+    if (!session || session.userId !== userId) {
+      throw new Error("Unauthorized request. Please log in.");
+    }
+
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId)) {
+      throw new Error("Paid plan changes are managed through your Billing page.");
+    }
+
+    const users = this.getUsers();
+    const index = users.findIndex((record) => record.id === userId);
+    if (index === -1) throw new Error("User record not found.");
+
+    const updatedRecord: UserRecord = {
+      ...users[index],
+      tier,
+      updatedAt: new Date().toISOString(),
+    };
+    users[index] = updatedRecord;
+    this.saveUsers(users);
     return sanitizeUser(updatedRecord);
   }
 
@@ -458,6 +540,18 @@ export class AuthService {
     }
 
     const user = users[index];
+    const isSupabaseAccount = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId);
+    if (isSupabaseAccount) {
+      if (!data.newPassword || data.newPassword.length < 6) {
+        throw new Error("New password must be at least 6 characters long.");
+      }
+      const client = createSupabaseBrowserClient();
+      const { error: signInError } = await client.auth.signInWithPassword({ email: user.email, password: data.currentPassword });
+      if (signInError) throw new Error("Incorrect current password.");
+      const { error: updateError } = await client.auth.updateUser({ password: data.newPassword });
+      if (updateError) throw new Error(updateError.message);
+      return;
+    }
     const currentMatches = await verifyPassword(data.currentPassword, user.passwordHash);
     if (!currentMatches) {
       throw new Error("Incorrect current password.");

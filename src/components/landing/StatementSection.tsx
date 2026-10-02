@@ -42,7 +42,7 @@ export function StatementSection() {
             THE SYSTEM TRAP
           </div>
 
-          <h2 className="text-4xl sm:text-6xl md:text-7xl font-krackerz-display text-[#111111] tracking-tight leading-[1.02] uppercase select-none">
+          <h2 className="text-3xl sm:text-6xl md:text-7xl font-krackerz-display text-[#111111] tracking-tight leading-[1.02] uppercase select-none break-words">
             <span
               className={`inline-block transition-all duration-700 delay-100 ${
                 isInView ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6"
@@ -77,18 +77,18 @@ export function StatementSection() {
         {/* Large Rounded Media / Demonstration Panel with Parallax Framing */}
         <div className="relative rounded-3xl border-3 border-[#111111] bg-[#111111] p-3 sm:p-4 shadow-[0_16px_36px_rgba(0,0,0,0.22)] overflow-hidden">
           {/* Top Window Bar (Mac / Studio Style) */}
-          <div className="flex items-center justify-between pb-3 px-2 border-b border-white/10">
-            <div className="flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full bg-[#C4271B]" />
-              <span className="w-3 h-3 rounded-full bg-[#F7F5EE]" />
-              <span className="w-3 h-3 rounded-full bg-white/40" />
+          <div className="flex items-center justify-between pb-3 px-2 border-b border-white/10 gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              <span className="w-2.5 sm:w-3 h-2.5 sm:h-3 rounded-full bg-[#C4271B]" />
+              <span className="w-2.5 sm:w-3 h-2.5 sm:h-3 rounded-full bg-[#F7F5EE]" />
+              <span className="w-2.5 sm:w-3 h-2.5 sm:h-3 rounded-full bg-white/40" />
             </div>
 
-            <div className="font-mono text-xs text-[#C6FF2E] uppercase tracking-wider font-bold">
+            <div className="font-mono text-[10px] sm:text-xs text-[#C6FF2E] uppercase tracking-wider font-bold truncate max-w-[140px] sm:max-w-none">
               RECALL_INGESTION_ENGINE_v2.6.mp4
             </div>
 
-            <div className="text-[11px] font-mono text-white/50">
+            <div className="text-[10px] sm:text-[11px] font-mono text-white/50 shrink-0">
               00:42 // 60 FPS
             </div>
           </div>

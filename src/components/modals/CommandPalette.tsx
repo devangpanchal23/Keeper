@@ -78,15 +78,15 @@ export const CommandPalette: React.FC = () => {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-20 px-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
+      className="fixed inset-0 z-50 flex items-start justify-center pt-8 sm:pt-20 px-3 sm:px-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
       onClick={closeCommandPalette}
     >
       <div
-        className="w-full max-w-xl rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xl overflow-hidden flex flex-col max-h-[75vh]"
+        className="w-full max-w-xl rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xl overflow-hidden flex flex-col max-h-[85vh] sm:max-h-[75vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Search Input Bar */}
-        <div className="flex items-center gap-3 px-4 py-3.5 border-b border-zinc-200 dark:border-zinc-800">
+        <div className="flex items-center gap-2.5 sm:gap-3 px-3 sm:px-4 py-3 sm:py-3.5 border-b border-zinc-200 dark:border-zinc-800">
           <Search className="w-5 h-5 text-zinc-400 shrink-0" />
           <input
             ref={inputRef}
@@ -94,7 +94,7 @@ export const CommandPalette: React.FC = () => {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Type a command, search saved bookmarks, tags, or topics..."
-            className="flex-1 bg-transparent text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none"
+            className="flex-1 bg-transparent text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none min-w-0"
           />
           {query && (
             <button
@@ -117,7 +117,7 @@ export const CommandPalette: React.FC = () => {
               <div className="px-3 py-1.5 text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
                 Quick Actions
               </div>
-              <div className="grid grid-cols-2 gap-1.5 px-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 px-1">
                 <button
                   onClick={() => {
                     closeCommandPalette();

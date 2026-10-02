@@ -62,29 +62,29 @@ export function KrackerzHero() {
 
       <div className="relative z-10 max-w-7xl mx-auto flex flex-col items-center text-center">
         {/* Eyebrow: Black pill with lime text & Scallop Badge */}
-        <div className="inline-flex items-center gap-2.5 bg-[#111111] text-[#C6FF2E] rounded-full pl-2 pr-4 py-1.5 border-2 border-[#111111] shadow-[0_4px_0_#111111] mb-8 select-none">
-          <div className="w-6 h-6 rounded-full bg-[#C6FF2E] text-[#111111] flex items-center justify-center">
-            <Sparkles className="w-3.5 h-3.5 stroke-[2.5]" />
+        <div className="inline-flex items-center gap-2 sm:gap-2.5 bg-[#111111] text-[#C6FF2E] rounded-full pl-2 pr-3.5 sm:pr-4 py-1 sm:py-1.5 border-2 border-[#111111] shadow-[0_4px_0_#111111] mb-6 sm:mb-8 select-none max-w-full">
+          <div className="w-5 h-5 sm:w-6 sm:h-6 rounded-full bg-[#C6FF2E] text-[#111111] flex items-center justify-center shrink-0">
+            <Sparkles className="w-3 h-3 sm:w-3.5 sm:h-3.5 stroke-[2.5]" />
           </div>
-          <span className="font-krackerz-display text-xs sm:text-sm tracking-wider uppercase">
+          <span className="font-krackerz-display text-[10px] sm:text-xs md:text-sm tracking-wider uppercase truncate">
             RECALL 2.6 // UNIVERSAL KNOWLEDGE VAULT
           </span>
         </div>
 
         {/* 3-Line Giant Display Headline with Masked Reveals & Stagger */}
         <div className="max-w-5xl mb-8">
-          <h1 className="text-4xl sm:text-6xl md:text-7xl lg:text-8xl font-krackerz-display text-[#111111] tracking-tight leading-[0.98] uppercase select-none">
+          <h1 className="text-3xl sm:text-6xl md:text-7xl lg:text-8xl font-krackerz-display text-[#111111] tracking-tight leading-[0.98] uppercase select-none">
             <span className="line-mask pb-1">
               <span className="block animate-line-reveal">
                 WE{" "}
-                <span className="font-krackerz-script font-bold text-5xl sm:text-7xl md:text-8xl lg:text-9xl text-[#C4271B] lowercase mx-1 inline-block -rotate-6">
+                <span className="font-krackerz-script font-bold text-4xl sm:text-7xl md:text-8xl lg:text-9xl text-[#C4271B] lowercase mx-1 inline-block -rotate-6">
                   don&apos;t
                 </span>{" "}
                 JUST
               </span>
             </span>
             <span className="line-mask my-1 pb-1">
-              <span className="inline-flex items-center justify-center flex-wrap gap-3 animate-line-reveal delay-100">
+              <span className="inline-flex items-center justify-center flex-wrap gap-2 sm:gap-3 animate-line-reveal delay-100">
                 <span>SAVE CONTENT</span>
                 <MascotCharacter mood="happy" size="md" className="align-middle inline-block" />
               </span>
@@ -159,7 +159,7 @@ export function KrackerzHero() {
         </div>
 
         {/* Scrub & Alignment Control Bar */}
-        <div className="w-full flex items-center justify-between max-w-5xl mb-6 px-4">
+        <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-3 max-w-5xl mb-6 px-4">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-[#C4271B] animate-ping" />
             <span className="font-krackerz-display text-xs text-[#111111] uppercase tracking-wider">

@@ -64,9 +64,9 @@ export function TestimonialsSection() {
             COMMUNITY PROOF // ZERO GUESSWORK
           </div>
 
-          <h2 className="text-4xl sm:text-6xl md:text-7xl font-krackerz-display text-white tracking-tight uppercase leading-[1.02] select-none">
+          <h2 className="text-3xl sm:text-6xl md:text-7xl font-krackerz-display text-white tracking-tight uppercase leading-[1.02] select-none break-words">
             YOU&apos;RE{" "}
-            <span className="font-krackerz-script font-bold text-5xl sm:text-7xl text-[#C4271B] lowercase mx-1 inline-block -rotate-6">
+            <span className="font-krackerz-script font-bold text-4xl sm:text-7xl text-[#C4271B] lowercase mx-1 inline-block -rotate-6">
               not
             </span>{" "}
             ALONE
@@ -104,10 +104,10 @@ export function TestimonialsSection() {
               transform = "scale-100 rotate-0 opacity-100 translate-x-0 z-30 shadow-[0_20px_48px_rgba(0,0,0,0.5)]";
               zIndex = 30;
             } else if (isRight) {
-              transform = "scale-90 rotate-3 opacity-60 translate-x-12 sm:translate-x-32 z-20 cursor-pointer";
+              transform = "scale-90 rotate-3 opacity-60 translate-x-6 sm:translate-x-32 z-20 cursor-pointer";
               zIndex = 20;
             } else if (isLeft) {
-              transform = "scale-90 -rotate-3 opacity-60 -translate-x-12 sm:-translate-x-32 z-20 cursor-pointer";
+              transform = "scale-90 -rotate-3 opacity-60 -translate-x-6 sm:-translate-x-32 z-20 cursor-pointer";
               zIndex = 20;
             }
 
@@ -116,7 +116,7 @@ export function TestimonialsSection() {
                 key={item.id}
                 onClick={() => setActiveIndex(idx)}
                 style={{ backgroundColor: item.color }}
-                className={`absolute w-full max-w-xl p-8 sm:p-10 rounded-3xl border-3 border-white transition-all duration-500 ease-out select-none flex flex-col justify-between ${transform}`}
+                className={`absolute w-full max-w-xl p-5 sm:p-10 rounded-3xl border-3 border-white transition-all duration-500 ease-out select-none flex flex-col justify-between ${transform}`}
               >
                 {/* Top Quote Tag */}
                 <div className="flex items-center justify-between mb-4">

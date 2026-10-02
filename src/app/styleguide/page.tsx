@@ -62,27 +62,29 @@ export default function StyleguidePage() {
   return (
     <div className="min-h-screen bg-[#F7F5EE] bg-dot-grid text-[#111111] font-krackerz-body antialiased pb-24">
       {/* Header */}
-      <header className="sticky top-0 z-50 bg-[#F7F5EE]/95 backdrop-blur-md border-b-2 border-[#111111] px-4 sm:px-8 py-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-4">
+      <header className="sticky top-0 z-50 bg-[#F7F5EE]/95 backdrop-blur-md border-b-2 border-[#111111] px-4 sm:px-8 py-3.5 sm:py-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
             <Link
               href={ROUTES.home}
-              className="inline-flex items-center gap-1.5 font-krackerz-display text-xs uppercase px-3 py-1.5 rounded-full bg-white border border-[#111111] shadow-[0_2px_0_#111111] hover:-translate-y-0.5 transition-all"
+              className="inline-flex items-center gap-1.5 font-krackerz-display text-xs uppercase px-3 py-1.5 rounded-full bg-white border border-[#111111] shadow-[0_2px_0_#111111] hover:-translate-y-0.5 transition-all shrink-0"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Back to Site</span>
+              <span className="hidden sm:inline">Back to Site</span>
+              <span className="sm:hidden">Back</span>
             </Link>
 
-            <span className="font-krackerz-display text-base sm:text-xl uppercase tracking-tight">
-              DESIGN SYSTEM // STYLEGUIDE
+            <span className="font-krackerz-display text-xs sm:text-xl uppercase tracking-tight truncate">
+              DESIGN SYSTEM
             </span>
           </div>
 
           <Link
             href={ROUTES.dashboard}
-            className="inline-flex items-center gap-1.5 font-krackerz-display text-xs uppercase px-4 py-1.5 rounded-full bg-[#111111] text-[#F7F5EE] border border-[#111111] shadow-[0_2px_0_#C4271B] hover:-translate-y-0.5 transition-all"
+            className="inline-flex items-center gap-1.5 font-krackerz-display text-xs uppercase px-3 sm:px-4 py-1.5 rounded-full bg-[#111111] text-[#F7F5EE] border border-[#111111] shadow-[0_2px_0_#C4271B] hover:-translate-y-0.5 transition-all shrink-0"
           >
-            <span>Product Dashboard</span>
+            <span className="hidden sm:inline">Product Dashboard</span>
+            <span className="sm:hidden">Dashboard</span>
             <ArrowUpRight className="w-3.5 h-3.5" />
           </Link>
         </div>

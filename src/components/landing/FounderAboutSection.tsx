@@ -1,9 +1,9 @@
 "use client";
 
 import React from "react";
-import { Megaphone } from "lucide-react";
 import { ScallopBadge } from "./ScallopBadge";
 import { KRACKERZ_TOKENS } from "./krackerz-tokens";
+import { SlidingNumber } from "@/components/animate-ui/primitives/texts/sliding-number";
 
 export function FounderAboutSection() {
   // Enforce MAX 3 brand shades: brick, maroon, oxblood
@@ -81,24 +81,24 @@ export function FounderAboutSection() {
               </div>
 
               {/* Floating Speech-Bubble Pill */}
-              <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap bg-white text-[#111111] font-krackerz-display text-xs px-5 py-2.5 rounded-full border-2 border-[#111111] shadow-[0_4px_0_#111111] flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-[#C4271B] animate-ping" />
-                <span>&ldquo;Save once. Remember forever.&rdquo;</span>
+              <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap bg-white text-[#111111] font-krackerz-display text-[10px] sm:text-xs px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-full border-2 border-[#111111] shadow-[0_4px_0_#111111] flex items-center gap-1.5 sm:gap-2 max-w-[95%]">
+                <span className="w-2 h-2 rounded-full bg-[#C4271B] animate-ping shrink-0" />
+                <span className="truncate">&ldquo;Save once. Remember forever.&rdquo;</span>
               </div>
             </div>
           </div>
 
           {/* Right Column: 4 Stat Cards in Ladder + Milestones */}
           <div className="lg:col-span-7 space-y-6">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
               {stats.map((s, idx) => (
                 <div
                   key={idx}
                   style={{ backgroundColor: s.color }}
-                  className="p-5 sm:p-6 rounded-2xl border-2 border-[#111111] text-white shadow-[0_6px_0_#111111] transition-transform hover:-translate-y-1"
+                  className="p-4 sm:p-6 rounded-2xl border-2 border-[#111111] text-white shadow-[0_6px_0_#111111] transition-transform hover:-translate-y-1"
                 >
                   <div className="text-3xl sm:text-5xl font-krackerz-display text-white mb-1">
-                    {s.num}
+                    <SlidingNumber value={s.num} />
                   </div>
                   <div className="font-krackerz-body font-bold text-xs uppercase tracking-wider text-white/90">
                     {s.label}
