@@ -119,7 +119,9 @@ export class ContentIntelligenceService {
       if (!normalizedName || STOP_WORDS.has(normalizedName.toLowerCase())) return;
       const current = candidates.get(normalizedName.toLowerCase());
       candidates.set(normalizedName.toLowerCase(), {
-        name: normalizedName, category, occurrences: (current?.occurrences || 0) + occurrences,
+        name: normalizedName,
+        category: current?.category === "Intent" || category === "Intent" ? "Intent" : category,
+        occurrences: (current?.occurrences || 0) + occurrences,
         evidence: current?.evidence || evidence.trim().slice(0, 180),
       });
     };
@@ -161,6 +163,8 @@ export class ContentIntelligenceService {
     }
 
     const ranked = [...candidates.values()].sort((a, b) => {
+      const categoryPriority = (entry: typeof a) => entry.category === "Intent" && Object.hasOwn(COLLECTION_CATEGORY_CUES, entry.name) ? 1 : 0;
+      if (categoryPriority(a) !== categoryPriority(b)) return categoryPriority(b) - categoryPriority(a);
       const evidenceScore = (entry: typeof a) => entry.occurrences * 2 + (entry.name.includes(" ") ? 1.5 : 0);
       return evidenceScore(b) - evidenceScore(a) || a.name.localeCompare(b.name);
     }).slice(0, Math.min(10, Math.max(1, maxTags)));

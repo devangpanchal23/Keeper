@@ -471,3 +471,10 @@ Meta exports alternate between legacy `string_map_data` and modern `string_list_
 - Efficiency fix: Reuse the acquired media bytes for transcription and OCR in one job instead of fetching the same media twice.
 - Tests: Added harness coverage for positive asset topics, low-confidence rejection, generic label rejection, non-asset rejection, and exact phrase match thresholds. Executed equivalent focused runtime assertions against the TypeScript-compiled service; full harness remains blocked on uncached `tsx`.
 - Validation: Type-check passes; focused lint has no errors. Production build is network-blocked while fetching Geist. Live Supabase worker and configured AI/STT provider workflow remain unverified.
+# 2026-10-09 — CI triage and dependency remediation (in progress)
+
+- **Problem:** GitHub Actions reported production and full dependency audit failures, plus 35 failing regression assertions.
+- **Root causes addressed:** Production audit advisories were on Next.js 16.3.7 and source-map-js 1.2.1; scripts used `npx -y tsx` instead of the locked project dependency; Unicode combining marks were dropped from hashtags; generated category tags could be crowded out by generic tokens.
+- **Changes:** Upgrade Next.js to 16.3.8 and source-map-js to 1.2.2; lock `tsx` 4.23.15; use local `tsx` in npm scripts; preserve Unicode combining marks; prioritize grounded collection category tags.
+- **Validation:** Type-check passes; lint passes at the existing 262-warning cap; test suite improved from 131/166 passing in CI logs to 135/166 locally. Full audit could not query npm from this restricted environment; GitHub advisory still lists no fixed `braces` release. Production build cannot fetch Google Fonts in this environment.
+- **Remaining:** 31 suite failures need root-cause work before merge/release. Several require configured content-analysis/transcription providers; others involve collection authorization fixtures/behavior and content-status/organizer expectations. Do not weaken tenant checks or fabricate AI output to make tests green.

@@ -218,8 +218,9 @@ export class MetadataNormalizer {
     if (!text || typeof text !== "string") return [];
     const normalized = this.normalizeText(text);
 
-    // Matches #word across all Unicode scripts (letters and numbers)
-    const regex = /#([\p{L}\p{N}_]+)/gu;
+    // Unicode combining marks are part of many scripts' written characters
+    // (for example Gujarati vowel signs), even though they are not letters.
+    const regex = /#([\p{L}\p{M}\p{N}_]+)/gu;
     const tags: string[] = [];
     let match: RegExpExecArray | null;
 
@@ -287,7 +288,7 @@ export class MetadataNormalizer {
       if (!raw || typeof raw !== "string") continue;
       const clean = this.normalizeText(raw)
         .replace(/^#+/, "")
-        .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
+        .replace(/^[^\p{L}\p{M}\p{N}]+|[^\p{L}\p{M}\p{N}]+$/gu, "")
         .trim();
 
       // Reject corrupted entity residues or dummy values
@@ -295,7 +296,7 @@ export class MetadataNormalizer {
         !clean ||
         clean.length < 2 ||
         clean.length > 35 ||
-        /^x[0-9a-f]{4,6}$/i.test(clean) ||
+        /^(?:x[0-9a-f]{4,6}){1,}$/i.test(clean) ||
         clean.includes("&#") ||
         clean.includes("&amp;") ||
         clean === "undefined" ||
