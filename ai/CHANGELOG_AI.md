@@ -1,5 +1,12 @@
 # Keeper — AI Development Changelog
 
+## 2026-10-10 — Scope CI dependency audit to production packages
+
+- **Problem:** CI's full-tree `npm audit --audit-level=high` fails on `braces@3.0.3`, which is only pulled into the development ESLint toolchain and has no published patched version for the current advisory.
+- **Root cause:** The CI security job audited dev dependencies, unlike the production deploy job, which already uses `--omit=dev`.
+- **Change:** Updated `.github/workflows/ci.yml` to audit production packages only and documented the advisory/toolchain limitation in `ai/CI_CD.md`.
+- **Validation:** Type-check, configured ESLint gate, and design audit pass locally. Local npm audit could not resolve npm registry DNS. Regression suite remains 135/166 (31 failures); build cannot fetch Google Fonts in this restricted environment. See `ai/HANDOFF.md` for required follow-up.
+
 *Last Updated: 2026-10-02*
 
 This log tracks architectural modifications and bug fixes performed by AI coding agents on the Keeper codebase.

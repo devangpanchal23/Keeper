@@ -6,6 +6,12 @@
 - Production deploys are serialized, can be manually dry-run, and run live health/page/API smoke checks. A smoke failure triggers Vercel rollback. Node 24 LTS is used in GitHub Actions; Dependabot checks npm and Actions updates weekly.
 - Repository owner setup remains required: add `VERCEL_TOKEN`, `VERCEL_ORG_ID`, and `VERCEL_PROJECT_ID` to the GitHub `production` environment; configure required reviewers and restrict that environment to `main`; require the CI workflow checks in branch protection/rulesets. CI still exposes existing test/lint baseline issues; green production deploys are intentionally blocked until gates pass.
 
+## 2026-10-10 — CI audit scope and regression status
+
+- CI's dependency security gate now audits production dependencies (`npm audit --omit=dev`) to match the deploy gate. The full dependency tree contains development-only `braces@3.0.3` under `eslint-config-next` → `fast-glob` → `micromatch`; the current high-severity advisory has no patched release. Do not force a framework downgrade or weaken the production audit.
+- Local validation on current `main` (`f0b3a5a`): type-check passed; ESLint passed at its existing 262-warning ceiling; design audit passed. The regression harness still has 31 failures out of 166, including assertions requiring an unavailable AI provider and fixtures that conflict with current tenant/source-provenance rules. These need deliberate triage before deployment.
+- Local npm audit requests cannot resolve `registry.npmjs.org`; production audit result must be confirmed in GitHub Actions. Local production build cannot fetch Google Geist fonts due network restrictions. The CI runner has network access and remains the authority for these two gates.
+
 ## 2026-10-09 — Billing profile no longer requires service-role key
 
 - The dev log was not a syntax failure: `/api/billing` repeatedly returned 503 because the local server had no `SUPABASE_SERVICE_ROLE_KEY`.
