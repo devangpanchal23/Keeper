@@ -1,5 +1,11 @@
 # Current Project Status
 
+## 2026-10-10 — Hobby cron compatibility
+
+- Removed the once-per-minute Vercel Cron declaration that blocked deploys on Hobby.
+- Added a GitHub Actions worker scheduler every five minutes using authenticated POST requests; this matches the worker route's method and avoids the Hobby Cron frequency cap.
+- Before the scheduled worker can run, configure GitHub Actions variable `PRODUCTION_APP_URL` and secret `AI_WORKER_SECRET`, and set the same `AI_WORKER_SECRET` in Vercel Production. GitHub scheduled runs are best-effort and may be delayed.
+
 ## 2026-10-10 — CI/CD audit follow-up
 
 - The supplied Actions screenshots show dependency audit and lint/type/design passing; the failing test gate prevented its dependent production build and deployment from running.

@@ -1,5 +1,11 @@
 # Keeper — AI Development Changelog
 
+## 2026-10-10 — Make the worker scheduler compatible with Vercel Hobby
+
+- **Problem:** The repository's `vercel.json` scheduled the worker every minute, which Hobby rejects. Also, Vercel Cron invokes routes with GET while the worker is authenticated POST-only.
+- **Change:** Removed Vercel Cron configuration and added `.github/workflows/ai-worker.yml`, which invokes the worker with authenticated POST every five minutes. Documented the required production URL Actions variable and shared worker secret.
+- **Validation:** Confirmed the route accepts POST and uses `AI_WORKER_SECRET`/`CRON_SECRET`; the workflow/YAML was syntax-checked. Live invocation requires the deployed Vercel URL and configured secret, so it has not been run from this workspace.
+
 ## 2026-10-10 — Add an always-run CI gate summary
 
 - **Problem:** When a prerequisite failed, the dependent production build was skipped and the run overview did not show a single compact gate-by-gate result.

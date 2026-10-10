@@ -1,5 +1,10 @@
 # AI Development Handoff
 
+### Latest follow-up — Vercel Hobby cron limit (2026-10-10)
+- Removed root `vercel.json` because it declared `* * * * *`, which Vercel Hobby rejects. The former Vercel Cron would also issue GET while `/api/ai/worker` only accepts authenticated POST.
+- Added `.github/workflows/ai-worker.yml` to call the worker every five minutes with `batch=3&concurrency=3` using POST. Set GitHub Actions variable `PRODUCTION_APP_URL` and Actions secret `AI_WORKER_SECRET`; set the matching secret in Vercel Production.
+- GitHub's scheduler can be delayed or dropped during load and only runs on the default branch. For strict worker latency, use Vercel Pro or a dedicated scheduler. Live worker execution remains to be verified after the first deployment and secret setup.
+
 ### Latest follow-up — CI/CD pipeline audit (2026-10-10)
 - Audited CI/CD workflows, test harness, smoke test, env references, and `.gitignore`. Test/validation jobs receive no secrets; `.env*` files are ignored and not tracked. The only required GitHub secrets are the three Vercel deployment credentials, scoped to the production deploy job.
 - Fixed the prior 31-test regression failures in the current working tree; regression harness passes 166/166 under `npm test`. The test/design/smoke scripts use Node's `--import tsx` entrypoint to avoid the `tsx` CLI IPC pipe restriction encountered in this macOS sandbox.
@@ -283,7 +288,7 @@ None active for P0. P1 thumbnail acquisition remains in a known, honest limited 
 
 - Read `ai/AI_MEDIA_ARCHITECT.md` for the current processing/credit architecture and limitations.
 - New migration order: `202610060001_billing.sql`, `202610070001_ai_media_architect.sql`, `202610070002_keeper_collection_sync_grants.sql`, then `202610070003_universal_ai_reprocessing.sql`.
-- Configure Supabase Auth and `SUPABASE_SERVICE_ROLE_KEY`; set `WHISPER_SERVICE_URL` to a trusted faster-whisper service; configure `CRON_SECRET` (or `AI_WORKER_SECRET`) for Vercel Cron. The worker processes one durable AI job per call.
+- Configure Supabase Auth and `SUPABASE_SERVICE_ROLE_KEY`; set `WHISPER_SERVICE_URL` to a trusted faster-whisper service; configure matching Vercel/GitHub `AI_WORKER_SECRET` values for the GitHub Actions scheduler. The worker claims one durable job per internal worker request.
 - Main authenticated import endpoint is `/api/ingest`. Browser single and bulk URL import paths call it. `keeper_import_media` is the transaction authority for unique URLs, Free 30/7-day, Basic 220 monthly/2,640 yearly, Pro unlimited, ledger, and durable job creation.
 - Run DB migrations against an isolated Supabase project and test free-cycle rollover, Basic period limits, Pro, concurrent duplicate URLs, job retries, RLS, correction learning, and authenticated worker requests before launch.
 - Current transcript provider contract: raw audio request to `WHISPER_SERVICE_URL`; no provider is configured in this environment, so current imports can legitimately complete with an unavailable transcript.

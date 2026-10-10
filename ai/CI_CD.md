@@ -8,6 +8,8 @@ Keeper uses GitHub Actions for validation and Vercel for production deployment.
 
 The test, lint, type-check, design-audit, and build gates do not receive application `.env` files or production secrets. Local `.env*` files are ignored by Git; automated tests use controlled fixtures and do not require provider credentials. The CI workflow publishes an always-run job summary listing each gate as `success`, `failure`, or `skipped`, so a skipped dependent build is distinguishable from a failed test.
 
+`.github/workflows/ai-worker.yml` invokes the durable media worker every five minutes with an authenticated `POST`; it avoids Hobby's one-cron-per-day restriction and does not rely on Vercel Cron's `GET` request. Configure the GitHub Actions variable `PRODUCTION_APP_URL` and secret `AI_WORKER_SECRET`; the same worker secret must be set in Vercel Production. GitHub scheduled workflows are best-effort and can be delayed, so choose Pro or a dedicated scheduler if job latency must be tightly controlled.
+
 ## Production release
 
 `.github/workflows/deploy.yml` runs on pushes to `main` and manual dispatches from `main`. It repeats all quality gates, pulls the Vercel production settings, builds a Vercel prebuilt artifact, deploys that artifact, and checks the deployed URL's health endpoint, landing page, sign-in/sign-up pages, and import capabilities endpoint. The deployment is serialized so concurrent main pushes cannot race. A failed post-deploy smoke test requests rollback to the previous Vercel production deployment. Manual dry-run executes the production-settings build and does not publish.

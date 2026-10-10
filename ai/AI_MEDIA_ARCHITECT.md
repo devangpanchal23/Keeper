@@ -14,7 +14,7 @@ authenticated single/bulk import
   -> keeper_import_media PostgreSQL transaction
        workspace URL deduplication + plan quota + Usage Ledger + AI job
   -> browser library copy for current UI compatibility
-  -> Vercel Cron /api/ai/worker claims one leased job
+  -> GitHub Actions scheduler POSTs /api/ai/worker to claim leased jobs
   -> faster-whisper/platform-caption adapter + optional OCR service -> normalized representation
   -> grounded analysis/tag generation + evidence-based asset classification -> workspace collection matching
   -> transcript, analysis, item payload, workspace assignment memory
@@ -27,7 +27,7 @@ Single and browser bulk imports call the same authenticated `/api/ingest` bounda
 ## Processing and retries
 
 - Job status: `QUEUED`, `PENDING`, `EXTRACTING`, `TRANSCRIBING`, `ANALYZING`, `GENERATING_TAGS`, `MATCHING_COLLECTION`, `ORGANIZING`, `INDEXING`, `COMPLETED`, and stage-specific failures.
-- A five-minute lease plus `FOR UPDATE SKIP LOCKED` prevents two workers from claiming the same job. Vercel Cron requests a batch of three bounded parallel workers. Failed work retries with exponential delay and ends after five attempts.
+- A five-minute lease plus `FOR UPDATE SKIP LOCKED` prevents two workers from claiming the same job. The GitHub Actions scheduler requests a batch of three bounded parallel workers. Failed work retries with exponential delay and ends after five attempts.
 - Transcript persistence is unique by `media_id`; retries reuse it. Analysis and item payloads use upserts/updates. Import rows and ledger entries are committed before AI work, so a failed model never removes a saved import.
 - Canonical URL and platform identifier are unique per workspace. Strong normalized source-text fingerprints are checked before quota consumption as well. Duplicates do not consume another credit or create another job.
 - Transcription/media caches require a workspace ID; unscoped callers do not share cached content.
@@ -82,8 +82,8 @@ Apply `supabase/migrations/202610070001_ai_media_architect.sql`, `202610070002_k
 - `TRANSCRIPTION_PROVIDER`, `OPENAI_TRANSCRIPTION_API_KEY` (or `OPENAI_API_KEY`), optional `OPENAI_TRANSCRIPTION_MODEL` (`whisper-1` default), optional `AUDIO_EXTRACTION_SERVICE_URL`
 - `CONTENT_AI_API_KEY` (or shared `OPENAI_API_KEY`), `CONTENT_AI_MODEL`, optional `CONTENT_AI_API_URL` (OpenAI-compatible analysis endpoint; server-side only)
 - Optional OCR: `OCR_SERVICE_URL`, `OCR_SERVICE_TOKEN` (deploy `services/ocr` privately; text-only imports do not require it)
-- `CRON_SECRET` (Vercel) or `AI_WORKER_SECRET` for `/api/ai/worker`
-- Vercel Cron calls the worker once per minute. A larger deployment can run multiple scheduler/worker requests; job claims are concurrency-safe.
+- `AI_WORKER_SECRET` for authenticated `/api/ai/worker` calls
+- `.github/workflows/ai-worker.yml` invokes the worker using authenticated POST requests every five minutes, which fits Vercel Hobby's once-per-day Cron limit. Add the same `AI_WORKER_SECRET` value to Vercel Production and GitHub Actions Secrets, and set the GitHub Actions variable `PRODUCTION_APP_URL` to the production HTTPS URL. GitHub scheduled workflows are best-effort and may be delayed; use Vercel Pro or a dedicated scheduler if tighter processing latency is required.
 
 The faster-whisper service accepts authenticated `application/octet-stream` media at `/transcribe` and returns `text`, optional `language`, and `segments` using `start`/`end` seconds. `/extract-audio` uses FFmpeg and returns AAC audio in M4A plus duration metadata for OpenAI transcription. Both endpoints enforce upload limits. Transcript timing/duration/provenance requires applying `supabase/migrations/202610070004_transcript_audio_metadata.sql` after the earlier AI migrations. The adapter interface remains replaceable through `TranscriptionService.setProvider`.
 
@@ -107,7 +107,7 @@ Analysis now accepts a typed `ContentRepresentation`, and rejects title, metadat
 
 ## Production limitations to verify before launch
 
-- Apply all Supabase migrations in the documented order and configure Supabase Auth, Razorpay webhooks, the service-role key, a reachable faster-whisper deployment, and Vercel Cron secret. These external systems were not available here, so live SQL/Razorpay/Whisper workflows have not been exercised.
+- Apply all Supabase migrations in the documented order and configure Supabase Auth, Razorpay webhooks, the service-role key, a reachable faster-whisper deployment, and the matching Vercel/GitHub `AI_WORKER_SECRET`. These external systems were not available here, so live SQL/Razorpay/Whisper workflows have not been exercised.
 - Keeper still uses per-user localStorage for legacy items and many library mutations. Authenticated workspace startup hydrates server-imported media from Supabase and merges AI-derived fields safely, but existing local-only items and all subsequent library edits are not yet fully synchronized to Postgres.
 - Platform providers may not expose a downloadable audio stream. Such media is retained with metadata and a truthful unavailable transcript; platform authorization or user-provided media is needed for transcription.
 - OCR requires deploying the optional private Tesseract/FFmpeg sidecar and configuring its URL/token. Coverage also depends on the adapter being able to acquire the source media legitimately.

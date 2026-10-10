@@ -1,0 +1,61 @@
+name: AI Job Worker
+
+on:
+  # GitHub Actions supports a five-minute minimum interval. Offset from the
+  # hour to reduce schedule contention and load spikes.
+  schedule:
+    - cron: "3-59/5 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: keeper-ai-worker
+  cancel-in-progress: false
+
+jobs:
+  process-queued-jobs:
+    name: Process queued AI jobs
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require production worker configuration
+        env:
+          PRODUCTION_APP_URL: ${{ vars.PRODUCTION_APP_URL }}
+          AI_WORKER_SECRET: ${{ secrets.AI_WORKER_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$PRODUCTION_APP_URL" ]]; then
+            echo "Set the PRODUCTION_APP_URL Actions variable to the deployed HTTPS app URL." >&2
+            exit 1
+          fi
+          if [[ "$PRODUCTION_APP_URL" != https://* ]]; then
+            echo "PRODUCTION_APP_URL must use HTTPS." >&2
+            exit 1
+          fi
+          if [[ -z "$AI_WORKER_SECRET" ]]; then
+            echo "Set the AI_WORKER_SECRET Actions secret to the same value configured in Vercel." >&2
+            exit 1
+          fi
+
+      - name: Invoke authenticated worker batch
+        env:
+          PRODUCTION_APP_URL: ${{ vars.PRODUCTION_APP_URL }}
+          AI_WORKER_SECRET: ${{ secrets.AI_WORKER_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          http_status="$(curl --silent --show-error --max-time 280 \
+            --output "$response_file" --write-out '%{http_code}' \
+            --request POST \
+            --header "Authorization: Bearer $AI_WORKER_SECRET" \
+            "${PRODUCTION_APP_URL%/}/api/ai/worker?batch=3&concurrency=3")"
+          cat "$response_file"
+          if [[ "$http_status" != 2* ]]; then
+            echo "AI worker returned HTTP $http_status." >&2
+            exit 1
+          fi
