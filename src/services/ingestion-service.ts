@@ -461,13 +461,26 @@ export class IngestionService {
     const collections = options.existingCollections || StorageService.getCollections(options.userId);
     const enrichment = this.buildFastMetadataEnrichment(sourceData);
 
+    const trustedTranscriptProviders = new Set([
+      "openai-audio-transcriptions", "faster-whisper", "platform_caption_track", "youtube_caption_track", "speech_to_text",
+    ]);
+    const transcriptProvider = sourceData.provenance.transcript?.source;
+    const verifiedTranscript = typeof transcriptProvider === "string" && trustedTranscriptProviders.has(transcriptProvider)
+      ? sourceData.transcript
+      : undefined;
     const contentRepresentation = ContentIntelligenceService.normalizeRepresentation({
-      sourceTranscript: sourceData.transcript,
+      sourceTranscript: verifiedTranscript,
       caption: sourceData.caption,
       bodyText: sourceData.bodyText,
       description: sourceData.description,
       title: undefined,
     });
+    const hasVerifiedSourceText = contentRepresentation.status === "completed"
+      && contentRepresentation.text.trim().length >= 30
+      && ["transcription", "platform_transcript", "post_body", "caption", "ocr_text", "description"].includes(contentRepresentation.source);
+    const contentStatus = hasVerifiedSourceText
+      ? (contentRepresentation.type === "transcript" ? "FULL_CONTENT" : "PARTIAL_CONTENT")
+      : "METADATA_ONLY";
     const preservedUserTags = Array.isArray(existing?.metadata?.userTags)
       ? existing.metadata.userTags.filter((tag: unknown): tag is string => typeof tag === "string")
       : [];
@@ -563,7 +576,7 @@ export class IngestionService {
       aiGeneratedTags: [],
         extractionStatus: sourceData.provenance.extraction ? "failed" : "completed",
         contentIntent: enrichment.contentIntent,
-        evidenceLevel: enrichment.status === "FULL_CONTENT" ? "TRANSCRIBED" : (enrichment.status === "PARTIAL_CONTENT" ? "TEXT_CONTENT" : "METADATA_ONLY"),
+        evidenceLevel: contentStatus === "FULL_CONTENT" ? "TRANSCRIBED" : (contentStatus === "PARTIAL_CONTENT" ? "TEXT_CONTENT" : "METADATA_ONLY"),
         fbid: options.initialMetadata?.fbid,
         hashtags: options.initialMetadata?.hashtags,
         thumbnailSource:
@@ -577,7 +590,7 @@ export class IngestionService {
                         ? "cache"
                         : "provider"))),
       },
-      contentStatus: enrichment.status,
+      contentStatus,
       isLimited: !enrichment.isSufficientContent,
       limitedReason: sourceData.restrictionReason,
       provenance: {

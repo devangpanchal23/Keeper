@@ -126,3 +126,35 @@ jobs:
 
       - name: Build Production Bundle
         run: npm run build
+
+  # Always publish a compact, unambiguous result even when an upstream gate
+  # fails and the dependent production build is skipped.
+  report:
+    name: CI Results Summary
+    if: always()
+    needs: [validate, test, security, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish gate results
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          {
+            echo '## CI quality gate results'
+            echo
+            echo '| Gate | Result |'
+            echo '| --- | --- |'
+            printf '| Lint, type check, design audit | `%s` |\n' "$VALIDATE_RESULT"
+            printf '| Automated tests | `%s` |\n' "$TEST_RESULT"
+            printf '| Production dependency audit | `%s` |\n' "$SECURITY_RESULT"
+            printf '| Production build | `%s` |\n' "$BUILD_RESULT"
+            echo
+            if [[ "$VALIDATE_RESULT" == success && "$TEST_RESULT" == success && "$SECURITY_RESULT" == success && "$BUILD_RESULT" == success ]]; then
+              echo 'All required CI gates passed.'
+            else
+              echo 'At least one required gate failed or was skipped. Open the corresponding job for its complete log and fix the first failed gate.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

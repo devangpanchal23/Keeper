@@ -1,11 +1,23 @@
 # Keeper — AI Development Changelog
 
+## 2026-10-10 — Add an always-run CI gate summary
+
+- **Problem:** When a prerequisite failed, the dependent production build was skipped and the run overview did not show a single compact gate-by-gate result.
+- **Change:** Added a summary job to `.github/workflows/ci.yml` that always reports validation, automated test, production dependency audit, and build outcomes. Documented that CI validation and regression tests do not require local `.env` files or application provider secrets.
+- **Validation:** Regression suite passes 166/166 via `npm test`; type-check, lint (262-warning ceiling), and design audit pass. Switched TypeScript helper scripts to Node's `--import tsx` entrypoint because the `tsx` CLI's IPC pipe failed with `EPERM` in this macOS sandbox. Local production dependency audit cannot reach npm registry DNS, and local build cannot fetch Google fonts. Workflow changes still need a new Actions run after commit to validate on GitHub.
+
 ## 2026-10-10 — Scope CI dependency audit to production packages
 
 - **Problem:** CI's full-tree `npm audit --audit-level=high` fails on `braces@3.0.3`, which is only pulled into the development ESLint toolchain and has no published patched version for the current advisory.
 - **Root cause:** The CI security job audited dev dependencies, unlike the production deploy job, which already uses `--omit=dev`.
 - **Change:** Updated `.github/workflows/ci.yml` to audit production packages only and documented the advisory/toolchain limitation in `ai/CI_CD.md`.
 - **Validation:** Type-check, configured ESLint gate, and design audit pass locally. Local npm audit could not resolve npm registry DNS. Regression suite remains 135/166 (31 failures); build cannot fetch Google Fonts in this restricted environment. See `ai/HANDOFF.md` for required follow-up.
+
+## 2026-10-10 — Repair CI regression suite and preserve verified content status
+
+- **Problem:** Actions failed 31 of 166 assertions. Causes included stale AI-at-import expectations, test collections created outside the tested user's workspace, unverified fake transcript fixtures, and source-status assertions that no longer matched deferred background analysis.
+- **Root cause and changes:** Corrected test fixtures and expectations to the current verified-content and tenant contracts. Imports now classify verified source text of sufficient length as `PARTIAL_CONTENT` while generated AI fields remain pending; only recognized transcript provenance qualifies as full transcript content. Organizer fallback now derives evidence-linked tags from verified transcripts when generated tags are not yet persisted, and it persists the transcript's actual provider to support safe idempotent reuse. Archive image previews are asserted with their export provenance.
+- **Validation:** `node --import tsx scripts/run-tests.ts` passes 166/166; type-check, configured lint, and design audit pass. User-provided Actions screenshots confirm the dependency audit and lint/type/design gate passed. Local production build remains blocked fetching Google Fonts; a new Actions run is needed to verify build and updated test gate.
 
 *Last Updated: 2026-10-02*
 

@@ -1,5 +1,11 @@
 # AI Development Handoff
 
+### Latest follow-up — CI/CD pipeline audit (2026-10-10)
+- Audited CI/CD workflows, test harness, smoke test, env references, and `.gitignore`. Test/validation jobs receive no secrets; `.env*` files are ignored and not tracked. The only required GitHub secrets are the three Vercel deployment credentials, scoped to the production deploy job.
+- Fixed the prior 31-test regression failures in the current working tree; regression harness passes 166/166 under `npm test`. The test/design/smoke scripts use Node's `--import tsx` entrypoint to avoid the `tsx` CLI IPC pipe restriction encountered in this macOS sandbox.
+- Added an always-run CI summary job to show each gate outcome including skipped build status. CI dependency audit remains production-only to avoid the known unpatched dev-only advisory.
+- Type-check, configured lint ceiling, and design audit pass. Local build cannot retrieve Google fonts and npm audit cannot reach registry DNS. After committing, verify a fresh Actions run shows all gates green; deployment remains blocked until its quality gate passes.
+
 ### Latest follow-up — local billing profile 503 (2026-10-09)
 - The pasted `npm run dev` log contains no parser/syntax error. It shows repeated `GET /api/billing 503` because `.env.local` has `NEXT_PUBLIC_SUPABASE_URL` but no `SUPABASE_SERVICE_ROLE_KEY`.
 - Fixed `/api/billing` GET to query only the authenticated user's billing rows with the cookie-bound Supabase client. Billing row RLS already scopes SELECT to `auth.uid() = user_id`; privileged writes/webhooks still require the server role key.
@@ -296,3 +302,10 @@ None active for P0. P1 thumbnail acquisition remains in a known, honest limited 
 - Changed `.github/workflows/ci.yml` full-tree audit to `npm audit --omit=dev --audit-level=high`, matching the production-only audit already used in deploy. The remaining high finding is dev-only `braces@3.0.3` through `eslint-config-next` → `fast-glob` → `micromatch`; the reviewed GitHub advisory has no patched version, so do not force an ESLint/Next downgrade. Confirm the production audit on the network-enabled Actions runner.
 - On current `main` (`f0b3a5a`), local regression run remains 135/166 passing (31 failing). Failures include old expectations for deterministic AI output without configured `CONTENT_AI_API_KEY`/`CONTENT_AI_MODEL`, tenant fixtures creating collections under a different active user, and mismatched content/thumbnail provenance assumptions. Fix or replace each assertion only after checking the current product contract; never bypass tenant authorization, URL immutability, or grounded-content gates to satisfy stale tests.
 - Local gates: type-check passes; ESLint passes at 262 warnings; `node --import tsx scripts/palette-audit.ts` passes. `npm audit` cannot reach npm registry here. Build cannot fetch Geist/Geist Mono from Google Fonts. Keep production deployment blocked until the automated test failures are resolved and CI confirms the online audit/build.
+
+## 2026-10-10 — Regression suite repaired
+
+- Resolved the 31 failures from the supplied Actions log. The full harness now passes 166/166 using `node --import tsx scripts/run-tests.ts`. A number of old assertions expected import-time AI summaries, title/creator-derived analysis, metadata-based organization of Reels, or collections owned by the anonymous workspace; updated them to the current grounded-AI, transcript-verification, and tenant-isolation contracts.
+- Fixed source behavior where available verified captions were mislabeled `METADATA_ONLY`: imports now report `PARTIAL_CONTENT` for >=30 characters of verified caption/body text while leaving AI summaries/tags pending. A `FULL_CONTENT` transcript representation requires a recognized transcript provider provenance.
+- Collection organization can locally generate evidence-linked tags from a verified transcript when persisted AI tags are absent. Persisted transcripts now retain their actual provider name so the next organize pass can safely reuse them.
+- Validation: all 166 regression assertions pass; `npm run type-check` passes; `npm run lint -- --max-warnings=262` passes; design audit passes. The user's supplied Actions screenshot (from before these local fixes) confirms dependency audit and lint/type/design checks passed, while the test failure prevented the build gate from running. Local `npm run build` remains blocked by Google Fonts connectivity, and the updated test/build workflows need a new Actions run to confirm on GitHub's runner.

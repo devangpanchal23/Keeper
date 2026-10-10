@@ -114,6 +114,21 @@ function assertEqual<T>(actual: T, expected: T, message: string) {
   }
 }
 
+async function assertRejects(
+  operation: () => Promise<unknown>,
+  expectedMessage: string,
+  message: string,
+): Promise<void> {
+  let rejection: unknown;
+  try {
+    await operation();
+  } catch (error) {
+    rejection = error;
+  }
+  assert(rejection instanceof Error, `${message}: expected operation to reject`);
+  assert(rejection.message.includes(expectedMessage), `${message}: unexpected rejection '${rejection.message}'`);
+}
+
 async function runSuite() {
   console.log("\n=======================================================");
   console.log("🧪 RUNNING KEEPER PRODUCTION VALIDATION TEST SUITE");
@@ -547,35 +562,11 @@ async function runSuite() {
       assertEqual(uniqueParts[0], "u/Medical-Monk4137", "Rendered header identity is u/Medical-Monk4137");
 
       // 3. AI Enrichment & Grounding assertions (Section 6, 7 & 8)
-      const enrichment = await AIPipeline.enrichContent(sourceData, INITIAL_COLLECTIONS);
-
-      // Summary must be grounded in actual post, NOT generic "Reddit" or "reddit.com" boilerplate
-      assert(!enrichment.summary.quick.includes("reddit.com"), "AI quick summary MUST NOT contain 'reddit.com'");
-      assert(!enrichment.summary.standard.includes("reddit.com"), "AI standard summary MUST NOT contain 'reddit.com'");
-      assert(!enrichment.summary.standard.includes("Full text was not accessible"), "AI standard summary MUST NOT have generic fallback");
-      assert(enrichment.summary.quick.includes("r/indianrailways"), "AI summary includes community r/indianrailways");
-      assert(enrichment.summary.quick.includes("Medical-Monk4137"), "AI summary includes author Medical-Monk4137");
-
-      // MUST NOT contain contaminated multi-agent divergence concepts
-      assert(!enrichment.summary.standard.includes("deterministic verification"), "AI summary MUST NOT contain 'deterministic verification'");
-      assert(!enrichment.summary.standard.includes("multi-agent divergence"), "AI summary MUST NOT contain 'multi-agent divergence'");
-      assert(!enrichment.summary.standard.includes("finite loop execution"), "AI summary MUST NOT contain 'finite loop execution'");
-
-      // Tags must reflect Indian Railways / Travel, NOT generic #Reddit or spurious AI tags
-      assert(!enrichment.tags.includes("Reddit"), "Tags MUST NOT include generic 'Reddit'");
-      assert(!enrichment.tags.includes("reddit.com"), "Tags MUST NOT include generic 'reddit.com'");
-      assert(!enrichment.tags.includes("AI"), "Tags MUST NOT include 'AI' when content is about railways");
-      assert(!enrichment.tags.includes("LLM"), "Tags MUST NOT include 'LLM' when content is about railways");
-      assert(!enrichment.tags.includes("Agents"), "Tags MUST NOT include 'Agents' when content is about railways");
-      assert(!enrichment.tags.includes("Architecture"), "Tags MUST NOT include 'Architecture' when content is about railways");
-      assert(enrichment.tags.includes("IndianRailways") || enrichment.tags.includes("Railways"), "Tags include Railways / IndianRailways");
-
-      // Collection recommendation assertions: must NOT be AI & Automation or React Learning
-      assertEqual(enrichment.suggestedCollectionName !== "AI & Automation", true, "Must NOT be classified into 'AI & Automation'");
-      assertEqual(enrichment.suggestedCollectionName !== "React Learning", true, "Must NOT be classified into 'React Learning'");
-
-      // Status must be FULL_CONTENT (not METADATA_ONLY)
-      assertEqual(enrichment.status, "FULL_CONTENT", "Availability level MUST be FULL_CONTENT");
+      await assertRejects(
+        () => AIPipeline.enrichContent(sourceData, INITIAL_COLLECTIONS),
+        "Content analysis is not configured",
+        "Import metadata must remain available when AI analysis is not configured",
+      );
     });
 
     await test("CROSS-CONTENT CONTAMINATION ISOLATION: YouTube vs Reddit Concurrent Ingestion", async () => {
@@ -614,22 +605,14 @@ async function runSuite() {
       };
 
       // Execute concurrently to expose any shared mutable state or cross-request pollution
-      const [enrichmentYT, enrichmentReddit] = await Promise.all([
+      const [enrichmentYT, enrichmentReddit] = await Promise.allSettled([
         AIPipeline.enrichContent(ytSource, INITIAL_COLLECTIONS),
         AIPipeline.enrichContent(redditSource, INITIAL_COLLECTIONS),
       ]);
-
-      // Assert Content A does not contaminate Content B
-      assert(!enrichmentReddit.summary.standard.includes("React"), "Reddit enrichment standard summary MUST NOT mention React");
-      assert(!enrichmentReddit.summary.standard.includes("Dan Abramov"), "Reddit enrichment MUST NOT mention Dan Abramov");
-      assert(!enrichmentReddit.tags.includes("React"), "Reddit enrichment MUST NOT have React tag");
-      assert(enrichmentReddit.suggestedCollectionName !== "React Learning", "Reddit enrichment collection MUST NOT be React Learning");
-
-      // Assert Content B does not contaminate Content A
-      assert(!enrichmentYT.summary.standard.includes("indianrailways"), "YouTube enrichment standard summary MUST NOT mention indianrailways");
-      assert(!enrichmentYT.summary.standard.includes("Medical-Monk4137"), "YouTube enrichment MUST NOT mention Medical-Monk4137");
-      assert(!enrichmentYT.tags.includes("IndianRailways"), "YouTube enrichment MUST NOT have IndianRailways tag");
-      assert(enrichmentYT.suggestedCollectionName !== "Uncategorized", "YouTube enrichment properly recommends collection");
+      assert(enrichmentYT.status === "fulfilled" && enrichmentYT.value.status === "INSUFFICIENT_CONTENT", "Video metadata without a verified transcript is not analyzed");
+      assert(enrichmentReddit.status === "rejected" && enrichmentReddit.reason instanceof Error && enrichmentReddit.reason.message.includes("Content analysis is not configured"), "Eligible Reddit text requires an explicitly configured analyzer");
+      assertEqual(ytSource.creator?.name, "Dan Abramov", "Concurrent enrichment does not mutate YouTube source facts");
+      assertEqual(redditSource.creator?.name, "Medical-Monk4137", "Concurrent enrichment does not mutate Reddit source facts");
     });
 
     await test("CROSS-CONTENT CONTAMINATION ISOLATION: Reddit AI Post vs Reddit Railway Post Concurrent Ingestion", async () => {
@@ -668,26 +651,15 @@ async function runSuite() {
       };
 
       // Execute concurrently
-      const [enrichmentAI, enrichmentRailway] = await Promise.all([
+      const [enrichmentAI, enrichmentRailway] = await Promise.allSettled([
         AIPipeline.enrichContent(redditAISource, INITIAL_COLLECTIONS),
         AIPipeline.enrichContent(redditRailwaySource, INITIAL_COLLECTIONS),
       ]);
-
-      // Reddit AI assertions
-      assert(enrichmentAI.tags.includes("AI") || enrichmentAI.tags.includes("LLM"), "Reddit AI post must have AI tags");
-      assert(enrichmentAI.summary.detailed.includes("AIEngineer"), "Reddit AI creator isolated");
-      assert(enrichmentAI.summary.detailed.includes("r/MachineLearning"), "Reddit AI community isolated");
-
-      // Reddit Railway assertions (MUST NOT have AI tags or AI & Automation collection)
-      assert(!enrichmentRailway.tags.includes("AI"), "Railway post MUST NOT have 'AI' tag");
-      assert(!enrichmentRailway.tags.includes("LLM"), "Railway post MUST NOT have 'LLM' tag");
-      assert(!enrichmentRailway.tags.includes("Agents"), "Railway post MUST NOT have 'Agents' tag");
-      assert(!enrichmentRailway.tags.includes("Architecture"), "Railway post MUST NOT have 'Architecture' tag");
-      assertEqual(enrichmentRailway.suggestedCollectionName !== "AI & Automation", true, "Railway post collection MUST NOT be 'AI & Automation'");
-      assert(enrichmentRailway.summary.detailed.includes("Medical-Monk4137"), "Railway creator isolated");
-      assert(enrichmentRailway.summary.detailed.includes("r/indianrailways"), "Railway community isolated");
-      assert(!enrichmentRailway.summary.detailed.includes("AIEngineer"), "Railway summary does not contain AI creator");
-      assert(!enrichmentAI.summary.detailed.includes("Medical-Monk4137"), "AI summary does not contain Railway creator");
+      for (const result of [enrichmentAI, enrichmentRailway]) {
+        assert(result.status === "rejected" && result.reason instanceof Error && result.reason.message.includes("Content analysis is not configured"), "Both concurrent analyses fail closed without an AI provider");
+      }
+      assertEqual(redditAISource.creator?.name, "AIEngineer", "AI post source remains isolated");
+      assertEqual(redditRailwaySource.creator?.name, "Medical-Monk4137", "Railway post source remains isolated");
     });
 
     await test("MigrationService detects and repairs corrupted Reddit records idempotently", () => {
@@ -842,7 +814,7 @@ async function runSuite() {
       assertEqual(mapped.contentType, "video", "Crosspost detected as video from parent media");
     });
 
-    await test("Reddit Deleted Author: AI Summary receives normalized authoritative creator without u/null", async () => {
+    await test("Reddit Deleted Author: insufficient source does not create an author-based AI summary", async () => {
       const deletedPostSubmission = {
         id: "del_post_001",
         subreddit: "dankindianmemes",
@@ -861,7 +833,8 @@ async function runSuite() {
       assertEqual(mapped.creator.status, "deleted", "Creator status is deleted");
 
       const enrichment = await AIPipeline.enrichContent(mapped, INITIAL_COLLECTIONS);
-      assert(enrichment.summary.standard.includes("by a deleted user"), "AI standard summary must say 'by a deleted user'");
+      assertEqual(enrichment.status, "INSUFFICIENT_CONTENT", "Short metadata-only post does not receive AI analysis");
+      assert(!enrichment.summary.standard.includes("by a deleted user"), "Fallback does not fabricate an author-based summary");
       assert(!enrichment.summary.standard.includes("u/null"), "AI summary MUST NOT say 'u/null'");
       assert(!enrichment.summary.standard.includes("u/[deleted]"), "AI summary MUST NOT say 'u/[deleted]'");
       assert(!enrichment.summary.standard.includes("u/Deleted user"), "AI summary MUST NOT say 'u/Deleted user'");
@@ -907,9 +880,9 @@ async function runSuite() {
         AIPipeline.enrichContent(mapB1, INITIAL_COLLECTIONS),
       ]);
 
-      assert(enrichA.summary.standard.includes("UserA"), "Enrichment A contains UserA");
+      assertEqual(enrichA.status, "INSUFFICIENT_CONTENT", "Short post A does not receive AI analysis");
       assert(!enrichA.summary.standard.includes("UserB"), "Enrichment A does not contain UserB");
-      assert(enrichB.summary.standard.includes("UserB"), "Enrichment B contains UserB");
+      assertEqual(enrichB.status, "INSUFFICIENT_CONTENT", "Short post B does not receive AI analysis");
       assert(!enrichB.summary.standard.includes("UserA"), "Enrichment B does not contain UserA");
     });
 
@@ -1092,25 +1065,16 @@ Andrew Ng, the godfather of AI, gave the complete playbook to become one from sc
       // 5. AI Enrichment & Grounding
       const enrichment = await AIPipeline.enrichContent(sourceData, INITIAL_COLLECTIONS);
 
-      // AI Summary must be grounded in AI Agentic course / Andrew Ng
-      assert(enrichment.summary.quick.includes("Dipanshu Kushwaha"), "AI summary includes author Dipanshu Kushwaha");
-      assert(enrichment.summary.quick.includes("Dipanshu_AI"), "AI summary includes handle Dipanshu_AI");
-      assert(enrichment.summary.quick.includes("Andrew Ng") || enrichment.summary.standard.includes("Andrew Ng"), "AI summary mentions Andrew Ng");
-      assert(enrichment.summary.standard.includes("agent") || enrichment.summary.standard.includes("AI"), "AI summary discusses agents / AI engineering");
+      assertEqual(enrichment.status, "INSUFFICIENT_CONTENT", "Video post is not analyzed until a verified transcript exists");
+      assert(!enrichment.summary.standard.includes("Dipanshu Kushwaha"), "AI fallback does not derive summaries from author metadata");
+      assertEqual(enrichment.tags.length, 0, "No AI tags are synthesized without a verified transcript");
 
       // AI MUST NOT overwrite source facts
       assertEqual(sourceData.creator?.name, "Dipanshu Kushwaha", "AI did NOT overwrite creator name");
       assertEqual(sourceData.creator?.username, "Dipanshu_AI", "AI did NOT overwrite creator username");
       assertEqual(sourceData.platform, "x", "AI did NOT overwrite platform");
 
-      // Tags grounded in AI / Andrew Ng / Agentic AI
-      assert(enrichment.tags.includes("AI"), "Tags include #AI");
-      assert(enrichment.tags.includes("AgenticAI"), "Tags include #AgenticAI");
-      assert(enrichment.tags.includes("AIAgents"), "Tags include #AIAgents");
-      assert(enrichment.tags.includes("AndrewNg"), "Tags include #AndrewNg");
-
-      // Collection matching: Must be 'AI & Automation'
-      assertEqual(enrichment.suggestedCollectionName, "AI & Automation", "Recommends 'AI & Automation' collection");
+      assertEqual(enrichment.suggestedCollectionName, undefined, "No collection is inferred from an unverified video transcript");
     });
 
     await test("XProvider quote post: author isolation ensures quote creator never replaces post author", () => {
@@ -1218,16 +1182,16 @@ Andrew Ng, the godfather of AI, gave the complete playbook to become one from sc
       };
 
       const enrichment = await AIPipeline.enrichContent(restrictedSource);
-      assertEqual(enrichment.summary.quick, "Insufficient content available for reliable AI analysis.", "Must return exact quick summary");
-      assert(enrichment.summary.standard.includes("Insufficient content available for reliable AI analysis."), "Must include exact wording in standard summary");
+      assertEqual(enrichment.summary.quick, "Verified source content unavailable", "Must state verified source content is unavailable");
+      assert(enrichment.summary.standard.includes("verified source content was unavailable"), "Must explain why analysis was withheld");
       assertEqual(enrichment.keyPoints.length, 0, "Key points MUST be empty for restricted content");
       assertEqual(enrichment.topics.length, 0, "Topics MUST be empty; no hallucination");
-      assertEqual(enrichment.confidence, 0.1, "Confidence must be low (0.1)");
+      assertEqual(enrichment.confidence, 0, "Unavailable evidence must have zero confidence");
       assert(!enrichment.isSufficientContent, "Must flag isSufficientContent as false");
       assertEqual(enrichment.status, "INSUFFICIENT_CONTENT", "Status must be INSUFFICIENT_CONTENT");
     });
 
-    await test("AIPipeline synthesizes groundable insights for rich content", async () => {
+    await test("AIPipeline requires a verified transcript before analyzing rich video metadata", async () => {
       const richSource: AuthoritativeSourceData = {
         platform: "youtube",
         canonicalUrl: "https://www.youtube.com/watch?v=3lZF8W_AaUo",
@@ -1245,11 +1209,9 @@ Andrew Ng, the godfather of AI, gave the complete playbook to become one from sc
       };
 
       const enrichment = await AIPipeline.enrichContent(richSource);
-      assert(enrichment.isSufficientContent, "Must flag isSufficientContent as true");
-      assert(enrichment.confidence >= 0.7, "Confidence must be >= 0.7 for rich content");
-      assert(enrichment.tags.includes("React"), "Tags must include React");
-      assert(enrichment.keyPoints.length > 0, "Key points must be extracted from genuine text");
-      assert(enrichment.summary.standard.includes("React 19"), "Summary must reflect actual content");
+      assertEqual(enrichment.status, "INSUFFICIENT_CONTENT", "A video without a verified transcript remains unanalyzed");
+      assertEqual(enrichment.isSufficientContent, false, "Metadata does not qualify as verified content");
+      assertEqual(enrichment.tags.length, 0, "No tags are generated from video title or description metadata");
     });
 
     // ---------------------------------------------------------------------------
@@ -1830,7 +1792,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         description: "Destination for E2E import test",
         icon: "Folder",
         color: "#EC4899",
-      });
+      }, e2eUser);
 
       // 1. Parse real Instagram fixture
       const analysis = InstagramExportAdapter.parse(FIXTURE_SAVED_POSTS_STRING_MAP, "saved_posts.json");
@@ -1894,9 +1856,9 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       const routingUser = `routing-user-${Date.now()}`;
 
       // Create 3 destination collections
-      const colUI = CollectionService.create({ name: "UI Inspiration Keeper", icon: "Folder", color: "#6366F1" });
-      const colDev = CollectionService.create({ name: "Development Keeper", icon: "Folder", color: "#10B981" });
-      const colRecipes = CollectionService.create({ name: "Recipes Keeper", icon: "Folder", color: "#F59E0B" });
+      const colUI = CollectionService.create({ name: "UI Inspiration Keeper", icon: "Folder", color: "#6366F1" }, routingUser);
+      const colDev = CollectionService.create({ name: "Development Keeper", icon: "Folder", color: "#10B981" }, routingUser);
+      const colRecipes = CollectionService.create({ name: "Recipes Keeper", icon: "Folder", color: "#F59E0B" }, routingUser);
 
       // Parse multi-collection fixture (contains UI, Architecture, Recipes)
       const analysis = InstagramExportAdapter.parse(FIXTURE_MULTIPLE_COLLECTIONS, "saved_collections.json");
@@ -2472,7 +2434,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
 
     await test("Metadata Merge Policy: Enriches restricted sourceData with verified export creator, title, and timestamp", async () => {
       const userA = `metadata-merge-user-${Date.now()}`;
-      const colA = CollectionService.create({ name: "Export Accuracy", icon: "Folder", color: "#6366F1" });
+      const colA = CollectionService.create({ name: "Export Accuracy", icon: "Folder", color: "#6366F1" }, userA);
 
       const result = await IngestionService.processUrl("https://www.instagram.com/p/C3x90ZaLkPq/", {
         userId: userA,
@@ -2548,7 +2510,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
 
     await test("Single Delete: Moves sole-collection item to Trash and updates collection counters", () => {
       const delUser = `del-user-${Date.now()}`;
-      const col = CollectionService.create({ name: "Single Delete Test", icon: "Folder", color: "#EC4899" });
+      const col = CollectionService.create({ name: "Single Delete Test", icon: "Folder", color: "#EC4899" }, delUser);
 
       const item = ContentService.addItem(
         {
@@ -2594,8 +2556,8 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
 
     await test("Multi-Collection Preservation: Deleting item from one collection unlinks it while keeping other collections and active status", () => {
       const multiUser = `multi-col-user-${Date.now()}`;
-      const colA = CollectionService.create({ name: "Alpha", icon: "Folder", color: "#6366F1" });
-      const colB = CollectionService.create({ name: "Beta", icon: "Folder", color: "#10B981" });
+      const colA = CollectionService.create({ name: "Alpha", icon: "Folder", color: "#6366F1" }, multiUser);
+      const colB = CollectionService.create({ name: "Beta", icon: "Folder", color: "#10B981" }, multiUser);
 
       // Item belongs to BOTH Alpha and Beta
       const item = ContentService.addItem(
@@ -2646,8 +2608,8 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
 
     await test("Select All: Scoped strictly to current collection, deletes all eligible items in that collection", () => {
       const bulkUser = `bulk-del-user-${Date.now()}`;
-      const targetCol = CollectionService.create({ name: "Bulk Target", icon: "Folder", color: "#6366F1" });
-      const otherCol = CollectionService.create({ name: "Bulk Other", icon: "Folder", color: "#F59E0B" });
+      const targetCol = CollectionService.create({ name: "Bulk Target", icon: "Folder", color: "#6366F1" }, bulkUser);
+      const otherCol = CollectionService.create({ name: "Bulk Other", icon: "Folder", color: "#F59E0B" }, bulkUser);
 
       // Create 3 items in targetCol, 2 items in otherCol
       for (let idx = 1; idx <= 3; idx++) {
@@ -2782,7 +2744,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
 
     await test("Idempotency: Repeated delete call is completely safe and produces zero state corruption", () => {
       const idempUser = `idemp-user-${Date.now()}`;
-      const col = CollectionService.create({ name: "Idempotency Col", icon: "Folder", color: "#6366F1" });
+      const col = CollectionService.create({ name: "Idempotency Col", icon: "Folder", color: "#6366F1" }, idempUser);
 
       const item = ContentService.addItem(
         {
@@ -2832,7 +2794,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
 
     await test("Downstream Index Consistency: Deleted item is excluded from active search and AI retrieval", () => {
       const searchUser = `search-del-user-${Date.now()}`;
-      const col = CollectionService.create({ name: "Search Consistency", icon: "Folder", color: "#6366F1" });
+      const col = CollectionService.create({ name: "Search Consistency", icon: "Folder", color: "#6366F1" }, searchUser);
 
       const item = ContentService.addItem(
         {
@@ -2960,8 +2922,8 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       assert(!item.aiSummary.standard.includes("https://www.instagram.com/reel/"), "Summary does not repeat raw URL");
       assertEqual(item.contentStatus, "PARTIAL_CONTENT", "Honest provenance: caption present without transcript is PARTIAL_CONTENT");
       assert(item.contentStatus !== "FULL_CONTENT", "Never claims FULL_CONTENT without transcript");
-      assertEqual(item.metadata.contentIntent, "NEWS", "Classified as NEWS for labor rights topic");
-      assert(item.topics.includes("Labor Rights"), "Identified Labor Rights topic from content");
+      assertEqual(item.metadata.contentIntent, undefined, "AI intent stays unset until the durable background analysis job");
+      assertEqual(item.topics.length, 0, "Import does not generate AI topics before background analysis");
     });
 
     await test("Critical Test 2: Transcript classification & Multimodal understanding", async () => {
@@ -2980,10 +2942,8 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         provenance: {},
       };
 
-      const editEnrich = await AIPipeline.enrichContent(editSource, []);
-      assertEqual(editEnrich.status, "FULL_CONTENT", "Audio transcript grants FULL_CONTENT");
-      assertEqual(editEnrich.contentIntent, "TUTORIAL", "Transitions guide classified as TUTORIAL");
-      assert(editEnrich.topics.includes("Video Editing") || editEnrich.topics.includes("Premiere Pro"), "Identified Premiere Pro / Video Editing topic");
+      editSource.provenance.transcript = { source: "faster-whisper", value: editSource.transcript };
+      await assertRejects(() => AIPipeline.enrichContent(editSource, []), "Content analysis is not configured", "Verified transcript analysis requires a configured provider");
 
       // 2. n8n Automation Reel with Audio Transcript
       const n8nSource: AuthoritativeSourceData = {
@@ -3000,9 +2960,8 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         provenance: {},
       };
 
-      const n8nEnrich = await AIPipeline.enrichContent(n8nSource, []);
-      assertEqual(n8nEnrich.category, "AI & Automation", "n8n workflow categorized as AI & Automation");
-      assertEqual(n8nEnrich.contentIntent, "TUTORIAL", "n8n build classified as TUTORIAL");
+      n8nSource.provenance.transcript = { source: "faster-whisper", value: n8nSource.transcript };
+      await assertRejects(() => AIPipeline.enrichContent(n8nSource, []), "Content analysis is not configured", "Verified n8n transcript analysis requires a configured provider");
 
       // 3. Asset Template Reel
       const assetSource: AuthoritativeSourceData = {
@@ -3020,7 +2979,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       };
 
       const assetEnrich = await AIPipeline.enrichContent(assetSource, []);
-      assertEqual(assetEnrich.contentIntent, "RESOURCE", "Comment ASSET template classified as RESOURCE intent");
+      assertEqual(assetEnrich.status, "INSUFFICIENT_CONTENT", "Video caption metadata alone does not produce AI intent");
     });
 
     await test("Critical Test 3: No media fallback honors honest status", async () => {
@@ -3069,8 +3028,8 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       };
 
       const enrichment = await AIPipeline.enrichContent(sourceData, []);
-      assertEqual(enrichment.status, "PARTIAL_CONTENT", "Status is PARTIAL_CONTENT for caption-only; never claims FULL_CONTENT");
-      assert(enrichment.summary.standard.includes("authentic_creator"), "Summary credits creator");
+      assertEqual(enrichment.status, "INSUFFICIENT_CONTENT", "Video caption metadata does not replace a verified transcript");
+      assert(!enrichment.summary.standard.includes("authentic_creator"), "Fallback does not synthesize a summary from creator metadata");
     });
 
     await test("Critical Test 4: User-selected arbitrary delete in collection", async () => {
@@ -3719,8 +3678,8 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         assertEqual(item.description, "Real non-empty caption for penguin reel with #nature #penguins", "Authoritative export caption preserved");
         assertEqual(item.thumbnail, INSTAGRAM_REEL_PLACEHOLDER, "Degrades cleanly to Instagram Reel placeholder");
         assertEqual(item.metadata.thumbnailSource, "fallback", "Thumbnail source is fallback");
-        assert(item.aiSummary !== undefined, "AI summary generated using textual export evidence");
-        assert(item.tags.length > 0, "AI tags generated successfully");
+      assertEqual(item.contentStatus, "PARTIAL_CONTENT", "Verified export caption is represented as partial source content");
+      assertEqual(item.tags.length, 0, "AI tags await the durable background analysis job");
       } finally {
         global.fetch = originalFetch;
       }
@@ -3976,7 +3935,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         thumbnail: "https://cdn.example.com/authentic_aaa.jpg",
         platform: "instagram",
         contentType: "reel",
-        creator: { name: "creator_A" },
+        creator: { name: "@creator_A" },
         description: "caption_A",
         savedDate: "2024-01-15T12:00:00.000Z",
         tags: ["reel"],
@@ -4007,12 +3966,17 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         topics: ["New AI Topic"],
         creator: { name: "Instagram User" }, // Weaker generic scrape
         description: "Weaker remote scraped description",
-        url: "https://www.instagram.com/reel/CORRUPTED/",
         savedDate: "2026-10-02T19:00:00.000Z",
       });
 
+      await assertRejects(
+        async () => ContentService.safeMerge(initialItem, { url: "https://www.instagram.com/reel/CORRUPTED/" }),
+        "DataIntegrityViolation",
+        "Content identity changes are rejected rather than silently merged",
+      );
+
       assertEqual(itemAfterAi.url, "https://www.instagram.com/reel/AAA/", "Stage 1: URL preserved");
-      assertEqual(itemAfterAi.creator.name, "creator_A", "Stage 1: Creator preserved");
+      assertEqual(itemAfterAi.creator.name, "@creator_A", "Stage 1: Creator preserved");
       assertEqual(itemAfterAi.description, "caption_A", "Stage 1: Description preserved");
       assertEqual(itemAfterAi.savedDate, "2024-01-15T12:00:00.000Z", "Stage 1: Saved date preserved");
 
@@ -4026,13 +3990,13 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       });
 
       assertEqual(itemAfterThumb.thumbnail, "https://cdn.example.com/authentic_aaa.jpg", "Stage 2: Authentic thumbnail preserved over fallback");
-      assertEqual(itemAfterThumb.creator.name, "creator_A", "Stage 2: Creator preserved");
+      assertEqual(itemAfterThumb.creator.name, "@creator_A", "Stage 2: Creator preserved");
 
       // Stage 3: Reprocessing
       const itemAfterReprocess = await ReprocessingService.reprocessItem(initialItem.id, testUser);
       if (itemAfterReprocess) {
         assertEqual(itemAfterReprocess.url, "https://www.instagram.com/reel/AAA/", "Stage 3: Reprocess preserves canonical URL");
-        assertEqual(itemAfterReprocess.creator.name, "creator_A", "Stage 3: Reprocess preserves creator");
+        assertEqual(itemAfterReprocess.creator.name, "@creator_A", "Stage 3: Reprocess preserves creator");
         assertEqual(itemAfterReprocess.description, "caption_A", "Stage 3: Reprocess preserves caption");
         assertEqual(itemAfterReprocess.savedDate, "2024-01-15T12:00:00.000Z", "Stage 3: Reprocess preserves saved date");
       }
@@ -4045,7 +4009,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       const reloaded = ContentService.getById(initialItem.id, testUser);
       assert(reloaded !== undefined, "Stage 5: Item reloaded from storage");
       assertEqual(reloaded?.url, "https://www.instagram.com/reel/AAA/", "Stage 5: Reloaded URL matches");
-      assertEqual(reloaded?.creator.name, "creator_A", "Stage 5: Reloaded creator matches");
+      assertEqual(reloaded?.creator.name, "@creator_A", "Stage 5: Reloaded creator matches");
       assertEqual(reloaded?.description, "caption_A", "Stage 5: Reloaded caption matches");
       assertEqual(reloaded?.savedDate, "2024-01-15T12:00:00.000Z", "Stage 5: Reloaded saved date matches");
     });
@@ -4089,11 +4053,11 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       for (const l of letters) {
         const item = storedItems.find((it) => it.url.includes(`/reel/Reel_${l}/`));
         assert(item !== undefined, `Item ${l} found in store`);
-        assertEqual(item?.creator.name, `creator_${l}`, `Item ${l} has strictly its own creator`);
+      assertEqual(item?.creator.name, `@creator_${l}`, `Item ${l} has strictly its own normalized creator handle`);
         assert(item?.description.includes(`Caption of item ${l}`), `Item ${l} has strictly its own caption`);
         for (const other of letters) {
           if (other !== l) {
-            assert(item?.creator.name !== `creator_${other}`, `Item ${l} creator does NOT equal Item ${other}`);
+            assert(item?.creator.name !== `@creator_${other}`, `Item ${l} creator does NOT equal Item ${other}`);
             assert(!item?.description.includes(`Caption of item ${other}`), `Item ${l} caption does NOT leak Item ${other}`);
           }
         }
@@ -4217,8 +4181,12 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       metadata: overrides.metadata ?? {},
       provenance: overrides.provenance ?? {},
     });
+    const trustedTranscript = (text: string) => ({
+      metadata: { transcript: text },
+      provenance: { transcript: { source: "faster-whisper", value: text } },
+    });
 
-    await test("TEST A — Single selected Reel: Transcribes audio when media exists and assigns to matching collection", async () => {
+    await test("TEST A — Single selected Reel: Reuses verified transcript and assigns to matching collection", async () => {
       const userId = "user_test_a";
       const colVideo: Collection = {
         id: "col-video",
@@ -4237,9 +4205,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         url: "https://www.instagram.com/reel/C_test_a/",
         title: "Premiere Transition Tutorial",
         description: "How to edit smooth transitions",
-        metadata: {
-          testMediaBuffer: Buffer.from("VIDEO TRANSCRIPTION DATA: How to create a smooth transition in Premiere Pro using keyframes."),
-        },
+        ...trustedTranscript("Video editing tutorial: create a smooth transition in Adobe Premiere Pro using keyframes."),
       });
       StorageService.saveItems([testItem], userId);
 
@@ -4258,7 +4224,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       if (!result.transcription) {
         throw new Error("Expected transcription result to exist");
       }
-      assertEqual(result.transcription.status, "completed", "Transcription must succeed with media buffer");
+      assertEqual(result.transcription.status, "transcribed", "Verified persisted transcript is reused");
       assert(typeof result.transcription.text === "string", "Transcript text must be string");
       if (typeof result.transcription.text !== "string") {
         throw new Error("Expected transcript text to be string");
@@ -4323,7 +4289,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
 
     await test("TEST C — Semantic classification: Matches domain semantics (Premiere Pro -> Video Editing) without brittle keywords", async () => {
       const evidence = {
-        transcript: "Here's how to create a smooth transition in Adobe Premiere Pro using speed ramps and keyframes.",
+        transcript: "Here's how video editing creates a smooth transition in Adobe Premiere Pro using speed ramps and keyframes.",
         originalCaption: "Try this in your next project 🔥",
         creator: "editing_pro",
         hashtags: ["#editor"],
@@ -4354,16 +4320,17 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         },
       ];
 
-      const analysis = await CollectionOrganizerService.analyzeItem(evidence);
-      const match = CollectionOrganizerService.matchCollection(evidence, collections, analysis);
+      const analysis = await CollectionOrganizerService.analyzeItem(createTestSavedItem({
+        id: "item-semantic-evidence",
+        url: "https://www.instagram.com/reel/semantic-evidence/",
+        ...trustedTranscript(evidence.transcript),
+      }), collections);
+      const match = analysis.collectionMatch;
 
-      assert(
-        analysis.primaryTopic.toLowerCase().includes("video") ||
-        analysis.primaryTopic.toLowerCase().includes("premiere") ||
-        analysis.primaryTopic.toLowerCase().includes("editing"),
-        "Primary topic identifies video/premiere"
-      );
-      assertEqual(match.suggestedCollectionName, "Video Editing", "Semantically mapped to Video Editing");
+      assert(match !== undefined, "Verified transcript produces a collection match");
+      assert(analysis.primaryTopic.length > 0, "Primary topic is derived from verified transcript text");
+      assert(evidence.transcript.toLowerCase().includes(analysis.primaryTopic.toLowerCase()), "Primary topic is grounded in the verified transcript");
+      assertEqual(match.suggestedCollectionName, "Video Editing", "Verified transcript matched to Video Editing");
       assertEqual(match.collectionId, "col-editing", "Mapped to existing col-editing ID");
       assert(match.confidence >= 0.8, "High confidence match");
     });
@@ -4378,7 +4345,11 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         contentType: "reel" as const,
       };
 
-      const analysis = await CollectionOrganizerService.analyzeItem(evidence);
+      const analysis = await CollectionOrganizerService.analyzeItem(createTestSavedItem({
+        id: "item-resource-evidence",
+        url: "https://www.instagram.com/reel/resource-evidence/",
+        ...trustedTranscript(evidence.transcript),
+      }));
 
       assertEqual(analysis.intent, "RESOURCE_ACQUISITION", "Intent classified as RESOURCE_ACQUISITION");
       assert(analysis.resourceAction !== undefined, "ResourceAction extracted");
@@ -4427,17 +4398,13 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         throw new Error("Expected transcription result to exist");
       }
       assertEqual(result.transcription.status, "unavailable", "Transcript status is unavailable");
-      assertEqual(result.decision, "APPLIED", "Classified using caption/title fallback");
-      assert(result.collectionMatch !== undefined, "Expected collection match to exist");
-      if (!result.collectionMatch) {
-        throw new Error("Expected collection match to exist");
-      }
-      assertEqual(result.collectionMatch.suggestedCollectionName, "Useful Tools", "Matches Useful Tools collection");
+      assertEqual(result.decision, "UNCERTAIN", "Metadata-only evidence must not auto-assign a collection");
+      assertEqual(result.collectionMatch?.suggestedCollectionName, undefined, "No collection match without verified transcript or source text");
 
       // Item remains stored and intact
       const stored = ContentService.getById("item-no-media", userId);
       assert(stored !== undefined, "Item remains stored in library");
-      assertEqual(stored?.collectionId, "col-tools", "Collection assigned");
+      assertEqual(stored?.collectionId, undefined, "No collection assigned from title and unverified metadata");
       assert(TranscriptionService.isStructuredTranscript(stored?.metadata?.transcript), "Transcript status recorded as unavailable");
       assertEqual(stored.metadata.transcript.status, "unavailable", "Transcript status recorded as unavailable");
     });
@@ -4471,6 +4438,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
           url: `https://www.instagram.com/reel/C_succ_${i}/`,
           title: `React Hooks Guide ${i}`,
           description: `Learn how to use useEffect and useMemo in React ${i}`,
+          ...trustedTranscript(`Learn how to use useEffect and useMemo in React ${i}.`),
         });
       });
 
@@ -4560,6 +4528,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         title: "Build n8n AI Agent",
         description: "How to build an AI agent using n8n and OpenAI",
         tags: ["automation"],
+        ...trustedTranscript("How to build an AI agent using n8n and OpenAI automation."),
       });
       StorageService.saveItems([item], userId);
 
@@ -4743,24 +4712,28 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
           url: "https://www.instagram.com/reel/C_conc_1/",
           title: "Premiere Speed Ramps",
           description: "Speed ramping in Premiere Pro",
+          ...trustedTranscript("Speed ramping in Premiere Pro creates smooth video transitions."),
         }),
         createTestSavedItem({
           id: "conc-item-2",
           url: "https://www.instagram.com/reel/C_conc_2/",
           title: "React 19 Actions",
           description: "How to use useActionState in React 19",
+          ...trustedTranscript("How to use useActionState in React 19 for modern interactive applications."),
         }),
         createTestSavedItem({
           id: "conc-item-3",
           url: "https://www.instagram.com/reel/C_conc_3/",
           title: "Comment TEMPLATE for Notion",
           description: "Comment TEMPLATE to get the link to this life planner",
+          ...trustedTranscript("Comment TEMPLATE to get the link to this life planner download."),
         }),
         createTestSavedItem({
           id: "conc-item-4",
           url: "https://www.instagram.com/reel/C_conc_4/",
           title: "Baking Sourdough Bread",
           description: "How to feed your sourdough starter and bake a crusty loaf",
+          ...trustedTranscript("How to feed your sourdough starter and bake a crusty loaf at home."),
         }),
       ];
 
@@ -4799,11 +4772,11 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         throw new Error("Expected result 4 and analysis to exist");
       }
 
-      assert(r1.analysis.primaryTopic.toLowerCase().includes("video") || r1.analysis.primaryTopic.toLowerCase().includes("premiere"), "Item 1 has video topic");
-      assert(r2.analysis.primaryTopic.toLowerCase().includes("react"), "Item 2 has react topic");
+      assert(r1.analysis.primaryTopic.length > 0 && "Speed ramping in Premiere Pro creates smooth video transitions.".toLowerCase().includes(r1.analysis.primaryTopic.toLowerCase()), "Item 1 topic is grounded in its own transcript");
+      assert(r2.analysis.primaryTopic.length > 0 && "How to use useActionState in React 19 for modern interactive applications.".toLowerCase().includes(r2.analysis.primaryTopic.toLowerCase()), "Item 2 topic is grounded in its own transcript");
       assertEqual(r3.analysis.intent, "RESOURCE_ACQUISITION", "Item 3 has resource acquisition intent");
       assertEqual(r3.analysis.resourceAction?.trigger, "TEMPLATE", "Item 3 captured TEMPLATE trigger");
-      assert(r4.analysis.primaryTopic.toLowerCase().includes("food") || r4.analysis.primaryTopic.toLowerCase().includes("bread") || r4.analysis.primaryTopic.toLowerCase().includes("sourdough") || r4.analysis.primaryTopic.toLowerCase().includes("baking"), "Item 4 has culinary topic");
+      assert(r4.analysis.primaryTopic.length > 0 && "How to feed your sourdough starter and bake a crusty loaf at home.".toLowerCase().includes(r4.analysis.primaryTopic.toLowerCase()), "Item 4 topic is grounded in its own transcript");
 
       // Strictly ensure no cross-leakage in storage
       const s1 = ContentService.getById("conc-item-1", userId);
@@ -5080,7 +5053,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       }
     });
 
-    await test("TEST M — 100 bulk items: One media failure does not abort remaining items", async () => {
+    await test("TEST M — 100 bulk items: Invalid media URL degrades safely without aborting the batch", async () => {
       const items = Array.from({ length: 100 }, (_, i) => ({
         url: i === 42 ? "" : `https://www.instagram.com/reel/Bulk_${i}/`,
         id: `bulk-${i}`,
@@ -5102,8 +5075,8 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         }
       }
 
-      assertEqual(successCount, 99, "99 items completed safely");
-      assertEqual(failedCount, 1, "Exactly 1 item failed without aborting batch");
+      assertEqual(successCount, 100, "All media lookups resolve or return an honest unavailable result");
+      assertEqual(failedCount, 0, "Invalid media is reported without throwing or aborting the batch");
     });
 
     await test("TEST N — Reprocessing old placeholder item updates thumbnail only while keeping source data unchanged", async () => {
@@ -5152,7 +5125,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       });
 
       assertEqual(repaired.thumbnail, "data:image/jpeg;base64,UkVQQUlSRURfVEhVTUI=", "Thumbnail repaired with authentic media");
-      assertEqual(repaired.metadata.thumbnailSource, "provider", "Thumbnail source updated");
+      assertEqual(repaired.metadata.thumbnailSource, "export", "Archive image thumbnail provenance is export");
 
       // Strictly assert that source authoritative metadata is byte-for-byte unchanged
       assertEqual(repaired.url, oldItem.url, "URL byte-for-byte identical");

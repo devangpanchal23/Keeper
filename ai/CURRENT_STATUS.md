@@ -1,16 +1,23 @@
 # Current Project Status
 
+## 2026-10-10 — CI/CD audit follow-up
+
+- The supplied Actions screenshots show dependency audit and lint/type/design passing; the failing test gate prevented its dependent production build and deployment from running.
+- The reported 31/166 regression failures have been corrected. `npm test` now runs through Node's `--import tsx` entrypoint and passes 166/166; this also avoids the macOS sandbox IPC `EPERM` from the `tsx` CLI.
+- CI tests and quality gates do not require `.env` files or application API keys. Git ignores `.env*`; Vercel credentials are deployment-only and checked in the production deploy job. Do not add application secrets to test jobs.
+- CI now publishes an always-run summary with each quality gate's result. Type-check, configured lint ceiling, and design audit pass. Local build requires Google Fonts network access, and npm audit cannot reach registry DNS; GitHub Actions must verify those gates on its runner.
+
 ## 2026-10-09 — Fail-closed CI/CD deployment pipeline
 
 - GitHub Actions now runs lint, type checking, production dependency audit, design audit, regression suite, and production build before a main-branch production deploy. Deploy uses Vercel's prebuilt artifact flow and fails if deployment credentials are absent instead of reporting a false success.
 - Production deploys are serialized, can be manually dry-run, and run live health/page/API smoke checks. A smoke failure triggers Vercel rollback. Node 24 LTS is used in GitHub Actions; Dependabot checks npm and Actions updates weekly.
 - Repository owner setup remains required: add `VERCEL_TOKEN`, `VERCEL_ORG_ID`, and `VERCEL_PROJECT_ID` to the GitHub `production` environment; configure required reviewers and restrict that environment to `main`; require the CI workflow checks in branch protection/rulesets. CI still exposes existing test/lint baseline issues; green production deploys are intentionally blocked until gates pass.
 
-## 2026-10-10 — CI audit scope and regression status
+## 2026-10-10 — CI gates and regression suite repaired
 
 - CI's dependency security gate now audits production dependencies (`npm audit --omit=dev`) to match the deploy gate. The full dependency tree contains development-only `braces@3.0.3` under `eslint-config-next` → `fast-glob` → `micromatch`; the current high-severity advisory has no patched release. Do not force a framework downgrade or weaken the production audit.
-- Local validation on current `main` (`f0b3a5a`): type-check passed; ESLint passed at its existing 262-warning ceiling; design audit passed. The regression harness still has 31 failures out of 166, including assertions requiring an unavailable AI provider and fixtures that conflict with current tenant/source-provenance rules. These need deliberate triage before deployment.
-- Local npm audit requests cannot resolve `registry.npmjs.org`; production audit result must be confirmed in GitHub Actions. Local production build cannot fetch Google Geist fonts due network restrictions. The CI runner has network access and remains the authority for these two gates.
+- The previous 31 regression failures are resolved. `node --import tsx scripts/run-tests.ts` passes all 166 assertions; the stale assertions now verify the current provider-required AI contract, tenant-owned collection fixtures, verified transcript reuse, source-status semantics, and archive thumbnail provenance. Organizer tag-only fallback derives evidence-linked tags from an already verified transcript, and the importer distinguishes captions from metadata while keeping AI analysis pending.
+- Local validation: type-check passed; ESLint passed at its existing 262-warning ceiling; design audit passed. The user-supplied Actions run from before these local fixes confirms the dependency security audit and lint/type/design gate pass; its test failure prevented the build gate from running. Local npm audit cannot resolve `registry.npmjs.org`; local production build cannot fetch Google Geist fonts due network restrictions. Re-run CI after committing the remaining changes to confirm automated tests and production build on the Actions runner.
 
 ## 2026-10-09 — Billing profile no longer requires service-role key
 

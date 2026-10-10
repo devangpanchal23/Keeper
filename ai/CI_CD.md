@@ -6,6 +6,8 @@ Keeper uses GitHub Actions for validation and Vercel for production deployment.
 
 `.github/workflows/ci.yml` runs on pull requests and pushes to `main` or `master`. Its gates are locked dependency installation, ESLint, TypeScript, production dependency audit, design audit, the regression harness, and a Next.js production build. Keep PR workflows secret-free so forked contributions cannot access production credentials.
 
+The test, lint, type-check, design-audit, and build gates do not receive application `.env` files or production secrets. Local `.env*` files are ignored by Git; automated tests use controlled fixtures and do not require provider credentials. The CI workflow publishes an always-run job summary listing each gate as `success`, `failure`, or `skipped`, so a skipped dependent build is distinguishable from a failed test.
+
 ## Production release
 
 `.github/workflows/deploy.yml` runs on pushes to `main` and manual dispatches from `main`. It repeats all quality gates, pulls the Vercel production settings, builds a Vercel prebuilt artifact, deploys that artifact, and checks the deployed URL's health endpoint, landing page, sign-in/sign-up pages, and import capabilities endpoint. The deployment is serialized so concurrent main pushes cannot race. A failed post-deploy smoke test requests rollback to the previous Vercel production deployment. Manual dry-run executes the production-settings build and does not publish.

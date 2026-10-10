@@ -152,7 +152,7 @@ export class CollectionOrganizerService {
     const verifiedText = isVideo
       ? verifiedTranscript
       : [representationText, visualText].filter(Boolean).join("\n\n");
-    const groundedTags = verifiedText.length >= 30 && Array.isArray(item.metadata?.aiGeneratedTags)
+    const persistedGroundedTags = verifiedText.length >= 30 && Array.isArray(item.metadata?.aiGeneratedTags)
       ? item.metadata.aiGeneratedTags.flatMap((raw: unknown) => {
           if (!raw || typeof raw !== "object") return [];
           const tag = raw as { name?: unknown; evidence?: unknown; normalizedName?: unknown };
@@ -160,6 +160,14 @@ export class CollectionOrganizerService {
           return [{ name: tag.name, normalizedName: typeof tag.normalizedName === "string" ? tag.normalizedName : tag.name.toLowerCase(), category: "Topic" as const, confidence: 1, source: "ai" as const, evidence: tag.evidence }];
         })
       : [];
+    // Organizing a verified transcript should still work when the background
+    // AI analysis has not populated persisted tags yet. These tags are derived
+    // locally from the same verified text and carry exact source evidence.
+    const groundedTags = persistedGroundedTags.length > 0
+      ? persistedGroundedTags
+      : verifiedText.length >= 30
+        ? ContentIntelligenceService.generateTags(verifiedText)
+        : [];
     const combinedContext = verifiedText.length >= 30 ? verifiedText : "";
 
     const { intent, resourceAction } = this.detectIntentAndActions(combinedContext);
@@ -822,7 +830,7 @@ export class CollectionOrganizerService {
                   ? {
                       transcript: {
                         value: analysis.transcriptText,
-                        source: "transcription_pipeline",
+                        source: analysis.transcription?.provider || "speech_to_text",
                         retrievedAt: new Date().toISOString(),
                       },
                     }

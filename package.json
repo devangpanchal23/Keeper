@@ -8,9 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "type-check": "tsc --noEmit",
-    "test": "tsx scripts/run-tests.ts",
-    "smoke-test": "tsx scripts/smoke-test.ts",
-    "audit:design": "tsx scripts/palette-audit.ts"
+    "test": "node --import tsx scripts/run-tests.ts",
+    "smoke-test": "node --import tsx scripts/smoke-test.ts",
+    "audit:design": "node --import tsx scripts/palette-audit.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",
