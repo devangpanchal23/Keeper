@@ -69,6 +69,7 @@ jobs:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
     steps:
       - name: Check out source
@@ -88,7 +89,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for key in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+          for key in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID VERCEL_AUTOMATION_BYPASS_SECRET; do
             if [[ -z "${!key}" ]]; then missing+=("$key"); fi
           done
           if (( ${#missing[@]} > 0 )); then
@@ -129,4 +130,9 @@ jobs:
 
       - name: Roll back production if smoke checks fail
         if: failure() && steps.deploy.outputs.deployment_url != ''
-        run: vercel rollback --token="$VERCEL_TOKEN"
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .vercel
+          vercel link --yes --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
+          vercel rollback --token="$VERCEL_TOKEN"
