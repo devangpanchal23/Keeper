@@ -1,18 +1,21 @@
 /**
- * Post-Deployment Production Smoke Test
- *
- * Verifies that the deployed application is live, healthy, and serving critical routes.
- * Suitable for running in CD pipeline immediately after deployment.
- *
- * Usage:
- *   DEPLOY_URL="https://your-production-app.vercel.app" npx -y tsx scripts/smoke-test.ts
- */
+* Post-Deployment Production Smoke Test
+*
+* Verifies that the deployed application is live, healthy, and serving critical routes.
+* Suitable for running in CI/CD immediately after deployment.
+*
+* Usage:
+*   DEPLOY_URL="https://your-production-app.vercel.app" npx -y tsx scripts/smoke-test.ts
+*/
 
 const TARGET_URL = (
   process.env.DEPLOY_URL ||
   process.env.NEXT_PUBLIC_APP_URL ||
   "http://localhost:3000"
 ).replace(/\/$/, "");
+
+const VERCEL_AUTOMATION_BYPASS_SECRET =
+  process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
 
 interface EndpointCheck {
   path: string;
@@ -72,37 +75,61 @@ async function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function runCheckWithRetry(check: EndpointCheck, maxRetries = 4): Promise<boolean> {
+async function runCheckWithRetry(
+  check: EndpointCheck,
+  maxRetries = 4
+): Promise<boolean> {
   const url = `${TARGET_URL}${check.path}`;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const startTime = Date.now();
+
     try {
+      const headers: Record<string, string> = {
+        "User-Agent": "Recall-Production-SmokeTest/1.0",
+      };
+
+      if (VERCEL_AUTOMATION_BYPASS_SECRET) {
+        headers["x-vercel-protection-bypass"] =
+          VERCEL_AUTOMATION_BYPASS_SECRET;
+      }
+
       const response = await fetch(url, {
-        headers: { "User-Agent": "Recall-Production-SmokeTest/1.0" },
+        headers,
         signal: AbortSignal.timeout(12_000),
       });
+
       const latency = Date.now() - startTime;
       const text = await response.text();
 
       const statusMatch = response.status === check.expectedStatus;
       const contentType = response.headers.get("content-type") || "";
-      const contentTypeMatch = !check.expectedContentType || contentType.includes(check.expectedContentType);
-      const bodyValid = check.validateBody ? check.validateBody(text) : true;
+      const contentTypeMatch =
+        !check.expectedContentType ||
+        contentType.includes(check.expectedContentType);
+      const bodyValid = check.validateBody
+        ? check.validateBody(text)
+        : true;
 
       if (statusMatch && contentTypeMatch && bodyValid) {
-        console.log(`  ✓ [HTTP ${response.status}] ${check.path} (${latency}ms)`);
+        console.log(
+          `  ✓ [HTTP ${response.status}] ${check.path} (${latency}ms)`
+        );
         return true;
       }
 
-      console.warn(`  ⚠ Attempt ${attempt}/${maxRetries} failed for ${check.path}: HTTP ${response.status}, content-type ${contentType || "missing"}`);
+      console.warn(
+        `  ⚠ Attempt ${attempt}/${maxRetries} failed for ${check.path}: HTTP ${response.status}, content-type ${contentType || "missing"}`
+      );
     } catch (err) {
-      console.warn(`  ⚠ Attempt ${attempt}/${maxRetries} connection error for ${check.path}:`, err instanceof Error ? err.message : err);
+      console.warn(
+        `  ⚠ Attempt ${attempt}/${maxRetries} connection error for ${check.path}:`,
+        err instanceof Error ? err.message : err
+      );
     }
 
     if (attempt < maxRetries) {
-      const backoffMs = attempt * 2000;
-      await sleep(backoffMs);
+      await sleep(attempt * 2000);
     }
   }
 
@@ -126,12 +153,15 @@ async function runSmokeTests() {
   }
 
   console.log("\n=======================================================");
+
   if (allPassed) {
     console.log("✅ ALL PRODUCTION SMOKE CHECKS PASSED. SYSTEM IS HEALTHY.");
     console.log("=======================================================\n");
     process.exit(0);
   } else {
-    console.error("❌ SMOKE TEST FAILED: One or more critical endpoints did not respond as expected.");
+    console.error(
+      "❌ SMOKE TEST FAILED: One or more critical endpoints did not respond as expected."
+    );
     console.log("=======================================================\n");
     process.exit(1);
   }
