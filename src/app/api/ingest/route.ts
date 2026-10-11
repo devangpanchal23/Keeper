@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { IngestionService } from "@/services/ingestion-service";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { logServerError } from "@/lib/monitoring";
 import { AIProcessingState } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -34,7 +35,7 @@ export async function POST(req: NextRequest) {
       if (ownedCollections.length) {
         const { error } = await supabase.from("keeper_collections").upsert(ownedCollections, { onConflict: "workspace_id,id" });
         if (error) {
-          console.error("[api/ingest] Workspace collection sync failed", { code: error.code, message: error.message });
+          logServerError({ operation: "ingest.collection_sync", route: "/api/ingest" }, error);
           const missingTable = error.code === "42P01" || error.code === "PGRST205";
           const missingPrivilege = error.code === "42501";
           const message = missingTable

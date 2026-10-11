@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { getRazorpayClient } from "@/lib/razorpay";
+import { logServerError } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -92,7 +93,7 @@ export async function POST(request: NextRequest) {
     if (eventError) throw new Error("Webhook idempotency record failed.");
     return NextResponse.json({ received: true });
   } catch (error) {
-    console.error("Razorpay webhook processing failed:", error);
+    logServerError({ operation: "billing.webhook.process", route: "/api/webhooks/razorpay" }, error);
     return NextResponse.json({ error: "Webhook processing failed; Razorpay may retry this event." }, { status: 500 });
   }
 }

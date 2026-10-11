@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { logServerError } from "@/lib/monitoring";
 import { Collection, SavedItem } from "@/types";
 import type { GroundedContentAnalysis } from "@/services/content-analysis-service";
 import { MediaAcquisitionService, type MediaAcquisitionResult } from "@/services/media/media-acquisition-service";
@@ -599,7 +600,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (memoryError) throw memoryError;
     return NextResponse.json({ processed: true, status: "COMPLETED", mediaId: job.media_id });
   } catch (error) {
-    console.error("AI media job failed", { jobId: job.id, workspaceId: job.workspace_id, error });
+    logServerError({ operation: "ai.worker.job", route: "/api/ai/worker" }, error);
     return failJob(error);
   }
 }

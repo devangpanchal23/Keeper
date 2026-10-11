@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedSupabaseUser } from "@/lib/supabase/auth";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { getRazorpayClient } from "@/lib/razorpay";
+import { logServerError } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -25,7 +26,7 @@ export async function POST(request: NextRequest) {
     if (updateError) throw new Error("Cancellation state could not be saved.");
     return NextResponse.json({ success: true, status: updated.status, ends_at: updated.current_end ? new Date(updated.current_end * 1000).toISOString() : null });
   } catch (error) {
-    console.error("Subscription cancellation failed:", error);
+    logServerError({ operation: "billing.subscription.cancel", route: "/api/billing/cancel" }, error);
     return NextResponse.json({ error: "Could not cancel the subscription. Please try again." }, { status: 502 });
   }
 }

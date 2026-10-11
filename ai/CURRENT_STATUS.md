@@ -1,5 +1,13 @@
 # Current Project Status
 
+## 2026-10-11 — Vercel monitoring integration
+
+- Added the official Vercel Web Analytics and Speed Insights components once in the root layout, enabled only in production. The packages are dependencies; the Vercel dashboard features still need to be enabled per project, and usage limits should be checked before activation.
+- Added Next.js `onRequestError` logging and structured, redacted error events for key API failures. Logs omit error messages/stacks and user/request payload data.
+- Audited env variable names without reading values. `.env.local` contains server-only Razorpay credentials and public Supabase configuration; no secret key is prefixed with `NEXT_PUBLIC_`. `.env*` is git-ignored. Keep all provider, database admin, billing, worker, and encryption secrets in server-only Vercel variables.
+- Added `ai/OBSERVABILITY.md` with dashboard setup, plan/cost notes, environment requirements, and operational checks.
+- Validation: type-check passes; `npm test` passes 166/166; lint has 0 errors and 262 existing warnings; `npm run build -- --webpack` completes successfully. Default Turbopack build is constrained by local network/process restrictions, so the production build was verified with Next's supported Webpack backend. Online `npm audit --omit=dev` reports 0 vulnerabilities. Full-tree audit reports 5 high `braces` advisories in the existing ESLint dev dependency chain, with the suggested fix downgrading `eslint-config-next` to a breaking Next 14 version; no forced downgrade was made. Vercel dashboard activation/live traffic, CDN response behavior, Firewall rules, and production alerts remain unverified from this local checkout.
+
 ## 2026-10-10 — Hobby cron compatibility
 
 - Removed the once-per-minute Vercel Cron declaration that blocked deploys on Hobby.

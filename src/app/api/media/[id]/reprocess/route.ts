@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { logServerError } from "@/lib/monitoring";
 import { ContentService } from "@/services/content-service";
 import { IngestionService } from "@/services/ingestion-service";
 import { SavedItem } from "@/types";
@@ -92,7 +93,7 @@ export async function POST(_request: NextRequest, context: { params: Promise<{ i
     }
     return NextResponse.json({ success: true, job: queued, data: refreshed }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    console.error("[api/media/reprocess] Source refresh failed", { mediaId: id, workspaceId: user.id, error });
+    logServerError({ operation: "media.reprocess.source_refresh", route: "/api/media/[id]/reprocess" }, error);
     return NextResponse.json({ error: "Source refresh failed. The saved item was preserved; retry when the source is available." }, { status: 503 });
   }
 }

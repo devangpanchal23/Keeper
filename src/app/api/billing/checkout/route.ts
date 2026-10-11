@@ -3,6 +3,7 @@ import { isKeeperBillingCycle, isKeeperPlanId, KEEPER_BILLING_PLANS } from "@/li
 import { getAuthenticatedSupabaseUser } from "@/lib/supabase/auth";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { getRazorpayClient, getRazorpayKeyId } from "@/lib/razorpay";
+import { logServerError } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -72,7 +73,7 @@ export async function POST(request: NextRequest) {
     if (error) throw new Error("Could not save the pending subscription record.");
     return NextResponse.json({ subscription_id: subscription.id, key_id: getRazorpayKeyId(), trial_ends_at: new Date(trialEndsAt * 1000).toISOString() }, { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    console.error("Subscription checkout creation failed:", error);
+    logServerError({ operation: "billing.checkout.create", route: "/api/billing/checkout" }, error);
     return NextResponse.json({ error: "Secure checkout could not be started. Please try again." }, { status: 502 });
   }
 }

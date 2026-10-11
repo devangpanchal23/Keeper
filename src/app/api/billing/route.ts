@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { logServerError } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +37,7 @@ export async function GET() {
 
     return NextResponse.json({ current, subscriptions: displaySubscriptions, payments: paymentsResult.data || [], tier }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    console.error("Billing profile query failed:", error);
+    logServerError({ operation: "billing.profile.query", route: "/api/billing" }, error);
     return NextResponse.json({ error: "Billing records could not be loaded." }, { status: 503 });
   }
 }

@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedSupabaseUser } from "@/lib/supabase/auth";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { getRazorpayClient } from "@/lib/razorpay";
+import { logServerError } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -53,7 +54,7 @@ export async function POST(request: NextRequest) {
     if (updateError) throw new Error("The confirmed subscription could not be saved.");
     return NextResponse.json({ success: true, trial_ends_at: record.trial_ends_at }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    console.error("Subscription confirmation failed:", error);
+    logServerError({ operation: "billing.subscription.verify", route: "/api/billing/verify" }, error);
     return NextResponse.json({ error: "Razorpay could not confirm the subscription. Please contact support if you were charged." }, { status: 502 });
   }
 }
