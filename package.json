@@ -19,7 +19,7 @@
     "@vercel/speed-insights": "^2.0.0",
     "canvas-confetti": "^1.9.4",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.53.0",
+    "lucide-react": "^1.56.0",
     "next": "16.4.0",
     "razorpay": "^2.9.8",
     "react": "19.3.0",
