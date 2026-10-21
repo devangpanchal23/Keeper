@@ -45,6 +45,9 @@ export interface Creator {
   profileUrl?: string | null;
   source?: Platform | string;
   status?: "active" | "deleted" | string;
+  confidence?: number;
+  attributionSource?: string;
+  mentionedAccounts?: string[];
 }
 
 export interface AISummary {
@@ -124,6 +127,16 @@ export interface ItemMetadata {
   upvotes?: string;
   views?: string;
   publishedAt?: string;
+  importedAt?: string;
+  processedAt?: string;
+  publishedDateConfidence?: "verified" | "extracted" | "unavailable" | "conflicted";
+  publishedDateConflict?: boolean;
+  publishedDateConflictReason?: string;
+  primaryCategory?: string;
+  secondaryCategories?: string[];
+  categoryConfidence?: number;
+  categoryConflict?: boolean;
+  categoryConflictReason?: string;
   canonicalUrl?: string;
   authorUrl?: string;
   suggestedCollectionName?: string;

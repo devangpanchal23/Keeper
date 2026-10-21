@@ -190,7 +190,12 @@ export const SaveItemListRow: React.FC<SaveItemListRowProps> = ({
         </div>
 
         {/* Date */}
-        <span className="text-xs text-zinc-400">{formatDate(item.savedDate)}</span>
+        <span
+          className="text-xs text-zinc-400"
+          title={item.metadata?.publishedAt ? `Published: ${formatDate(item.metadata.publishedAt)} (Saved: ${formatDate(item.savedDate)})` : `Saved: ${formatDate(item.savedDate)}`}
+        >
+          {formatDate(item.metadata?.publishedAt || item.savedDate)}
+        </span>
 
         {/* Favorite */}
         <button

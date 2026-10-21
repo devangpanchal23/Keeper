@@ -212,8 +212,11 @@ export const SaveItemCard: React.FC<SaveItemCardProps> = ({
                 </span>
               )}
             </div>
-            <span className="text-[11px] text-zinc-400 shrink-0">
-              {formatDate(item.savedDate)}
+            <span
+              className="text-[11px] text-zinc-400 shrink-0"
+              title={item.metadata?.publishedAt ? `Published: ${formatDate(item.metadata.publishedAt)} (Saved: ${formatDate(item.savedDate)})` : `Saved: ${formatDate(item.savedDate)}`}
+            >
+              {formatDate(item.metadata?.publishedAt || item.savedDate)}
             </span>
           </div>
 

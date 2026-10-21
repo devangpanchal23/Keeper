@@ -435,7 +435,12 @@ export default function ItemDetailPage({
               </>
             )}
             <span>•</span>
-            <span className="text-zinc-400">{formatDate(item.savedDate)}</span>
+            <span
+              className="text-zinc-400"
+              title={item.metadata?.publishedAt ? `Published: ${formatDate(item.metadata.publishedAt)} (Saved: ${formatDate(item.savedDate)})` : `Saved: ${formatDate(item.savedDate)}`}
+            >
+              {formatDate(item.metadata?.publishedAt || item.savedDate)}
+            </span>
           </div>
 
           <h1 className="text-lg sm:text-2xl md:text-3xl font-extrabold tracking-tight leading-snug drop-shadow-md line-clamp-2 sm:line-clamp-3">
@@ -837,7 +842,18 @@ export default function ItemDetailPage({
                     <Calendar className="w-3.5 h-3.5 text-zinc-400 shrink-0" /> Published
                   </span>
                   <span className="font-medium text-zinc-900 dark:text-zinc-200 truncate text-right min-w-0">
-                    {item.metadata.publishedAt}
+                    {formatDate(item.metadata.publishedAt)}
+                  </span>
+                </div>
+              )}
+
+              {item.metadata.importedAt && (
+                <div className="flex items-center justify-between gap-3">
+                  <span className="flex items-center gap-1.5 shrink-0">
+                    <Clock className="w-3.5 h-3.5 text-zinc-400 shrink-0" /> Imported
+                  </span>
+                  <span className="font-medium text-zinc-900 dark:text-zinc-200 truncate text-right min-w-0">
+                    {formatDate(item.metadata.importedAt)}
                   </span>
                 </div>
               )}

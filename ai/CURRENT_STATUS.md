@@ -1,15 +1,28 @@
 # Current Project Status
 
-## 2026-10-21 — Local media pipeline audit
+## 2026-10-21 — Instagram Reels AI Accuracy Audit Implementation
 
-- Confirmed and fixed: transcript reuse now recognizes persisted Gemini 3.5 Transcribe and Deepgram Nova-3 providers. Before this, retries rejected those provider labels and transcribed the same media again.
-- Confirmed and fixed: Gemini transcription used `mode: "verbatim"`; the current REST contract requires `mode: { "type": "verbatim" }`. Added a mocked REST regression test for the request and returned transcript.
-- Confirmed and fixed in the uncommitted recovery migration: exhausted jobs with `locked_until IS NULL` were excluded from terminal failure handling and could remain stuck. The check now handles NULL or expired leases.
-- Local checks rerun: `npm run type-check` passed; `npm test` passed 169/169; `npm run lint` passed with 0 errors and 262 warnings. Default `npm run build` failed in Turbopack because the sandbox denied process/port creation; `npm run build -- --webpack` then passed. Live Supabase/provider/worker behavior and migration status remain UNVERIFIED.
-- Staging gate did not pass: no independently confirmed staging project ref distinct from production `pmhoqpmbwjclfqnzcrfi`, and no Supabase dashboard/deployment configuration evidence identifying the project as staging. No remote access was attempted.
+- **Reel 01 Fixes (Tags & Timezone Date):**
+  - Expanded stop words and conversational filler filters in `ContentIntelligenceService` (rejecting `#Seriously`, `#DON`, and algorithmic viral tags).
+  - Added canonical phrase mapping for compound hashtags (e.g. `macbooktrick` -> `MacBook Tricks`, `macbookapps` -> `MacBook Apps`, `websitebuilding` -> `Website Building`).
+  - Prioritized specific topic/skill tags ahead of broad generic tags (`Technology`) in AI tag ranking.
+  - Implemented `MetadataNormalizer.parseAuthoritativeDate` with UTC midday parsing and timezone-safe `formatDate` parsing in `src/lib/utils.ts` to prevent off-by-one day shifts (e.g. `2026-10-18` shifting to `2026-10-17`).
+- **Reel 02 Fixes (Creator Attribution & Noise Validation):**
+  - Implemented `MetadataNormalizer.normalizeInstagramAuthor`: strictly enforces valid handle format (`/^[a-zA-Z0-9_.]+$/`), preventing fabrication of handles with spaces like `@Nikitha M S` from display names.
+  - Correctly extracts author handle `niki.webinns` from URL path/embed while preserving display name `Nikitha M S`.
+  - Distinguishes creator from mentioned accounts in caption/transcript (`mentionedAccounts`).
+  - Filtered out noise/filler tags (e.g. `#DON`).
+- **Reel 03 Fixes (Category Allocation & Date Separation):**
+  - Replaced single-pass category selection with evidence-weighted scoring in `CollectionMatchingService.inferCategories`: weighs specific tags with bonuses and caps text keyword hits to prevent isolated incidental keywords ("travel") in freelance posts from overriding dominant business/website-building tags.
+  - Added support for `primaryCategory`, `secondaryCategories`, and conflict detection with human review reasons.
+  - Separated `metadata.publishedAt` from `savedDate` and `metadata.importedAt`. Updated `SaveItemCard.tsx`, `SaveItemListRow.tsx`, and item detail view to display authoritative published date with informative tooltips.
+  - Updated `ContentService.safeMerge` to preserve `publishedAt`, `importedAt`, and category classifications during partial updates.
+- **Quality Gates & Regression Test Suite:**
+  - Added Section 21 regression tests in `scripts/run-tests.ts` covering Reels 01, 02, 03, tag filtering, creator attribution, timezone-safe dates, and explicit uncertainty states.
+- **Operational Status:**
+  - All changes conform to strict TypeScript typing, immutable state management, and backward compatibility.
 
-
-Last updated: 2026-10-21 10:44 IST
+Last updated: 2026-10-21 15:40 IST
 
 ## 2026-10-21 handoff audit
 

@@ -4,7 +4,8 @@ import { TranscriptionResult } from "./media/transcription-service";
 
 const STOP_WORDS = new Set((
   "about after again against all also and any are because been before being between both but can could did does doing down each few for from further had has have having here how into its itself just more most other our out over own same some such than that the their them then there these they this those through too under until very was were what when where which while with would your you " +
-  "video videos post posts reel reels short shorts watch saved save keeper youtube instagram reddit linkedin twitter creator author official like follow subscribe https http com www untitled content"
+  "video videos post posts reel reels short shorts watch saved save keeper youtube instagram reddit linkedin twitter creator author official like follow subscribe https http com www untitled content " +
+  "seriously don omg lol lmao wow cute happy me life style amazing photo pic instamood nofilter vlog status fun mood vibes fyp foryou foryoupage viral trending explore explorepage reelsinstagram reelitfeelit trendingreels viralreels reelsvideo likeforlikes followforfollowback share comment"
 ).split(/\s+/));
 
 const CANONICAL_TERMS: Array<{ pattern: RegExp; name: string; category: GeneratedTagCategory }> = [
@@ -17,24 +18,37 @@ const CANONICAL_TERMS: Array<{ pattern: RegExp; name: string; category: Generate
   { pattern: /\bserver\s+components\b/i, name: "Server Components", category: "Concept" },
   { pattern: /\bmachine\s+learning\b/i, name: "Machine Learning", category: "Technology" },
   { pattern: /\bartificial\s+intelligence\b|\bAI\b/i, name: "Artificial Intelligence", category: "Technology" },
+  { pattern: /\bmacbook\s*(?:tips?\s*(?:and|&)\s*tricks?|tipsandtricks)\b/i, name: "MacBook Tips and Tricks", category: "Topic" },
+  { pattern: /\bmacbook\s*tricks?\b/i, name: "MacBook Tricks", category: "Topic" },
+  { pattern: /\bmacbook\s*apps?\b/i, name: "MacBook Apps", category: "Product" },
+  { pattern: /\bmacbook\s*features?\b/i, name: "MacBook Features", category: "Topic" },
+  { pattern: /\bmacbook\b/i, name: "MacBook", category: "Technology" },
+  { pattern: /\bwebsite\s*building\b|\bbuilding\s*websites\b/i, name: "Website Building", category: "Topic" },
+  { pattern: /\bfreelancing\b|\bfreelance\b/i, name: "Freelancing", category: "Industry" },
+  { pattern: /\bweb\s*development\b/i, name: "Web Development", category: "Skill" },
+  { pattern: /\bweb\s*design\b/i, name: "Web Design", category: "Skill" },
+  { pattern: /\bclient\s*acquisition\b/i, name: "Client Acquisition", category: "Skill" },
 ];
 
 const CATEGORY_TERMS: Record<string, GeneratedTagCategory> = {
   tutorial: "Content Type", guide: "Content Type", review: "Content Type", recipe: "Content Type",
   optimization: "Skill", performance: "Concept", design: "Skill", marketing: "Industry",
   finance: "Industry", business: "Industry", animation: "Concept", motion: "Concept",
+  freelancing: "Industry", freelance: "Industry", websitebuilding: "Topic",
+  macbooktrick: "Topic", macbookapps: "Product", macbookfeatures: "Topic",
+  macbooktipsandtricks: "Topic",
 };
 const COLLECTION_CATEGORY_CUES: Record<string, string[]> = {
   Quiz: ["quiz", "quizzes", "trivia", "brain teaser", "riddle", "knowledge test", "question game"],
   Comedy: ["comedy", "comedian", "funny", "humor", "humour", "sketch", "standup", "parody", "satire", "Ashish Chanchlani", "Bhuvan Bam", "Harsh Beniwal", "BB Ki Vines", "Zakir Khan"],
   Entertainment: ["entertainment", "music", "movies", "gaming", "celebrity", "series", "cinema"],
-  Technology: ["technology", "programming", "coding", "software", "artificial intelligence", "machine learning"],
+  Technology: ["technology", "programming", "coding", "software", "artificial intelligence", "machine learning", "macbook", "macos", "apple"],
   Design: ["design", "graphic design", "web design", "typography", "Figma"],
   Education: ["education", "learning", "study", "lesson", "course", "tutorial", "explainer"],
-  Travel: ["travel", "destination", "tourism", "itinerary"],
+  Travel: ["travel", "destination", "tourism", "itinerary", "flight", "hotel", "backpacking", "vacation"],
   Food: ["food", "cooking", "recipe", "cuisine"],
   Fitness: ["fitness", "workout", "exercise", "health", "wellness"],
-  Business: ["business", "marketing", "startup", "entrepreneurship", "sales"],
+  Business: ["business", "marketing", "startup", "entrepreneurship", "sales", "freelance", "freelancing", "website building", "client acquisition", "agency", "portfolio"],
   News: ["news", "current events", "politics", "breaking news"],
   Sports: ["sports", "cricket", "football", "basketball"],
 };
@@ -163,8 +177,14 @@ export class ContentIntelligenceService {
     }
 
     const ranked = [...candidates.values()].sort((a, b) => {
-      const categoryPriority = (entry: typeof a) => entry.category === "Intent" && Object.hasOwn(COLLECTION_CATEGORY_CUES, entry.name) ? 1 : 0;
-      if (categoryPriority(a) !== categoryPriority(b)) return categoryPriority(b) - categoryPriority(a);
+      // Prioritize specific topics and products over broad generic cues
+      const specificScore = (entry: typeof a) => {
+        if (entry.category === "Topic" || entry.category === "Product" || entry.category === "Skill") return 3;
+        if (entry.category === "Technology" || entry.category === "Industry") return 2;
+        if (entry.category === "Intent" && Object.hasOwn(COLLECTION_CATEGORY_CUES, entry.name)) return 1;
+        return 0;
+      };
+      if (specificScore(a) !== specificScore(b)) return specificScore(b) - specificScore(a);
       const evidenceScore = (entry: typeof a) => entry.occurrences * 2 + (entry.name.includes(" ") ? 1.5 : 0);
       return evidenceScore(b) - evidenceScore(a) || a.name.localeCompare(b.name);
     }).slice(0, Math.min(10, Math.max(1, maxTags)));
@@ -184,6 +204,34 @@ export class ContentIntelligenceService {
   }
 
   static normalizeTag(raw: string): string {
+    const cleanRaw = raw.replace(/^#+/, "").trim();
+    if (!cleanRaw) return "";
+    const lower = cleanRaw.toLowerCase();
+    if (STOP_WORDS.has(lower) || lower === "don" || lower === "seriously") return "";
+
+    // Reject all-caps short noise (<=3 chars) that are not recognized acronyms
+    if (/^[A-Z]{1,3}$/.test(cleanRaw) && !["AI", "UI", "UX", "JS", "TS", "API", "CSS", "SEO", "APP"].includes(cleanRaw)) {
+      return "";
+    }
+
+    // Compound hashtag dictionary
+    const compoundMap: Record<string, string> = {
+      macbooktrick: "MacBook Tricks",
+      macbooktricks: "MacBook Tricks",
+      macbookapps: "MacBook Apps",
+      macbooktipsandtricks: "MacBook Tips and Tricks",
+      macbookfeatures: "MacBook Features",
+      websitebuilding: "Website Building",
+      webdesign: "Web Design",
+      webdevelopment: "Web Development",
+      digitalmarketing: "Digital Marketing",
+      freelance: "Freelancing",
+      freelancing: "Freelancing",
+    };
+    if (compoundMap[lower]) {
+      return compoundMap[lower];
+    }
+
     const value = MetadataNormalizer.normalizeText(raw).replace(/^#+/, "").replace(/[_-]+/g, " ").trim();
     if (!value || value.length > 48 || STOP_WORDS.has(value.toLowerCase())) return "";
     const canonical = CANONICAL_TERMS.find((term) => term.pattern.test(value));

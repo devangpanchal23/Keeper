@@ -357,4 +357,220 @@ export class MetadataNormalizer {
       status: "active",
     };
   }
+
+  /**
+   * Authoritative normalization of Instagram author & account attribution.
+   *
+   * Invariants:
+   * 1. Valid Instagram handles MUST match /^[a-zA-Z0-9_\.]+$/ (NO SPACES).
+   * 2. NEVER prefix '@' to a display name with spaces (e.g. '@Nikitha M S' is INVALID).
+   * 3. Distinguishes verified creator handle from mentioned people in the caption.
+   * 4. Accurately attributes known handles (e.g. 'niki.webinns') from URL paths or embed links.
+   */
+  public static normalizeInstagramAuthor(input: {
+    rawUsername?: string | null;
+    rawDisplayName?: string | null;
+    caption?: string | null;
+    urlPathUsername?: string | null;
+    source?: string;
+  }): {
+    username: string | null;
+    displayName: string;
+    handle?: string;
+    confidence: number;
+    attributionSource: "url_path" | "verified_metadata" | "embed_username" | "opengraph_handle" | "display_name_only" | "unknown";
+    mentionedAccounts: string[];
+  } {
+    const caption = input.caption || "";
+    const mentionedAccounts: string[] = [];
+    const mentionRegex = /@([a-zA-Z0-9_\.]{2,30})/g;
+    let mentionMatch: RegExpExecArray | null;
+    while ((mentionMatch = mentionRegex.exec(caption)) !== null) {
+      const handle = mentionMatch[1].trim();
+      if (!mentionedAccounts.includes(handle)) {
+        mentionedAccounts.push(handle);
+      }
+    }
+
+    const cleanUrlUsername = input.urlPathUsername
+      ? this.normalizeText(input.urlPathUsername).replace(/^@/, "").trim()
+      : null;
+    const isUrlUsernameValid = cleanUrlUsername && /^[a-zA-Z0-9_\.]+$/.test(cleanUrlUsername);
+
+    const cleanRawUsername = input.rawUsername
+      ? this.normalizeText(input.rawUsername).replace(/^@/, "").trim()
+      : null;
+    const isRawUsernameValid = cleanRawUsername && /^[a-zA-Z0-9_\.]+$/.test(cleanRawUsername);
+
+    const cleanRawDisplayName = input.rawDisplayName
+      ? this.normalizeText(input.rawDisplayName).trim()
+      : null;
+
+    // 1. Authoritative URL-path or embed username wins for the creator's handle
+    if (isUrlUsernameValid) {
+      const dispName = cleanRawDisplayName || cleanUrlUsername;
+      return {
+        username: cleanUrlUsername,
+        displayName: dispName,
+        handle: `@${cleanUrlUsername}`,
+        confidence: 0.95,
+        attributionSource: input.source === "embed" ? "embed_username" : "url_path",
+        mentionedAccounts: mentionedAccounts.filter((m) => m.toLowerCase() !== cleanUrlUsername.toLowerCase()),
+      };
+    }
+
+    // 2. Verified handle from metadata (e.g. oEmbed or OpenGraph @handle)
+    if (isRawUsernameValid) {
+      const dispName = cleanRawDisplayName && cleanRawDisplayName !== cleanRawUsername ? cleanRawDisplayName : cleanRawUsername;
+      return {
+        username: cleanRawUsername,
+        displayName: dispName,
+        handle: `@${cleanRawUsername}`,
+        confidence: 0.9,
+        attributionSource: "opengraph_handle",
+        mentionedAccounts: mentionedAccounts.filter((m) => m.toLowerCase() !== cleanRawUsername.toLowerCase()),
+      };
+    }
+
+    // 3. Display name without handle available (e.g. "Nikitha M S")
+    // Strictly preserve display name WITHOUT fabricating an invalid handle like '@Nikitha M S'
+    if (cleanRawDisplayName) {
+      return {
+        username: null,
+        displayName: cleanRawDisplayName,
+        handle: undefined,
+        confidence: 0.5,
+        attributionSource: "display_name_only",
+        mentionedAccounts,
+      };
+    }
+
+    return {
+      username: null,
+      displayName: "Instagram Creator",
+      handle: undefined,
+      confidence: 0.2,
+      attributionSource: "unknown",
+      mentionedAccounts,
+    };
+  }
+
+  /**
+   * Timezone-safe authoritative publication date parser.
+   *
+   * Invariants:
+   * 1. Calendar dates without time (e.g. "October 18, 2026" or "18 October 2026" or "2026-10-18")
+   *    are parsed using UTC noon to prevent cross-midnight shifts in any local timezone.
+   * 2. Preserves exact YYYY-MM-DD components.
+   * 3. Never substitutes import date or current date for the original publication date.
+   */
+  public static parseAuthoritativeDate(dateStr?: string | null): {
+    iso: string | null;
+    formattedDate: string | null;
+    confidence: "verified" | "extracted" | "unavailable";
+    raw: string | null;
+  } {
+    if (!dateStr || typeof dateStr !== "string" || !dateStr.trim()) {
+      return { iso: null, formattedDate: null, confidence: "unavailable", raw: null };
+    }
+
+    const trimmed = dateStr.trim();
+    const MONTH_MAP: Record<string, number> = {
+      january: 0, jan: 0,
+      february: 1, feb: 1,
+      march: 2, mar: 2,
+      april: 3, apr: 3,
+      may: 4,
+      june: 5, jun: 5,
+      july: 6, jul: 6,
+      august: 7, aug: 7,
+      september: 8, sep: 8, sept: 8,
+      october: 9, oct: 9,
+      november: 10, nov: 10,
+      december: 11, dec: 11,
+    };
+
+    // Pattern A: "Month DD, YYYY" or "Month DD YYYY" (e.g. "October 18, 2026")
+    const mdyMatch = trimmed.match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/);
+    if (mdyMatch) {
+      const monthIdx = MONTH_MAP[mdyMatch[1].toLowerCase()];
+      const day = parseInt(mdyMatch[2], 10);
+      const year = parseInt(mdyMatch[3], 10);
+      if (monthIdx !== undefined && day >= 1 && day <= 31 && year >= 2000 && year <= 2100) {
+        const utcDate = new Date(Date.UTC(year, monthIdx, day, 12, 0, 0));
+        const mm = String(monthIdx + 1).padStart(2, "0");
+        const dd = String(day).padStart(2, "0");
+        return {
+          iso: utcDate.toISOString(),
+          formattedDate: `${year}-${mm}-${dd}`,
+          confidence: "extracted",
+          raw: trimmed,
+        };
+      }
+    }
+
+    // Pattern B: "DD Month YYYY" (e.g. "18 October 2026" or "14 October 2026")
+    const dmyMatch = trimmed.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
+    if (dmyMatch) {
+      const day = parseInt(dmyMatch[1], 10);
+      const monthIdx = MONTH_MAP[dmyMatch[2].toLowerCase()];
+      const year = parseInt(dmyMatch[3], 10);
+      if (monthIdx !== undefined && day >= 1 && day <= 31 && year >= 2000 && year <= 2100) {
+        const utcDate = new Date(Date.UTC(year, monthIdx, day, 12, 0, 0));
+        const mm = String(monthIdx + 1).padStart(2, "0");
+        const dd = String(day).padStart(2, "0");
+        return {
+          iso: utcDate.toISOString(),
+          formattedDate: `${year}-${mm}-${dd}`,
+          confidence: "extracted",
+          raw: trimmed,
+        };
+      }
+    }
+
+    // Pattern C: ISO date "YYYY-MM-DD" or "YYYY-MM-DDTHH:mm:ss..."
+    const isoPrefixMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$/);
+    if (isoPrefixMatch) {
+      const year = parseInt(isoPrefixMatch[1], 10);
+      const month = parseInt(isoPrefixMatch[2], 10);
+      const day = parseInt(isoPrefixMatch[3], 10);
+      if (year >= 2000 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        if (!isoPrefixMatch[4]) {
+          // Pure date string: parse at midday UTC
+          const utcDate = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+          const mm = String(month).padStart(2, "0");
+          const dd = String(day).padStart(2, "0");
+          return {
+            iso: utcDate.toISOString(),
+            formattedDate: `${year}-${mm}-${dd}`,
+            confidence: "verified",
+            raw: trimmed,
+          };
+        }
+        // Timestamp with time component
+        const parsed = new Date(trimmed);
+        if (!isNaN(parsed.getTime())) {
+          return {
+            iso: parsed.toISOString(),
+            formattedDate: parsed.toISOString().split("T")[0],
+            confidence: "verified",
+            raw: trimmed,
+          };
+        }
+      }
+    }
+
+    // Fallback: Attempt standard parsing
+    const fallbackParsed = new Date(trimmed);
+    if (!isNaN(fallbackParsed.getTime())) {
+      return {
+        iso: fallbackParsed.toISOString(),
+        formattedDate: fallbackParsed.toISOString().split("T")[0],
+        confidence: "extracted",
+        raw: trimmed,
+      };
+    }
+
+    return { iso: null, formattedDate: null, confidence: "unavailable", raw: trimmed };
+  }
 }

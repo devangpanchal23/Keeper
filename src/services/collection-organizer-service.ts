@@ -464,23 +464,35 @@ export class CollectionOrganizerService {
       };
     }
 
-    // Business & Startups
+    // Business & Startups (including Freelancing & Website Building)
     if (
+      lower.includes("freelance") ||
+      lower.includes("freelancing") ||
+      lower.includes("website building") ||
+      lower.includes("web design") ||
+      lower.includes("client acquisition") ||
       lower.includes("saas") ||
       lower.includes("startup") ||
       lower.includes("mrr") ||
       lower.includes("pricing") ||
       lower.includes("business")
     ) {
-      return { primaryTopic: "Business Ideas", secondaryTopics: ["Startups", "Pricing"] };
+      const secondary: string[] = ["Startups", "Pricing"];
+      if (lower.includes("freelanc")) secondary.push("Freelancing");
+      if (lower.includes("website") || lower.includes("web design")) secondary.push("Website Building");
+      return { primaryTopic: "Business Ideas", secondaryTopics: secondary };
     }
 
-    // Travel & Transit
+    // Travel & Transit (requires destination/transit context, not isolated incidental mentions)
     if (
       lower.includes("railway") ||
       lower.includes("train") ||
-      lower.includes("travel") ||
-      lower.includes("itinerary")
+      lower.includes("destination") ||
+      lower.includes("tourism") ||
+      lower.includes("itinerary") ||
+      lower.includes("vacation") ||
+      lower.includes("backpacking") ||
+      (lower.includes("travel") && !lower.includes("business") && !lower.includes("work"))
     ) {
       return { primaryTopic: "Travel", secondaryTopics: ["Transit Guides", "Itineraries"] };
     }

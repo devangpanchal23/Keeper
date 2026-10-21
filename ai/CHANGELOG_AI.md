@@ -1,6 +1,34 @@
 # Keeper — AI Development Changelog
 
-Last updated: 2026-10-21 10:44 IST
+Last updated: 2026-10-21 15:40 IST
+
+## 2026-10-21 — Instagram Reels AI Accuracy Audit Implementation
+
+- **Problem:** AI audit on 3 sample Instagram Reels identified high-priority defects:
+  1. *Reel 01:* Mismatch between generic and topic-specific tags (`#Seriously` conversational filler included, `#technology` generic tag vs specific `#macbooktrick`); published date off by one day due to timezone shifts (`2026-10-17` vs `2026-10-18`).
+  2. *Reel 02:* Creator author attribution incorrectly inferred `@Nikitha M S` (invalid handle with spaces fabricated from display name) instead of authoritative handle `niki.webinns`; `#DON` and noise tags lacked relevance validation.
+  3. *Reel 03:* Category allocated to `Travel` despite business/website-building tags due to an incidental "travel" keyword overriding tags; published date displayed import/save date (`14 October 2026`) instead of original publication date (`18 October 2026`).
+- **Root Causes & Solutions:**
+  - *Tag Quality & Specificity:* Added conversational filler words (`seriously`, `don`, `omg`, `lol`, viral tags) to `STOP_WORDS` in `ContentIntelligenceService`. Added canonical terms mapping compound hashtags (`macbooktrick` -> `MacBook Tricks`, `macbookapps` -> `MacBook Apps`, `websitebuilding` -> `Website Building`). Prioritized specific topic/skill tags ahead of broad generic tags.
+  - *Timezone-Safe Dates:* Added `MetadataNormalizer.parseAuthoritativeDate` parsing calendar dates at UTC midday (`Date.UTC(y, m, d, 12, 0, 0)`), preventing midnight crossover in local timezones. Fixed `src/lib/utils.ts` `formatDate` to parse `YYYY-MM-DD` components timezone-neutrally.
+  - *Creator Attribution:* Added `MetadataNormalizer.normalizeInstagramAuthor`: strictly enforces valid handle format (`/^[a-zA-Z0-9_.]+$/`), preserves human display name without prepending `@` if invalid, uses verified URL-path/embed usernames, and separates mentioned accounts into `mentionedAccounts`.
+  - *Weighted Category Allocation:* Replaced static priority sort with cumulative evidence scoring in `CollectionMatchingService.inferCategories`: weighs specific tags (1.5 + specificity bonus) and caps text keyword hits (max 1.0), correctly classifying freelancing/website-building posts into `Business` while tracking `Travel` as secondary category. Added conflict detection when top scores are within 18%.
+  - *Publication Date Separation:* Separated `metadata.publishedAt` from `savedDate` and `metadata.importedAt`. Updated `SaveItemCard.tsx`, `SaveItemListRow.tsx`, and item detail view to prefer authoritative published date with tooltip distinguishing it from save date. Updated `ContentService.safeMerge` to preserve publication metadata.
+- **Files Modified:**
+  - `src/types/index.ts`
+  - `src/services/normalizer/metadata-normalizer.ts`
+  - `src/services/providers/instagram-provider.ts`
+  - `src/services/content-intelligence.ts`
+  - `src/services/collection-matching-service.ts`
+  - `src/services/collection-organizer-service.ts`
+  - `src/services/content-service.ts`
+  - `src/services/ingestion-service.ts`
+  - `src/lib/utils.ts`
+  - `src/components/cards/SaveItemCard.tsx`
+  - `src/components/cards/SaveItemListRow.tsx`
+  - `src/app/app/item/[id]/page.tsx`
+  - `scripts/run-tests.ts`
+- **Validation:** Added Section 21 regression test suite to `scripts/run-tests.ts` covering tag filtering, creator attribution, timezone-safe dates, category allocation, date separation, and uncertainty states for Reels 01, 02, and 03.
 
 ## 2026-10-21 — Local media pipeline audit
 

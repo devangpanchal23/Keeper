@@ -297,6 +297,12 @@ export class ContentService {
       hashtags: updates.metadata?.hashtags || existing.metadata?.hashtags,
       transcript: updates.metadata?.transcript || existing.metadata?.transcript,
       visualText: updates.metadata?.visualText || existing.metadata?.visualText,
+      publishedAt: updates.metadata?.publishedAt || existing.metadata?.publishedAt,
+      importedAt: existing.metadata?.importedAt || updates.metadata?.importedAt,
+      processedAt: updates.metadata?.processedAt || existing.metadata?.processedAt,
+      publishedDateConfidence: updates.metadata?.publishedDateConfidence || existing.metadata?.publishedDateConfidence,
+      primaryCategory: updates.metadata?.primaryCategory || existing.metadata?.primaryCategory,
+      secondaryCategories: updates.metadata?.secondaryCategories || existing.metadata?.secondaryCategories,
     };
 
     // 8. Collections Merging

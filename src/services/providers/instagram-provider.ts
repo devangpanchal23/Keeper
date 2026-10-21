@@ -286,7 +286,7 @@ export class InstagramProvider implements ContentProvider {
     let comments: string | undefined;
     let publishedDate: string | undefined;
 
-    // Pattern A: "Name (@handle) on Instagram: "Caption text...""
+    // Pattern A1: "Name (@handle) on Instagram: "Caption text...""
     if (ogTitle) {
       const titleWithHandle = ogTitle.match(/^(.*?)\s+\(@([a-zA-Z0-9_\.]+)\)\s+on Instagram:\s*["“]([\s\S]*?)["”]?$/);
       if (titleWithHandle) {
@@ -296,7 +296,14 @@ export class InstagramProvider implements ContentProvider {
       } else {
         const titleWithoutHandle = ogTitle.match(/^(.*?)\s+on Instagram:\s*["“]([\s\S]*?)["”]?$/);
         if (titleWithoutHandle) {
-          parsedCreator = MetadataNormalizer.normalizeText(titleWithoutHandle[1]);
+          const rawName = MetadataNormalizer.normalizeText(titleWithoutHandle[1]);
+          // If name has no spaces and is a valid handle, treat as handle
+          if (/^[a-zA-Z0-9_\.]+$/.test(rawName)) {
+            parsedHandle = `@${rawName}`;
+            parsedCreator = rawName;
+          } else {
+            parsedCreator = rawName;
+          }
           parsedCaption = MetadataNormalizer.normalizeText(titleWithoutHandle[2]);
         }
       }
@@ -310,13 +317,36 @@ export class InstagramProvider implements ContentProvider {
       if (descStats) {
         likes = descStats[1];
         comments = descStats[2];
-        if (!parsedCreator) parsedCreator = MetadataNormalizer.normalizeText(descStats[3]);
+        const rawAuthor = MetadataNormalizer.normalizeText(descStats[3]);
+        const authorWithHandle = rawAuthor.match(/^(.*?)\s+\(@([a-zA-Z0-9_\.]+)\)$/);
+        if (authorWithHandle) {
+          if (!parsedCreator) parsedCreator = authorWithHandle[1].trim();
+          if (!parsedHandle) parsedHandle = `@${authorWithHandle[2].trim()}`;
+        } else if (/^[a-zA-Z0-9_\.]+$/.test(rawAuthor)) {
+          if (!parsedHandle) parsedHandle = `@${rawAuthor}`;
+          if (!parsedCreator) parsedCreator = rawAuthor;
+        } else if (!parsedCreator) {
+          parsedCreator = rawAuthor;
+        }
+
         publishedDate = descStats[4];
         if (!parsedCaption && descStats[5]) {
           parsedCaption = MetadataNormalizer.normalizeText(descStats[5]);
         }
       }
     }
+
+    // Meta publication dates in HTML
+    const pubTimeMatch =
+      html.match(/<meta[^>]*property=["']article:published_time["'][^>]*content=["']([^"']+)["']/i) ||
+      html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']article:published_time["']/i) ||
+      html.match(/<meta[^>]*property=["']video:release_date["'][^>]*content=["']([^"']+)["']/i) ||
+      html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']video:release_date["']/i);
+    const jsonDateMatch =
+      html.match(/"datePublished"\s*:\s*"([^"]+)"/i) ||
+      html.match(/"uploadDate"\s*:\s*"([^"]+)"/i);
+    const rawDateCandidate = pubTimeMatch?.[1] || jsonDateMatch?.[1] || publishedDate;
+    const parsedDateObj = MetadataNormalizer.parseAuthoritativeDate(rawDateCandidate);
 
     return {
       ogTitle,
@@ -327,7 +357,7 @@ export class InstagramProvider implements ContentProvider {
       parsedCaption,
       likes,
       comments,
-      publishedDate,
+      publishedDate: parsedDateObj.iso || undefined,
     };
   }
 
@@ -446,61 +476,82 @@ export class InstagramProvider implements ContentProvider {
 
         if (!isLoginOrRestricted) {
           const parsed = this.parseEmbedHtml(html, code);
+          const caption = parsed.caption ? MetadataNormalizer.normalizeText(parsed.caption) : undefined;
+          const hasAuthenticThumb = this.isValidThumbnailUrl(parsed.thumbnailUrl);
+          const thumbnail = hasAuthenticThumb ? parsed.thumbnailUrl! : fallbackThumbnail;
+          const avatar = parsed.avatarUrl;
 
-        const rawUsername = parsed.username || details.username;
-        const username = rawUsername ? MetadataNormalizer.normalizeText(rawUsername) : undefined;
-        const caption = parsed.caption ? MetadataNormalizer.normalizeText(parsed.caption) : undefined;
-        const hasAuthenticThumb = this.isValidThumbnailUrl(parsed.thumbnailUrl);
-        const thumbnail = hasAuthenticThumb ? parsed.thumbnailUrl! : fallbackThumbnail;
-        const avatar = parsed.avatarUrl;
+          const authorInfo = MetadataNormalizer.normalizeInstagramAuthor({
+            rawUsername: parsed.username,
+            caption,
+            urlPathUsername: details.username,
+            source: "embed",
+          });
 
-        if (username || caption || hasAuthenticThumb) {
-          const authorDisplay = username ? `@${username.replace(/^@/, "")}` : "Instagram Creator";
-          const title = MetadataNormalizer.deriveDisplayTitleFromCaption(
-            caption || "",
-            authorDisplay,
-            "Instagram",
-            isReel ? "Reel" : "Post"
-          );
+          if (authorInfo.displayName !== "Instagram Creator" || caption || hasAuthenticThumb) {
+            const authorDisplay = authorInfo.handle || authorInfo.displayName;
+            const title = MetadataNormalizer.deriveDisplayTitleFromCaption(
+              caption || "",
+              authorDisplay,
+              "Instagram",
+              isReel ? "Reel" : "Post"
+            );
 
-          provenance.title = { value: title, source: "instagram_embed", retrievedAt: now };
-          provenance.creator = { value: authorDisplay, source: "instagram_embed", retrievedAt: now };
-          provenance.thumbnail = {
-            value: thumbnail,
-            source: hasAuthenticThumb ? "instagram_embed" : "fallback_preview",
-            retrievedAt: now,
-          };
-          if (caption) {
-            provenance.caption = { value: caption, source: "instagram_embed", retrievedAt: now };
+            provenance.title = { value: title, source: "instagram_embed", retrievedAt: now };
+            provenance.creator = {
+              value: authorDisplay,
+              source: authorInfo.attributionSource,
+              confidence: authorInfo.confidence,
+              retrievedAt: now,
+            };
+            provenance.thumbnail = {
+              value: thumbnail,
+              source: hasAuthenticThumb ? "instagram_embed" : "fallback_preview",
+              retrievedAt: now,
+            };
+            if (caption) {
+              provenance.caption = { value: caption, source: "instagram_embed", retrievedAt: now };
+            }
+            if (authorInfo.mentionedAccounts.length > 0) {
+              provenance.mentionedAccounts = {
+                value: authorInfo.mentionedAccounts,
+                source: "caption_mentions",
+                retrievedAt: now,
+              };
+            }
+
+            const creator: Creator = {
+              name: authorInfo.displayName,
+              displayName: authorInfo.displayName,
+              handle: authorInfo.handle,
+              username: authorInfo.username,
+              avatar,
+              verified: false,
+              confidence: authorInfo.confidence,
+              attributionSource: authorInfo.attributionSource,
+              mentionedAccounts: authorInfo.mentionedAccounts,
+            };
+
+            return {
+              platform: "instagram",
+              canonicalUrl,
+              contentId: code,
+              creator,
+              title,
+              caption: caption || undefined,
+              description: caption || `Instagram ${isReel ? "Reel" : "Post"} by ${authorDisplay}.`,
+              bodyText: caption || "",
+              thumbnailUrl: thumbnail,
+              contentType: validation.contentType,
+              rawPlatformMetadata: { embedParsed: true, username: authorInfo.username, likes: parsed.likes },
+              retrievedAt: now,
+              isRestricted: false,
+              provenance,
+            };
           }
-
-          const creator: Creator = {
-            name: authorDisplay,
-            handle: username ? `@${username.replace(/^@/, "")}` : undefined,
-            avatar,
-            verified: false,
-          };
-
-          return {
-            platform: "instagram",
-            canonicalUrl,
-            contentId: code,
-            creator,
-            title,
-            caption: caption || undefined,
-            description: caption || `Instagram ${isReel ? "Reel" : "Post"} by ${authorDisplay}.`,
-            bodyText: caption || "",
-            thumbnailUrl: thumbnail,
-            contentType: validation.contentType,
-            rawPlatformMetadata: { embedParsed: true, username, likes: parsed.likes },
-            retrievedAt: now,
-            isRestricted: false,
-            provenance,
-          };
         }
       }
-    }
-  } catch {
+    } catch {
       // Fall through to OpenGraph / fallback
     }
 
@@ -529,58 +580,89 @@ export class InstagramProvider implements ContentProvider {
 
         if (!isLoginOrRestricted) {
           const og = this.parseOpenGraph(html);
-
-          const rawUsername = og.parsedHandle ? og.parsedHandle.replace(/^@/, "") : (og.parsedCreator || details.username);
-          const username = rawUsername ? MetadataNormalizer.normalizeText(rawUsername) : undefined;
           const caption = og.parsedCaption ? MetadataNormalizer.normalizeText(og.parsedCaption) : undefined;
           const hasAuthenticThumb = this.isValidThumbnailUrl(og.ogImage);
           const thumbnail = hasAuthenticThumb ? og.ogImage! : fallbackThumbnail;
 
-          if (username || caption || hasAuthenticThumb) {
-          const authorDisplay = username ? `@${username.replace(/^@/, "")}` : "Instagram Creator";
-          const title = MetadataNormalizer.deriveDisplayTitleFromCaption(
-            caption || "",
-            authorDisplay,
-            "Instagram",
-            isReel ? "Reel" : "Post"
-          );
+          const authorInfo = MetadataNormalizer.normalizeInstagramAuthor({
+            rawUsername: og.parsedHandle ? og.parsedHandle.replace(/^@/, "") : undefined,
+            rawDisplayName: og.parsedCreator,
+            caption,
+            urlPathUsername: details.username,
+            source: "opengraph",
+          });
 
-          provenance.title = { value: title, source: "instagram_opengraph", retrievedAt: now };
-          provenance.creator = { value: authorDisplay, source: "instagram_opengraph", retrievedAt: now };
-          provenance.thumbnail = {
-            value: thumbnail,
-            source: hasAuthenticThumb ? "instagram_opengraph" : "fallback_preview",
-            retrievedAt: now,
-          };
-          if (caption) {
-            provenance.caption = { value: caption, source: "instagram_opengraph", retrievedAt: now };
+          if (authorInfo.displayName !== "Instagram Creator" || caption || hasAuthenticThumb) {
+            const authorDisplay = authorInfo.handle || authorInfo.displayName;
+            const title = MetadataNormalizer.deriveDisplayTitleFromCaption(
+              caption || "",
+              authorDisplay,
+              "Instagram",
+              isReel ? "Reel" : "Post"
+            );
+
+            provenance.title = { value: title, source: "instagram_opengraph", retrievedAt: now };
+            provenance.creator = {
+              value: authorDisplay,
+              source: authorInfo.attributionSource,
+              confidence: authorInfo.confidence,
+              retrievedAt: now,
+            };
+            provenance.thumbnail = {
+              value: thumbnail,
+              source: hasAuthenticThumb ? "instagram_opengraph" : "fallback_preview",
+              retrievedAt: now,
+            };
+            if (caption) {
+              provenance.caption = { value: caption, source: "instagram_opengraph", retrievedAt: now };
+            }
+            if (og.publishedDate) {
+              provenance.publishedAt = {
+                value: og.publishedDate,
+                source: "instagram_opengraph",
+                confidence: 0.9,
+                retrievedAt: now,
+              };
+            }
+            if (authorInfo.mentionedAccounts.length > 0) {
+              provenance.mentionedAccounts = {
+                value: authorInfo.mentionedAccounts,
+                source: "caption_mentions",
+                retrievedAt: now,
+              };
+            }
+
+            const creator: Creator = {
+              name: authorInfo.displayName,
+              displayName: authorInfo.displayName,
+              handle: authorInfo.handle,
+              username: authorInfo.username,
+              verified: false,
+              confidence: authorInfo.confidence,
+              attributionSource: authorInfo.attributionSource,
+              mentionedAccounts: authorInfo.mentionedAccounts,
+            };
+
+            return {
+              platform: "instagram",
+              canonicalUrl,
+              contentId: code,
+              creator,
+              title,
+              caption: caption || undefined,
+              description: caption || og.ogDescription || `Instagram ${isReel ? "Reel" : "Post"} (${code}).`,
+              bodyText: caption || "",
+              thumbnailUrl: thumbnail,
+              contentType: validation.contentType,
+              likeCount: og.likes,
+              commentCount: og.comments,
+              publishedAt: og.publishedDate,
+              rawPlatformMetadata: { ogParsed: true, ogTitle: og.ogTitle },
+              retrievedAt: now,
+              isRestricted: false,
+              provenance,
+            };
           }
-
-          const creator: Creator = {
-            name: authorDisplay,
-            handle: og.parsedHandle || (username ? `@${username.replace(/^@/, "")}` : undefined),
-            verified: false,
-          };
-
-          return {
-            platform: "instagram",
-            canonicalUrl,
-            contentId: code,
-            creator,
-            title,
-            caption: caption || undefined,
-            description: caption || og.ogDescription || `Instagram ${isReel ? "Reel" : "Post"} (${code}).`,
-            bodyText: caption || "",
-            thumbnailUrl: thumbnail,
-            contentType: validation.contentType,
-            likeCount: og.likes,
-            commentCount: og.comments,
-            publishedAt: og.publishedDate,
-            rawPlatformMetadata: { ogParsed: true, ogTitle: og.ogTitle },
-            retrievedAt: now,
-            isRestricted: false,
-            provenance,
-          };
         }
       }
     }
@@ -590,16 +672,20 @@ export class InstagramProvider implements ContentProvider {
 
     // Strategy 4: Honest restricted-mode fallback when Instagram restricts guest access
     // NEVER invent fake usernames or fake handles!
-    const verifiedUsername = details.username;
-    const authorName = verifiedUsername ? `@${verifiedUsername}` : "Instagram Creator";
-    const title = verifiedUsername
-      ? `Instagram ${isReel ? "Reel" : "Post"} by @${verifiedUsername}`
+    const authorInfo = MetadataNormalizer.normalizeInstagramAuthor({
+      urlPathUsername: details.username,
+      source: "url_parse",
+    });
+    const authorName = authorInfo.handle || authorInfo.displayName;
+    const title = authorInfo.handle
+      ? `Instagram ${isReel ? "Reel" : "Post"} by ${authorInfo.handle}`
       : `Instagram ${isReel ? "Reel" : "Post"} • ${code}`;
 
     provenance.title = { value: title, source: "url_parse", retrievedAt: now };
     provenance.creator = {
       value: authorName,
-      source: verifiedUsername ? "url_parse" : "restricted_platform",
+      source: authorInfo.attributionSource,
+      confidence: authorInfo.confidence,
       retrievedAt: now,
     };
     provenance.thumbnail = { value: fallbackThumbnail, source: "fallback_preview", retrievedAt: now };
@@ -609,9 +695,13 @@ export class InstagramProvider implements ContentProvider {
       canonicalUrl,
       contentId: code,
       creator: {
-        name: authorName,
-        handle: verifiedUsername ? `@${verifiedUsername}` : undefined,
+        name: authorInfo.displayName,
+        displayName: authorInfo.displayName,
+        handle: authorInfo.handle,
+        username: authorInfo.username,
         verified: false,
+        confidence: authorInfo.confidence,
+        attributionSource: authorInfo.attributionSource,
       },
       title,
       caption: undefined,

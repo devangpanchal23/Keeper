@@ -1,6 +1,15 @@
 # AI Development Handoff
 
-Last updated: 2026-10-21 10:44 IST
+Last updated: 2026-10-21 15:40 IST
+
+## 2026-10-21 Instagram Reels AI Accuracy Audit Implementation
+- Fixed tag generation, category allocation, creator attribution, and publication date precision for Instagram Reels.
+- Root causes diagnosed and fixed across Reels 01, 02, and 03:
+  1. Filler and noise tags (`#Seriously`, `#DON`) removed; compound tags normalized (`#macbooktrick` -> `MacBook Tricks`); topic-specific tags prioritized over broad generic tags.
+  2. Handle validation disallows spaces, preventing fabrication of `@Nikitha M S` while preserving human display name and using verified handle `niki.webinns`.
+  3. Evidence-weighted multi-topic category allocation prevents incidental single keywords ("travel") from overriding dominant business/freelancing tags.
+  4. Timezone-safe date parsing prevents off-by-one day shifts (`2026-10-18`), and publication dates are strictly separated from import dates in storage and UI.
+- Comprehensive regression test suite added to `scripts/run-tests.ts` (Section 21).
 
 ## 2026-10-21 local audit findings
 
@@ -15,6 +24,19 @@ Last updated: 2026-10-21 10:44 IST
 Read every Markdown file in `ai/`, then inspect `git status`, `git log -n 30 --stat`, and the current diff. Follow `DEVELOPMENT_RULES.md`, preserve the existing design/theme unless asked otherwise, and ask before large structural changes. Source code and migrations determine actual behavior. Only lowercase `ai/` is tracked; do not edit the untracked uppercase `AI/` copy.
 
 ## Last changes, most recent first
+
+### 2026-10-21, Instagram Reels AI Accuracy Audit Implementation
+- `src/types/index.ts`: added `confidence`, `attributionSource`, `mentionedAccounts` to `Creator`; added `importedAt`, `processedAt`, `publishedDateConfidence`, `publishedDateConflict`, `primaryCategory`, `secondaryCategories`, `categoryConfidence`, `categoryConflict` to `ItemMetadata`.
+- `src/services/normalizer/metadata-normalizer.ts`: added `normalizeInstagramAuthor` (strict handle regex without spaces, `@mention` extraction) and `parseAuthoritativeDate` (UTC midday parsing preventing midnight cross-timezone shifts).
+- `src/services/providers/instagram-provider.ts`: integrated author normalization and authoritative date parsing into OpenGraph and embed extraction strategies.
+- `src/services/content-intelligence.ts`: expanded `STOP_WORDS` with conversational filler (`seriously`, `don`, viral algorithm terms), canonical terms for compound tags, and topic-specific tag prioritization.
+- `src/services/collection-matching-service.ts`: implemented `inferCategories` with evidence-weighted scoring, secondary categories, and conflict detection; updated `COLLECTION_SYNONYMS`.
+- `src/services/collection-organizer-service.ts`: updated topic hierarchy with freelancing/website building in Business, refined Travel to require transit/destination context.
+- `src/services/content-service.ts`: updated `safeMerge` to preserve publication metadata and category classifications during partial updates.
+- `src/services/ingestion-service.ts`: sets `publishedAt`, `importedAt`, `publishedDateConfidence`, `primaryCategory`, `secondaryCategories`.
+- `src/lib/utils.ts`: fixed `formatDate` to parse calendar dates timezone-neutrally.
+- `src/components/cards/SaveItemCard.tsx`, `src/components/cards/SaveItemListRow.tsx`, `src/app/app/item/[id]/page.tsx`: display authoritative publication date with descriptive tooltips and separate imported date.
+- `scripts/run-tests.ts`: added Section 21 regression suite for Reels 01, 02, and 03.
 
 ### 2026-10-20, AI media pipeline recovery and provider adapters (uncommitted)
 - `src/app/api/ai/worker/route.ts`: retry transient provider errors with bounded backoff, store normalized failure codes, and handle exhausted job attempts.

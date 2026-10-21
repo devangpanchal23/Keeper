@@ -28,13 +28,13 @@ const COLLECTION_SYNONYMS: Record<string, string[]> = {
   quiz: ["quiz", "quizzes", "trivia", "brain teaser", "brain teasers", "knowledge quiz", "knowledge test", "question game"],
   comedy: ["comedy", "comedian", "funny", "humor", "humour", "sketch", "standup", "parody", "satire"],
   entertainment: ["entertainment", "music", "movies", "gaming", "games", "celebrity", "series", "cinema"],
-  technology: ["technology", "tech", "programming", "coding", "software", "artificial intelligence", "machine learning"],
-  design: ["design", "ui", "ux", "graphic design", "web design", "typography"],
-  education: ["education", "learning", "study", "lesson", "course", "tutorial", "explainer"],
-  travel: ["travel", "trip", "destination", "tourism", "itinerary"],
+  technology: ["technology", "tech", "programming", "coding", "software", "hardware", "macbook", "apple", "macos", "ios", "developer", "artificial intelligence", "machine learning"],
+  design: ["design", "ui", "ux", "graphic design", "web design", "typography", "figma"],
+  education: ["education", "learning", "study", "lesson", "course", "tutorial", "explainer", "guide", "how to"],
+  travel: ["travel", "trip", "destination", "tourism", "itinerary", "vacation", "transit guide", "flight", "hotel"],
   food: ["food", "cooking", "recipe", "recipes", "cuisine"],
   fitness: ["fitness", "workout", "exercise", "health", "wellness"],
-  business: ["business", "marketing", "startup", "entrepreneurship", "sales"],
+  business: ["business", "marketing", "startup", "entrepreneurship", "sales", "freelance", "freelancing", "website building", "web building", "web design", "client acquisition", "agency", "portfolio", "side hustle", "solopreneur", "pricing"],
   news: ["news", "current events", "politics", "breaking news"],
   sports: ["sports", "sport", "cricket", "football", "basketball"],
 };
@@ -51,6 +51,15 @@ const GENERIC_COLLECTION_TOPICS = new Set([
   "reference", "resource", "resources", "tutorial", "video", "videos", "youtube", "instagram",
   "reddit", "linkedin", "short", "shorts", "reel", "reels",
 ]);
+
+export interface InferredCategoryResult {
+  primaryCategory: string | null;
+  secondaryCategories: string[];
+  confidence: number;
+  isConflicted: boolean;
+  conflictReason?: string;
+  scores: Record<string, number>;
+}
 
 function tokenize(value: string): Set<string> {
   return new Set(value.toLowerCase().match(/[\p{L}\p{N}+#.-]{2,}/gu)?.map((word) => word.replace(/^[.+#-]+|[.+#-]+$/g, ""))
@@ -72,10 +81,95 @@ function canonicalCollectionTopic(value: string): string | undefined {
 }
 
 export class CollectionMatchingService {
-  static inferCollectionCategory(tags: string[]): string | null {
-    const categories = tags.map((tag) => canonicalCollectionTopic(tag)).filter((value): value is string => Boolean(value));
-    const best = [...new Set(categories)].sort((a, b) => (COLLECTION_CATEGORY_PRIORITY[b] || 0) - (COLLECTION_CATEGORY_PRIORITY[a] || 0))[0];
-    return best ? COLLECTION_CATEGORY_LABELS[best] || null : null;
+  /**
+   * Infers primary and secondary collection categories based on evidence-weighted tag counts
+   * and content cues, avoiding false allocation from isolated incidental keywords.
+   */
+  static inferCategories(tags: Array<GeneratedTag | string>, text?: string): InferredCategoryResult {
+    const scores: Record<string, number> = {};
+    const tagStrings: string[] = tags.map((t) => typeof t === "string" ? t : t.name);
+
+    // 1. Evidence scoring from tags
+    for (const tag of tags) {
+      const tagName = typeof tag === "string" ? tag : tag.name;
+      const tagConf = typeof tag === "object" && typeof tag.confidence === "number" ? tag.confidence : 1;
+      const topic = canonicalCollectionTopic(tagName);
+      if (topic) {
+        // Tag weight scales with specificity: multi-word or compound tags get a bonus
+        const specificityBonus = tagName.includes(" ") ? 0.5 : 0;
+        scores[topic] = (scores[topic] || 0) + (1.5 + specificityBonus) * tagConf;
+      }
+    }
+
+    // 2. Evidence scoring from verified source text (capped to prevent 1 repetitive word from hijacking)
+    if (text && text.trim().length > 0) {
+      const lower = text.toLowerCase();
+      for (const [topic, synonyms] of Object.entries(COLLECTION_SYNONYMS)) {
+        let hits = 0;
+        for (const cue of synonyms) {
+          const regex = new RegExp(`\\b${cue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+          if (regex.test(lower)) {
+            hits++;
+          }
+        }
+        if (hits > 0) {
+          // Add text hits capped at 1.0 point
+          scores[topic] = (scores[topic] || 0) + Math.min(1.0, hits * 0.35);
+        }
+      }
+    }
+
+    const sortedTopics = Object.keys(scores).sort((a, b) => {
+      const scoreDiff = scores[b] - scores[a];
+      // If scores are very close (within 0.2), use category priority as tiebreaker
+      if (Math.abs(scoreDiff) < 0.2) {
+        return (COLLECTION_CATEGORY_PRIORITY[b] || 0) - (COLLECTION_CATEGORY_PRIORITY[a] || 0);
+      }
+      return scoreDiff;
+    });
+
+    if (sortedTopics.length === 0) {
+      return {
+        primaryCategory: null,
+        secondaryCategories: [],
+        confidence: 0,
+        isConflicted: false,
+        scores: {},
+      };
+    }
+
+    const bestTopic = sortedTopics[0];
+    const bestScore = scores[bestTopic];
+    const runnerUpTopic = sortedTopics[1];
+    const runnerUpScore = runnerUpTopic ? scores[runnerUpTopic] : 0;
+
+    const primaryCategory = COLLECTION_CATEGORY_LABELS[bestTopic] || null;
+    const secondaryCategories = sortedTopics
+      .slice(1)
+      .filter((t) => scores[t] >= 1.0 && scores[t] >= bestScore * 0.4)
+      .map((t) => COLLECTION_CATEGORY_LABELS[t])
+      .filter((l): l is string => Boolean(l));
+
+    // Conflict detection: close race between two distinct strong categories
+    const isConflicted = runnerUpScore >= 1.5 && (bestScore - runnerUpScore) / bestScore < 0.18;
+    const conflictReason = isConflicted
+      ? `Conflicting signals between ${primaryCategory} (score ${bestScore.toFixed(1)}) and ${COLLECTION_CATEGORY_LABELS[runnerUpTopic]} (score ${runnerUpScore.toFixed(1)}).`
+      : undefined;
+
+    const confidence = Math.min(0.98, Math.max(0.4, bestScore / (bestScore + runnerUpScore + 0.5)));
+
+    return {
+      primaryCategory,
+      secondaryCategories,
+      confidence: Math.round(confidence * 100) / 100,
+      isConflicted,
+      conflictReason,
+      scores,
+    };
+  }
+
+  static inferCollectionCategory(tags: string[], text?: string): string | null {
+    return this.inferCategories(tags, text).primaryCategory;
   }
 
   /**

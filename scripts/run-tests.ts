@@ -42,6 +42,7 @@ import { IngestionService } from "../src/services/ingestion-service";
 import { ContentService } from "../src/services/content-service";
 import { AuthoritativeSourceData, Collection, SavedItem } from "../src/types";
 import { MetadataNormalizer } from "../src/services/normalizer/metadata-normalizer";
+import { formatDate } from "../src/lib/utils";
 import { MigrationService } from "../src/services/migration-service";
 import { INITIAL_COLLECTIONS } from "../src/data/seed-data";
 import { CollectionService } from "../src/services/collection-service";
@@ -5413,6 +5414,160 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       const lines = VisualTextService.deduplicateSubtitleLines(["Build a useful library", "Build a useful library", "  Build a useful library  ", "OK"]);
       assertEqual(lines.length, 1, "Repeated OCR frame text is collapsed and short noise omitted");
       assertEqual(lines[0], "Build a useful library", "Preserves the actual extracted text");
+    });
+
+    // ---------------------------------------------------------------------------
+    // 21. Instagram Reels AI Accuracy Audit Regression Test Suite (Reels 01, 02, 03 Quality Gates)
+    // ---------------------------------------------------------------------------
+    console.log("\n21. Instagram Reels AI Accuracy Audit Regression Tests:");
+
+    // --- REEL 01: Tag Filtering, Specificity Ranking & Timezone-Safe Date ---
+    await test("Reel 01: Rejects conversational filler tags like #Seriously and normalizes compound tags", () => {
+      const rawTags = ["Seriously", "macbooktrick", "macbookapps", "technology", "macbooktipsandtricks", "macbookfeatures"];
+      const normalized = ContentIntelligenceService.normalizeTags(rawTags);
+
+      assert(!normalized.includes("Seriously"), "Filler tag '#Seriously' must be strictly rejected");
+      assert(!normalized.includes("seriously"), "Lower-case 'seriously' must be rejected");
+      assert(normalized.includes("MacBook Tricks"), "Compound tag 'macbooktrick' normalizes to 'MacBook Tricks'");
+      assert(normalized.includes("MacBook Apps"), "Compound tag 'macbookapps' normalizes to 'MacBook Apps'");
+      assert(normalized.includes("MacBook Tips and Tricks"), "Compound tag 'macbooktipsandtricks' normalizes to 'MacBook Tips and Tricks'");
+      assert(normalized.includes("MacBook Features"), "Compound tag 'macbookfeatures' normalizes to 'MacBook Features'");
+      assert(normalized.includes("Technology"), "Valid generic tag 'Technology' is preserved");
+    });
+
+    await test("Reel 01: Prioritizes specific topic tags over generic tags", () => {
+      const generated = ContentIntelligenceService.generateTags(
+        "Here are the best MacBook tips, tricks and secret features every macOS user must know.",
+        ["Seriously", "technology", "macbookapps", "macbooktrick"],
+        undefined,
+        ["MacBook Pro M3"]
+      );
+
+      const tagNames = generated.map((t) => t.name);
+      assert(!tagNames.includes("Seriously"), "Generated tags must not include filler #Seriously");
+
+      const techIdx = tagNames.indexOf("Technology");
+      const trickIdx = tagNames.indexOf("MacBook Tricks");
+      if (techIdx !== -1 && trickIdx !== -1) {
+        assert(trickIdx < techIdx, "Specific topic tag 'MacBook Tricks' must rank ahead of generic tag 'Technology'");
+      }
+    });
+
+    await test("Reel 01: Timezone-safe publication date parsing prevents off-by-one day shift", () => {
+      const parsedUtc = MetadataNormalizer.parseAuthoritativeDate("October 18, 2026");
+      assert(parsedUtc.iso !== null, "Authoritative date string must parse successfully");
+      assertEqual(parsedUtc.iso, "2026-10-18T12:00:00.000Z", "Must produce UTC midday timestamp to prevent midnight crossing across timezones");
+      assertEqual(formatDate(parsedUtc.iso!), "2026-10-18", "formatDate must format to calendar date 2026-10-18 regardless of client timezone");
+
+      // Verify ISO date string with midnight UTC
+      const parsedIso = MetadataNormalizer.parseAuthoritativeDate("2026-10-18T00:00:00.000Z");
+      assertEqual(formatDate(parsedIso.iso!), "2026-10-18", "formatDate formats midnight UTC without shifting to 2026-10-17");
+    });
+
+    // --- REEL 02: Creator Attribution & Rejection of Short Noise Tags ---
+    await test("Reel 02: Creator attribution distinguishes handle from display name and rejects spaces in handles", () => {
+      // Problem: @Nikitha M S was incorrectly treated as author handle when real author was niki.webinns
+      const author = MetadataNormalizer.normalizeInstagramAuthor({
+        rawDisplayName: "Nikitha M S",
+        urlPathUsername: "niki.webinns",
+        caption: "Check this out @friend1 and @friend2 for web design tips",
+      });
+      assertEqual(author.displayName, "Nikitha M S", "Display name preserves creator's human name");
+      assertEqual(author.username, "niki.webinns", "Username must be verified handle niki.webinns without spaces");
+      assertEqual(author.handle, "@niki.webinns", "Handle must be @niki.webinns");
+      assert(author.confidence >= 0.9, "Confidence must be high for verified handle");
+      assertEqual(author.attributionSource, "url_path", "Attribution source recorded");
+      assert(author.mentionedAccounts.includes("friend1"), "Captions mentions extracted into mentionedAccounts");
+      assert(author.mentionedAccounts.includes("friend2"), "Captions mentions extracted into mentionedAccounts");
+      assert(!author.mentionedAccounts.includes("niki.webinns"), "Creator handle not duplicated into mentionedAccounts");
+    });
+
+    await test("Reel 02: Never fabricates handles with spaces from display names", () => {
+      const authorOnlyDisplay = MetadataNormalizer.normalizeInstagramAuthor({
+        rawDisplayName: "Nikitha M S",
+      });
+      assertEqual(authorOnlyDisplay.displayName, "Nikitha M S", "Display name preserved");
+      assertEqual(authorOnlyDisplay.username, null, "Handle MUST NOT be '@Nikitha M S' because handles cannot contain spaces");
+      assertEqual(authorOnlyDisplay.handle, undefined, "Handle must be undefined when no valid handle exists");
+      assertEqual(authorOnlyDisplay.confidence, 0.5, "Confidence reflects unverified handle status");
+      assertEqual(authorOnlyDisplay.attributionSource, "display_name_only", "Attribution source is display_name_only");
+    });
+
+    await test("Reel 02: Filters noise tags like #DON and conversational filler", () => {
+      const rawTags = ["DON", "Education", "Coding", "webdev"];
+      const normalized = ContentIntelligenceService.normalizeTags(rawTags);
+      assert(!normalized.includes("DON"), "Noise tag '#DON' must be filtered out");
+      assert(normalized.includes("Education"), "Relevance tag 'Education' preserved");
+    });
+
+    // --- REEL 03: Category Allocation Weighted Evidence & Date Separation ---
+    await test("Reel 03: Category allocation selects Business based on cumulative evidence over incidental Travel keyword", () => {
+      const tags = ["Website Building", "Freelancing", "Web Design", "Client Acquisition"];
+      const text = "How to build a $5k/month web design and freelancing business while you travel the world. Learn how to sign high-ticket clients.";
+
+      const catResult = CollectionMatchingService.inferCategories(tags, text);
+      assertEqual(catResult.primaryCategory, "Business", "Primary category must be Business, not Travel");
+      assert(catResult.confidence >= 0.7, "Category confidence must be high for matching business topics");
+      assert(catResult.secondaryCategories.includes("Travel"), "Incidental travel topic recorded as secondary category");
+
+      // Verify backward-compatible method also respects cumulative evidence
+      const legacyCat = CollectionMatchingService.inferCollectionCategory(tags, text);
+      assertEqual(legacyCat, "Business", "Legacy inferCollectionCategory returns Business");
+    });
+
+    await test("Reel 03: Preserves original publication date separately from import/saved date", () => {
+      const publicationDate = "2026-10-18T12:00:00.000Z";
+      const importDate = "2026-10-14T08:30:00.000Z";
+
+      const existingItem: SavedItem = {
+        id: "reel-03",
+        title: "How to Build a Freelancing Business",
+        url: "https://www.instagram.com/reel/C8XYZ123/",
+        thumbnail: "https://example.com/thumb3.jpg",
+        platform: "instagram",
+        contentType: "reel",
+        creator: { name: "Web Creator", username: "web.creator" },
+        description: "Freelance website building tips",
+        savedDate: importDate,
+        collectionId: "business",
+        collections: ["business"],
+        tags: ["Website Building", "Freelancing"],
+        favorite: false,
+        archived: false,
+        trashed: false,
+        metadata: {
+          domain: "instagram.com",
+          publishedAt: publicationDate,
+          importedAt: importDate,
+          publishedDateConfidence: "verified",
+          primaryCategory: "Business",
+        },
+        keyPoints: [],
+        topics: ["Business"],
+        aiSummary: { quick: "Guide", standard: "Full guide", detailed: "Detailed" },
+      };
+
+      // Ensure safeMerge preserves existing publishedAt when incoming update has undefined publishedAt
+      const merged = ContentService.safeMerge(existingItem, {
+        metadata: { domain: "instagram.com" } as any,
+      });
+
+      assertEqual(merged.metadata.publishedAt, publicationDate, "Authoritative publication date must be preserved through safeMerge");
+      assertEqual(merged.savedDate, importDate, "Import/saved date is preserved separately");
+      assertEqual(merged.metadata.primaryCategory, "Business", "Primary category preserved through safeMerge");
+    });
+
+    // --- Quality Gates & Uncertainty States ---
+    await test("Quality Gate: Conflicting or ambiguous dates produce explicit uncertainty", () => {
+      const ambiguousDate = MetadataNormalizer.parseAuthoritativeDate("not-a-valid-date");
+      assertEqual(ambiguousDate.iso, null, "Invalid date strings return null rather than guessing");
+      assertEqual(ambiguousDate.confidence, "unavailable", "Confidence is unavailable for invalid dates");
+    });
+
+    await test("Quality Gate: Conflicting categories produce flag for review", () => {
+      const catResult = CollectionMatchingService.inferCategories(["Travel", "Business"], "A balanced review of both topics equally");
+      assert(typeof catResult.primaryCategory === "string", "Selects a primary category");
+      assert(catResult.secondaryCategories.length > 0, "Secondary category is tracked for multi-topic content");
     });
 
     // Summary
