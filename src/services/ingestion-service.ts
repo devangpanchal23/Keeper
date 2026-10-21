@@ -20,6 +20,7 @@ import {
   INSTAGRAM_REEL_PLACEHOLDER,
   INSTAGRAM_POST_PLACEHOLDER,
 } from "./media/instagram-placeholders";
+import { CollectionMatchingService } from "./collection-matching-service";
 
 interface IngestionCacheEntry {
   result: IngestionResult;
@@ -535,6 +536,11 @@ export class IngestionService {
       parsedSavedDate ||
       now;
 
+    const categoryInference = CollectionMatchingService.inferCategories(
+      enrichment.tags,
+      sourceData.bodyText || sourceData.caption || ""
+    );
+
     const rawSavedItem: SavedItem = {
       id: existing?.id || `save-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       title: sourceData.provenance.title?.source === "url_parse" ? "Saved source" : sourceData.title,
@@ -566,11 +572,11 @@ export class IngestionService {
         importedAt: now,
         processedAt: now,
         publishedDateConfidence: (sourceData.provenance?.publishedAt as any)?.confidence ? "verified" : (sourceData.publishedAt ? "extracted" : "unavailable"),
-        primaryCategory: CollectionMatchingService.inferCategories(enrichment.tags, sourceData.bodyText || sourceData.caption || "").primaryCategory || undefined,
-        secondaryCategories: CollectionMatchingService.inferCategories(enrichment.tags, sourceData.bodyText || sourceData.caption || "").secondaryCategories,
-        categoryConfidence: CollectionMatchingService.inferCategories(enrichment.tags, sourceData.bodyText || sourceData.caption || "").confidence,
-        categoryConflict: CollectionMatchingService.inferCategories(enrichment.tags, sourceData.bodyText || sourceData.caption || "").isConflicted,
-        categoryConflictReason: CollectionMatchingService.inferCategories(enrichment.tags, sourceData.bodyText || sourceData.caption || "").conflictReason,
+        primaryCategory: categoryInference.primaryCategory || undefined,
+        secondaryCategories: categoryInference.secondaryCategories,
+        categoryConfidence: categoryInference.confidence,
+        categoryConflict: categoryInference.isConflicted,
+        categoryConflictReason: categoryInference.conflictReason,
         duration: sourceData.duration,
         views: sourceData.viewCount,
         likes: sourceData.likeCount,

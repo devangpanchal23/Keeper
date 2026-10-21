@@ -5544,6 +5544,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         },
         keyPoints: [],
         topics: ["Business"],
+        personalNotes: "",
         aiSummary: { quick: "Guide", standard: "Full guide", detailed: "Detailed" },
       };
 

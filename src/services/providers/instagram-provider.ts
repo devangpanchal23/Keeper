@@ -665,8 +665,7 @@ export class InstagramProvider implements ContentProvider {
           }
         }
       }
-    }
-  } catch {
+    } catch {
       // Fall through to fallback
     }
 

@@ -37,6 +37,7 @@ const CATEGORY_TERMS: Record<string, GeneratedTagCategory> = {
   freelancing: "Industry", freelance: "Industry", websitebuilding: "Topic",
   macbooktrick: "Topic", macbookapps: "Product", macbookfeatures: "Topic",
   macbooktipsandtricks: "Topic",
+  technology: "Technology",
 };
 const COLLECTION_CATEGORY_CUES: Record<string, string[]> = {
   Quiz: ["quiz", "quizzes", "trivia", "brain teaser", "riddle", "knowledge test", "question game"],
@@ -124,9 +125,22 @@ export class ContentIntelligenceService {
     };
   }
 
-  static generateTags(text: string, maxTags = 8): GeneratedTag[] {
+  static generateTags(
+    text: string,
+    sourceHashtagsOrMaxTags?: string[] | number,
+    maxTagsOrOptions?: number,
+    additionalTerms?: string[]
+  ): GeneratedTag[] {
     const normalizedText = MetadataNormalizer.normalizeText(text).slice(0, 50_000);
-    if (!normalizedText.trim()) return [];
+    const sourceHashtags: string[] = Array.isArray(sourceHashtagsOrMaxTags)
+      ? sourceHashtagsOrMaxTags
+      : [];
+    const maxTags = typeof sourceHashtagsOrMaxTags === "number"
+      ? sourceHashtagsOrMaxTags
+      : (typeof maxTagsOrOptions === "number" ? maxTagsOrOptions : 8);
+    const extraTerms: string[] = Array.isArray(additionalTerms) ? additionalTerms : [];
+
+    if (!normalizedText.trim() && sourceHashtags.length === 0 && extraTerms.length === 0) return [];
     const candidates = new Map<string, { name: string; category: GeneratedTagCategory; occurrences: number; evidence: string }>();
     const add = (name: string, category: GeneratedTagCategory, evidence: string, occurrences = 1) => {
       const normalizedName = this.normalizeTag(name);
@@ -156,9 +170,28 @@ export class ContentIntelligenceService {
       }
     }
 
-    const hashtags = MetadataNormalizer.extractHashtags(normalizedText);
+    const hashtags = [
+      ...MetadataNormalizer.extractHashtags(normalizedText),
+      ...sourceHashtags,
+    ];
     for (const hashtag of hashtags) {
-      if (!STOP_WORDS.has(hashtag.toLowerCase())) add(hashtag, CATEGORY_TERMS[hashtag.toLowerCase()] || "Topic", this.evidenceFor(normalizedText, new RegExp(`#${this.escapeRegExp(hashtag)}`, "i")));
+      const clean = hashtag.replace(/^#+/, "").trim();
+      if (!clean || STOP_WORDS.has(clean.toLowerCase())) continue;
+      const normalized = this.normalizeTag(clean);
+      if (!normalized || STOP_WORDS.has(normalized.toLowerCase())) continue;
+      const category = CATEGORY_TERMS[clean.toLowerCase()]
+        || (CANONICAL_TERMS.find((t) => t.name.toLowerCase() === normalized.toLowerCase())?.category)
+        || (Object.hasOwn(COLLECTION_CATEGORY_CUES, normalized) ? "Intent" : "Topic");
+      add(normalized, category, this.evidenceFor(normalizedText, new RegExp(`#?${this.escapeRegExp(clean)}`, "i")) || clean, 2);
+    }
+
+    for (const term of extraTerms) {
+      if (typeof term !== "string" || !term.trim()) continue;
+      const normalized = this.normalizeTag(term);
+      if (normalized && !STOP_WORDS.has(normalized.toLowerCase())) {
+        const category = CANONICAL_TERMS.find((t) => t.name.toLowerCase() === normalized.toLowerCase())?.category || "Product";
+        add(normalized, category, this.evidenceFor(normalizedText, new RegExp(`\\b${this.escapeRegExp(term)}\\b`, "i")) || term, 2);
+      }
     }
 
     const tokens = normalizedText.toLowerCase().match(/[\p{L}][\p{L}\p{N}+#.-]{1,}/gu) || [];
@@ -237,6 +270,21 @@ export class ContentIntelligenceService {
     const canonical = CANONICAL_TERMS.find((term) => term.pattern.test(value));
     if (canonical) return canonical.name;
     return value.split(/\s+/).map((part) => part.length <= 2 ? part.toUpperCase() : `${part[0].toUpperCase()}${part.slice(1).toLowerCase()}`).join(" ");
+  }
+
+  static normalizeTags(tags: string[]): string[] {
+    if (!Array.isArray(tags)) return [];
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const raw of tags) {
+      if (typeof raw !== "string") continue;
+      const normalized = this.normalizeTag(raw);
+      if (normalized && !seen.has(normalized.toLowerCase())) {
+        seen.add(normalized.toLowerCase());
+        result.push(normalized);
+      }
+    }
+    return result;
   }
 
   private static evidenceFor(text: string, pattern: RegExp): string {
