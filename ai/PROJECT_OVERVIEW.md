@@ -1,6 +1,6 @@
 # Keeper — Project Overview
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 Keeper is a universal bookmarking, content curation, and personal knowledge repository built for creators, researchers, and engineers who collect high-signal media across social platforms and the web.
 
@@ -27,7 +27,7 @@ flowchart LR
 
 ## Feature Status Breakdown
 
-### IMPLEMENTED (Production Ready & Verified)
+### IMPLEMENTED (Feature exists; external production verification varies)
 
 - **Universal Single URL Ingestion**:
   - Ingests URLs from YouTube, YouTube Shorts, Instagram (posts/reels), Reddit, LinkedIn, X (Twitter), and general web articles.
@@ -75,9 +75,15 @@ flowchart LR
 
 ---
 
-### PLANNED (Not Yet Implemented)
+### IMPLEMENTED WITH EXTERNAL SETUP REQUIRED
 
-- **Browser Extension**: 1-click capture extension for Chrome/Firefox/Safari.
-- **Automated Video Audio Transcription (Whisper API)**: Local mock exists in `TranscriptionService`; real-time server-side speech-to-text integration is planned.
-- **OCR / Frame Analysis for Reels/Shorts**: Planned background worker for keyframe visual text extraction via Tesseract / Vision AI.
-- **Multi-device Cloud Sync**: Currently persists to browser storage (`localStorage`) and server in-memory cache; dedicated database (PostgreSQL/Supabase/Prisma) is planned for multi-device sync.
+- **Durable AI media processing**: Supabase-backed workspace media, transcript, analysis, usage ledger, and leased jobs are implemented. Worker scheduling uses GitHub Actions. The 2026-10-20 recovery migration is uncommitted and must be applied in order; live behavior is UNVERIFIED.
+- **Speech transcription**: Faster-Whisper sidecar, OpenAI, and Gemini adapters exist. Deepgram Nova-3 is an opt-in transient-failure fallback. Real provider access depends on credentials, deployment, media authorization, and supported formats.
+- **OCR**: Optional private OCR sidecar exists under `services/ocr`; deployment and URL/token configuration are required.
+- **Supabase sync scope**: Authenticated imports and AI media records use Supabase. Legacy local library records and many subsequent library edits are not fully synchronized. Full multi-device sync is not implemented.
+- **OAuth direct import**: Security framework exists, but platform app credentials/permissions remain required.
+
+### NOT IMPLEMENTED / LIMITED
+
+- **Browser extension**: No Chrome/Firefox/Safari capture extension is present.
+- **Platform media access**: Arbitrary YouTube audio, private LinkedIn content, and restricted Instagram media require authorized source access; do not claim universal transcription or ingestion success.

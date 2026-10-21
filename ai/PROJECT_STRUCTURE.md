@@ -1,6 +1,6 @@
 # Keeper — Project Structure
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 This document provides an annotated map of the repository to guide code navigation.
 
@@ -13,7 +13,7 @@ Keeper/
 ├── .env.example                # Template for environment configuration
 ├── AGENTS.md                   # Agent guidelines & Next.js rule block
 ├── CLAUDE.md                   # Pointer to AI context & guidelines
-├── package.json                # Next.js 16.3.7, React 19.2.8, Tailwind 4
+├── package.json                # Next.js 16.4.0, React/React DOM 19.3.0, Tailwind 4
 ├── tsconfig.json               # TypeScript strict configuration (@/* alias)
 │
 ├── ai/                         # REPOSITORY-LOCAL AI KNOWLEDGE SYSTEM (You are here)
@@ -25,7 +25,7 @@ Keeper/
 ├── public/                     # Static assets (favicons, SVGs)
 │
 ├── scripts/                    # Test harnesses and developer CLI tools
-│   ├── run-tests.ts            # 24-suite production test suite (110+ assertions)
+│   ├── run-tests.ts            # Standalone regression harness (latest recorded run: 169 assertions)
 │   ├── smoke-test.ts           # Rapid sanity test for core ingestion & providers
 │   └── palette-audit.ts        # Design token and color palette validator
 │
@@ -34,7 +34,7 @@ Keeper/
     │   ├── api/                # Backend API routes
     │   ├── app/                # Main authenticated web app pages
     │   ├── item/[id]/          # Saved item detail view
-    │   ├── globals.css         # Tailwind v4 theme & Krackerz tokens
+    │   ├── globals.css         # Tailwind v4 theme, Keeper tokens, and landing styles
     │   ├── layout.tsx          # Root layout with font imports & providers
     │   └── page.tsx            # Marketing landing page (Krackerz design)
     │
@@ -54,9 +54,7 @@ Keeper/
     ├── data/                   # Seed data and mock items
     │   └── seed-data.ts        # Initial collections, tags, and demo items
     │
-    ├── lib/                    # Shared utilities
-    │   ├── constants.ts        # Storage keys, platform badges, color maps
-    │   └── utils.ts            # Class name merger (cn), formatting helpers
+    ├── lib/                    # Shared utilities, Supabase clients, billing helpers
     │
     ├── services/               # Core business logic singletons
     │   ├── ai-pipeline.ts      # Grounded AI summarization, topics, intent
@@ -139,6 +137,6 @@ Keeper/
 - **Who calls it**: `InstagramProvider`, `InstagramExportAdapter`, `IngestionService`.
 
 ### `scripts/run-tests.ts`
-- **What it does**: Comprehensive standalone test suite containing 110+ automated assertions across 24 test suites.
+- **What it does**: Standalone regression harness. The latest recorded run passed 169 assertions; the count can change as cases are added.
 - **Why it exists**: Rapid end-to-end regression validation without external test runner bloat.
 - **Who calls it**: Executed via `npm test` by CI/CD and developers.

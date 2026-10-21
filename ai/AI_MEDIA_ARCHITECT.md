@@ -1,6 +1,6 @@
 # AI Media Architect
 
-*Last Updated: 2026-10-07*
+*Last updated: 2026-10-21 10:44 IST*
 
 ## Instagram preview resolver correction (2026-10-08)
 
@@ -31,7 +31,7 @@ Single and browser bulk imports call the same authenticated `/api/ingest` bounda
 - Transcript persistence is unique by `media_id`; retries reuse it. Analysis and item payloads use upserts/updates. Import rows and ledger entries are committed before AI work, so a failed model never removes a saved import.
 - Canonical URL and platform identifier are unique per workspace. Strong normalized source-text fingerprints are checked before quota consumption as well. Duplicates do not consume another credit or create another job.
 - Transcription/media caches require a workspace ID; unscoped callers do not share cached content.
-- `TRANSCRIPTION_PROVIDER=auto|openai|faster-whisper` selects the server-side STT adapter. `auto` uses OpenAI when `OPENAI_TRANSCRIPTION_API_KEY` or `OPENAI_API_KEY` exists, otherwise the self-hosted faster-whisper service. OpenAI receives only audio; video must first be demuxed by the authenticated FFmpeg sidecar.
+- `TRANSCRIPTION_PROVIDER=auto|gemini|openai|faster-whisper` selects the server-side STT adapter. `auto` prefers Gemini 3.5 Transcribe when `GEMINI_API_KEY` exists, then OpenAI when configured, then faster-whisper. `TRANSCRIPTION_FALLBACK=deepgram|openai|faster-whisper` enables fallback for timeouts, network errors, 429s, and 5xx responses only. No-speech does not trigger fallback. Video is demuxed by the authenticated FFmpeg sidecar.
 - Media that is inaccessible from an authorized source adapter is never guessed or fetched through anti-bot bypasses; it receives a retryable/failed job state with the actual access limitation.
 - The current YouTube adapter returns oEmbed/Data API metadata only. The official YouTube Captions download API requires permission to edit the video; an API key or general account OAuth does not grant that permission for arbitrary public videos. Audio acquisition from arbitrary YouTube videos is not implemented.
 - The current LinkedIn adapter does not have member OAuth/post permission integration; guest requests cannot fetch private post bodies. Instagram direct media requires the authorized Meta API/export path. These platform access gaps must be resolved before claiming universal real-URL completion.
@@ -62,7 +62,7 @@ The grounded tagger uses only that normalized text, excludes platform labels, ca
 
 The import request stores source metadata and queues work only; it does not create AI tags, summaries, or collection decisions. The worker excludes titles from normalized analysis text. Video/reel/short items require a real speech transcript or verified platform caption track before analysis. Text posts require extracted post text/caption/description, and images require OCR or other verified source text. Missing evidence sets a stage-specific failure and is retryable from item detail.
 
-Grounded analysis uses `ContentAnalysisService`, an OpenAI-compatible Chat Completions adapter. Set `CONTENT_AI_API_KEY`, `CONTENT_AI_MODEL`, and optionally `CONTENT_AI_API_URL`. Every returned tag, key point, and summary/asset citation must include an exact excerpt found in normalized source text; invalid output fails instead of falling back to title-derived content. No provider credentials are configured in this workspace, so analysis intentionally stops with a visible `ANALYSIS_FAILED` state until configured.
+Grounded analysis uses `ContentAnalysisService` with either Gemini structured output or an OpenAI-compatible Chat Completions endpoint. Gemini is selected by `CONTENT_AI_PROVIDER=gemini` or by default when `GEMINI_API_KEY` is present; otherwise OpenAI-compatible mode expects `CONTENT_AI_API_KEY` or `OPENAI_API_KEY` plus `CONTENT_AI_MODEL` and optional `CONTENT_AI_API_URL`. Every generated tag, key point, summary, and asset classification must be grounded in exact source excerpts; invalid output fails instead of falling back to title-derived content. Provider settings in deployment are unknown. The local environment did not show a content-provider key among its variable names, but deployment configuration has not been inspected.
 
 Reprocessing refreshes verified source metadata, preserves user tags and suppressed AI tags, then resets the existing durable job in place. Tag edits and collection changes are persisted through authenticated workspace-scoped routes. Search indexes normalized representation text alongside transcript, tags, summary, and metadata.
 
@@ -72,22 +72,32 @@ Current workspace collections are synchronized from the authenticated import req
 
 ## Database migration
 
-Apply `supabase/migrations/202610070001_ai_media_architect.sql`, `202610070002_keeper_collection_sync_grants.sql`, and `202610070003_universal_ai_reprocessing.sql` in order after the billing migration. They add workspace media, transcripts, analyses, collections/profiles, jobs, assignment history, corrections, usage ledger tables plus quota/claim/memory, collection sync, transcript history, reprocessing, and tag update RPCs. The migrations assume Supabase Auth and the existing `billing_subscriptions` table.
+Migration order is `202610060001_billing.sql`, then `202610070001_ai_media_architect.sql`, `202610070002_keeper_collection_sync_grants.sql`, `202610070003_universal_ai_reprocessing.sql`, `202610070004_transcript_audio_metadata.sql`, and `202610200001_ai_pipeline_recovery.sql`. The last file is uncommitted; its application status in every deployed environment is UNVERIFIED. These migrations assume Supabase Auth and the existing `billing_subscriptions` table. Before any remote database action, independently confirm a staging project ref distinct from production and dashboard/deployment evidence labeling it staging. Never apply migrations as part of verification.
 
 ## Environment and scheduler
 
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY` (server only)
 - `WHISPER_SERVICE_URL`, `WHISPER_SERVICE_TOKEN`, optional `WHISPER_MODEL` (`large-v3` default); the same sidecar exposes `/extract-audio` for OpenAI video transcription.
-- `TRANSCRIPTION_PROVIDER`, `OPENAI_TRANSCRIPTION_API_KEY` (or `OPENAI_API_KEY`), optional `OPENAI_TRANSCRIPTION_MODEL` (`whisper-1` default), optional `AUDIO_EXTRACTION_SERVICE_URL`
-- `CONTENT_AI_API_KEY` (or shared `OPENAI_API_KEY`), `CONTENT_AI_MODEL`, optional `CONTENT_AI_API_URL` (OpenAI-compatible analysis endpoint; server-side only)
+- `TRANSCRIPTION_PROVIDER`, optional `TRANSCRIPTION_FALLBACK`, `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_TRANSCRIPTION_API_KEY` (or `OPENAI_API_KEY`), optional `OPENAI_TRANSCRIPTION_MODEL`, and `AUDIO_EXTRACTION_SERVICE_URL`
+- `CONTENT_AI_PROVIDER=gemini`, `GEMINI_API_KEY`, optional `CONTENT_AI_MODEL` (defaults to `gemini-3.8-flash`); OpenAI-compatible mode still accepts `CONTENT_AI_API_KEY`, `CONTENT_AI_MODEL`, and optional `CONTENT_AI_API_URL`
 - Optional OCR: `OCR_SERVICE_URL`, `OCR_SERVICE_TOKEN` (deploy `services/ocr` privately; text-only imports do not require it)
 - `AI_WORKER_SECRET` for authenticated `/api/ai/worker` calls
 - `.github/workflows/ai-worker.yml` invokes the worker using authenticated POST requests every five minutes, which fits Vercel Hobby's once-per-day Cron limit. Add the same `AI_WORKER_SECRET` value to Vercel Production and GitHub Actions Secrets, and set the GitHub Actions variable `PRODUCTION_APP_URL` to the production HTTPS URL. GitHub scheduled workflows are best-effort and may be delayed; use Vercel Pro or a dedicated scheduler if tighter processing latency is required.
 
 The faster-whisper service accepts authenticated `application/octet-stream` media at `/transcribe` and returns `text`, optional `language`, and `segments` using `start`/`end` seconds. `/extract-audio` uses FFmpeg and returns AAC audio in M4A plus duration metadata for OpenAI transcription. Both endpoints enforce upload limits. Transcript timing/duration/provenance requires applying `supabase/migrations/202610070004_transcript_audio_metadata.sql` after the earlier AI migrations. The adapter interface remains replaceable through `TranscriptionService.setProvider`.
 
-Analysis now accepts a typed `ContentRepresentation`, and rejects title, metadata-only, and incomplete inputs at the service boundary. Legacy reprocessing/organization code must preserve the same gate: only trusted transcript providers or completed normalized source text/OCR can influence tags and collection matching. On processing failure, stale AI fields/index entries and AI-assigned collection links are cleared; user tags/manual collection links remain.
+Analysis now accepts a typed `ContentRepresentation`, and rejects title, metadata-only, and incomplete inputs at the service boundary. Gemini 3.8 Flash structured output can generate grounded tags and select among candidates proposed by the deterministic matcher from authorized workspace collections. A selection must cite exact source text, match an authorized ID, and agree with the deterministic transcript-plus-tag matcher before assignment. The confidence floor is not calibrated against a Keeper evaluation set, so real-world accuracy remains unverified. On processing failure, stale AI fields/index entries and AI-assigned collection links are cleared; user tags/manual collection links remain.
+
+Migration `202610200001_ai_pipeline_recovery.sql` reclaims every nonterminal worker stage after lease expiry, caps crashed-worker attempts at five, and marks exhausted jobs failed. Transient provider failures receive bounded exponential retries and a normalized failure code.
+
+## 2026-10-21 local reliability audit
+
+- Gemini 3.5 Transcribe uses the Interactions REST API. Verbatim mode is an object (`mode: { type: "verbatim" }`); omitting/failing this shape can reject transcription requests.
+- Persisted `gemini-3.5-transcribe` and `deepgram-nova-3` transcripts are accepted for reuse, avoiding repeat provider calls after retries.
+- Recovery migration terminally fails exhausted jobs with either a NULL lease or an expired lease.
+- Config contract checked in code: `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_FALLBACK`, `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_TRANSCRIPTION_API_KEY`/`OPENAI_API_KEY`, `WHISPER_SERVICE_URL`, `WHISPER_SERVICE_TOKEN`, `AUDIO_EXTRACTION_SERVICE_URL`; analysis uses `CONTENT_AI_PROVIDER`, `CONTENT_AI_MODEL`, `GEMINI_API_KEY` or `CONTENT_AI_API_KEY`/`OPENAI_API_KEY`, and optional `CONTENT_AI_API_URL`. These local names do not prove deployment configuration.
+- Live integration and migration application remain unverified pending staging safety confirmation.
 
 ## Root causes addressed
 

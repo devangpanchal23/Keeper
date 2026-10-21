@@ -1,6 +1,6 @@
 # Keeper — Data Models & Field Ownership
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 This document defines the core TypeScript interfaces from [`src/types/index.ts`](file:///Volumes/T7/Devang/Code/Real_Project/Keeper/src/types/index.ts) and specifies the **Field Ownership Model** governing data mutation.
 

@@ -1,6 +1,6 @@
 # Keeper — Testing & Validation Guide
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 For the GitHub Actions implementation, Vercel production release gates, required repository settings, and current lint-warning baseline, see [`ai/CI_CD.md`](CI_CD.md).
 
@@ -35,7 +35,7 @@ npm run type-check
 npm test
 ```
 - Runs [`scripts/run-tests.ts`](file:///Volumes/T7/Devang/Code/Real_Project/Keeper/scripts/run-tests.ts) via Node.js and `tsx`.
-- Runs 110+ assertions across 24 test suites in sub-second time.
+- Latest recorded run on 2026-10-21 passed 169/169 assertions. An earlier implementation-session run recorded 168/168; the count changes with the harness. This handoff task did not rerun tests. Do not assume sub-second runtime.
 - **Standard**: 0 failed assertions.
 
 ### 3. ESLint Verification
@@ -43,7 +43,7 @@ npm test
 npm run lint
 ```
 - Executes Next.js ESLint rules (`eslint-config-next`).
-- **Standard**: 0 warnings, 0 errors.
+- **CI standard**: no errors and at most 262 warnings, enforced by `--max-warnings=262`. Reduce warning debt over time.
 
 ### 4. Production Next.js Bundle Build
 ```bash

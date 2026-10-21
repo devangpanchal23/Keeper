@@ -63,7 +63,7 @@ import {
   generateLargeCandidateSet,
 } from "../src/services/bulk-import/__tests__/fixtures/instagram-fixtures";
 import { MediaAcquisitionService } from "../src/services/media/media-acquisition-service";
-import { TranscriptionService } from "../src/services/media/transcription-service";
+import { GeminiTranscriptionProvider, TranscriptionService } from "../src/services/media/transcription-service";
 import { EvidenceFusionService } from "../src/services/evidence/evidence-fusion-service";
 import { ReprocessingService } from "../src/services/reprocessing/reprocessing-service";
 import {
@@ -74,10 +74,11 @@ import {
 import { CollectionOrganizerService } from "../src/services/collection-organizer-service";
 import { MediaPreviewResolver } from "../src/services/media/media-preview-resolver";
 import { ContentIntelligenceService } from "../src/services/content-intelligence";
-import { ContentAnalysisService } from "../src/services/content-analysis-service";
+import { ContentAnalysisService, validateCollectionCandidateDecision } from "../src/services/content-analysis-service";
 import { CollectionMatchingService } from "../src/services/collection-matching-service";
 import { AssetClassificationService } from "../src/services/asset-classification-service";
 import { VisualTextService } from "../src/services/media/visual-text-service";
+import { aiJobRetryDelaySeconds, MAX_AI_JOB_ATTEMPTS, processingFailureCode, shouldRetryAiJob } from "../src/services/ai-job-retry-policy";
 
 interface TestResult {
   name: string;
@@ -5235,6 +5236,47 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
     });
 
     console.log("Universal Content Intelligence Tests:");
+    await test("retries transient worker failures and dead-letters crashed jobs at the configured attempt limit", () => {
+      assertEqual(processingFailureCode(new Error("Provider returned HTTP 429")), "RATE_LIMITED", "Normalizes rate-limit failures");
+      assertEqual(shouldRetryAiJob(1, new Error("Provider returned HTTP 503")), true, "Retries provider outages");
+      assertEqual(shouldRetryAiJob(1, new Error("Request timed out")), true, "Retries request timeouts");
+      assertEqual(shouldRetryAiJob(1, new Error("Unsupported media format")), false, "Does not retry invalid media");
+      assertEqual(shouldRetryAiJob(MAX_AI_JOB_ATTEMPTS, new Error("Provider returned HTTP 503")), false, "Stops retries at five attempts");
+      assertEqual(aiJobRetryDelaySeconds(1), 15, "First retry uses 15 second backoff");
+      assertEqual(aiJobRetryDelaySeconds(5), 240, "Backoff grows but remains bounded");
+      const migration = fs.readFileSync(path.join(process.cwd(), "supabase/migrations/202610200001_ai_pipeline_recovery.sql"), "utf8");
+      assert(migration.includes("attempts >= 5") && migration.includes("set status = 'FAILED'")
+        && migration.includes("locked_until < now()") && migration.includes("locked_until is null or locked_until < now()"), "Crash recovery expires leases, handles null leases, and terminally fails exhausted jobs");
+      const worker = fs.readFileSync(path.join(process.cwd(), "src/app/api/ai/worker/route.ts"), "utf8");
+      assert(worker.includes("gemini-3.5-transcribe") && worker.includes("deepgram-nova-3"), "New transcription providers are trusted for transcript reuse");
+    });
+
+    await test("uses the documented Gemini transcription mode and preserves uploaded transcript text", async () => {
+      const originalKey = process.env.GEMINI_API_KEY;
+      const originalFetch = globalThis.fetch;
+      process.env.GEMINI_API_KEY = "test-key";
+      const requests: Array<{ url: string; body?: string }> = [];
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        requests.push({ url, body: typeof init?.body === "string" ? init.body : undefined });
+        if (url.includes("/upload/v1beta/files")) {
+          return new Response("{}", { status: 200, headers: { "x-goog-upload-url": "https://generativelanguage.googleapis.com/upload/test" } });
+        }
+        if (url.includes("/upload/test")) return new Response(JSON.stringify({ file: { uri: "files/test" } }), { status: 200 });
+        return new Response(JSON.stringify({ output_text: "Verified spoken words from the sample." }), { status: 200 });
+      }) as typeof fetch;
+      try {
+        const result = await new GeminiTranscriptionProvider().transcribe(new Uint8Array([1, 2, 3]), undefined, "audio/wav");
+        assertEqual(result.text, "Verified spoken words from the sample.", "Persists the model transcript output");
+        const interactionBody = JSON.parse(requests[2]?.body || "{}") as { generation_config?: { transcription_config?: { mode?: { type?: string } } } };
+        assertEqual(interactionBody.generation_config?.transcription_config?.mode?.type, "verbatim", "Uses the documented object form for verbatim mode");
+      } finally {
+        globalThis.fetch = originalFetch;
+        if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
+        else process.env.GEMINI_API_KEY = originalKey;
+      }
+    });
+
     await test("refuses AI analysis for title-only or incomplete source representations", async () => {
       let rejected = false;
       try {
@@ -5251,6 +5293,24 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         rejected = error instanceof Error && error.message.includes("Verified source content unavailable");
       }
       assert(rejected, "Title-only source is rejected before any provider request");
+    });
+
+    await test("validates collection model IDs against the user-authorized candidate list", () => {
+      const source = "The transcript explains how React Server Components reduce client-side JavaScript.";
+      const candidates = [{ id: "web", name: "Web Development", description: "React and frontend engineering" }];
+      const selected = validateCollectionCandidateDecision({ collectionId: "web", confidence: 0.91,
+        evidence: "React Server Components reduce client-side JavaScript", reason: "React is relevant." }, source, candidates, "gemini-3.8-flash");
+      assertEqual(selected?.collectionId, "web", "Accepts a grounded selection from the candidate set");
+      assertEqual(selected?.promptVersion, "keeper-collection-select-v1", "Records the prompt version");
+      let rejected = false;
+      try {
+        validateCollectionCandidateDecision({ collectionId: "other-user-collection", confidence: 0.99,
+          evidence: "React Server Components reduce client-side JavaScript", reason: "wrong tenant" }, source, candidates, "gemini-3.8-flash");
+      } catch (error) { rejected = error instanceof Error && error.message.includes("outside the authorized candidate set"); }
+      assert(rejected, "Rejects IDs outside the authorized candidate set");
+      assertEqual(validateCollectionCandidateDecision({ collectionId: "web", confidence: 0.5,
+        evidence: "React Server Components reduce client-side JavaScript", reason: "weak" }, source, candidates, "gemini-3.8-flash"), null,
+      "Abstains below the conservative uncalibrated confidence floor");
     });
 
     await test("normalizes platform transcript and keeps transcript provenance", () => {

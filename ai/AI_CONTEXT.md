@@ -1,10 +1,9 @@
 # Keeper — AI Context
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 > [!IMPORTANT]
-> **CODE IS THE FINAL TECHNICAL SOURCE OF TRUTH.**
-> This `/ai` directory is a navigation, continuity, and architecture layer designed for AI coding assistants. If documentation ever conflicts with active code, inspect the codebase, determine the real behavior, and update this documentation. Never alter production code merely to match stale documentation.
+> **START HERE:** Read every Markdown file in `ai/` before beginning work. Then inspect `git status` and `git log -n 30 --stat`. Follow `DEVELOPMENT_RULES.md`, preserve the existing design/theme unless asked otherwise, and ask the user before large structural changes. Verify current behavior in source; code is the technical source of truth.
 
 ---
 
@@ -21,13 +20,14 @@
 
 ## Technology Stack
 
-- **Framework**: Next.js 16.3.7 (App Router, Turbopack, React Server Components & Client Components)
-- **Runtime / UI Core**: React 19.2.8, React DOM 19.2.8
+- **Framework**: Next.js 16.4.0 (App Router, Turbopack, React Server Components & Client Components)
+- **Runtime / UI Core**: React 19.3.0, React DOM 19.3.0
 - **Language**: TypeScript 5 (Strict Mode enabled in [`tsconfig.json`](file:///Volumes/T7/Devang/Code/Real_Project/Keeper/tsconfig.json))
 - **Styling**: Tailwind CSS v4 (`@tailwindcss/postcss` 4.x, Vanilla CSS tokens in [`src/app/globals.css`](file:///Volumes/T7/Devang/Code/Real_Project/Keeper/src/app/globals.css), `tailwind-merge`, `clsx`)
-- **Icons & Delight**: `lucide-react` 1.49.0, `canvas-confetti` 1.9.4
+- **Visual system**: Editorial landing page uses cream/ink/gold Keeper tokens with Geist; legacy Krackerz display styles also exist in CSS. Preserve route-specific styling and theme behavior rather than assuming every page shares one palette.
+- **Icons & Delight**: `lucide-react` 1.53.0, `canvas-confetti` 1.9.4
 - **Testing**: Native Node.js test runner using `tsx` (`scripts/run-tests.ts`, `scripts/smoke-test.ts`)
-- **Linting**: ESLint 9 (`eslint-config-next` 16.3.7)
+- **Linting**: ESLint 9 (`eslint-config-next` 16.4.0)
 
 ---
 
@@ -44,6 +44,18 @@
 - **Grounded AI Pipeline**: [`AIPipeline`](file:///Volumes/T7/Devang/Code/Real_Project/Keeper/src/services/ai-pipeline.ts) and [`AIService`](file:///Volumes/T7/Devang/Code/Real_Project/Keeper/src/services/ai-service.ts) enforcing evidence-grounded summarization, topic extraction, and conversational search.
 
 ---
+
+## Setup and configuration names
+
+- Install with `npm ci`; run `npm run dev`, `npm run type-check`, `npm test`, `npm run lint`, `npm run audit:design`, `npm run build`, and `npm start` as needed. CI uses Node.js 24.
+- Public/app config: `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` or `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, optional `NEXT_PUBLIC_SPLINE_HERO_URL`.
+- Platform integrations: `YOUTUBE_API_KEY`, `INSTAGRAM_OEMBED_TOKEN`, `META_APP_ACCESS_TOKEN`.
+- Supabase server access: `SUPABASE_SERVICE_ROLE_KEY`.
+- Billing: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`.
+- AI worker: `AI_WORKER_SECRET` (legacy `CRON_SECRET` is also referenced). Transcription names include `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_FALLBACK`, `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_TRANSCRIPTION_API_KEY`, `OPENAI_TRANSCRIPTION_MODEL`, `WHISPER_SERVICE_URL`, `WHISPER_SERVICE_TOKEN`, `WHISPER_MODEL`, and `AUDIO_EXTRACTION_SERVICE_URL`. Analysis names include `CONTENT_AI_PROVIDER`, `CONTENT_AI_API_KEY`, `CONTENT_AI_API_URL`, and `CONTENT_AI_MODEL`. OCR uses `OCR_SERVICE_URL` and `OCR_SERVICE_TOKEN`.
+- OAuth token encryption: `TOKEN_ENCRYPTION_KEY`.
+- Deploy/smoke names include `PRODUCTION_APP_URL`, Vercel GitHub secrets, `DEPLOY_URL`, and `VERCEL_AUTOMATION_BYPASS_SECRET`. These are names only; do not commit values.
+- Migration files are ordered `202610060001_billing.sql`, `202610070001` through `202610070004`, then `202610200001_ai_pipeline_recovery.sql`. The recovery migration is uncommitted and its application status is UNVERIFIED. Do not apply or test migrations against production; a separate project ref and explicit staging identity must be confirmed first.
 
 ## Critical Entry Points
 
@@ -62,13 +74,21 @@ For required GitHub Actions gates, Vercel production deployment setup, rollback 
 
 ---
 
+## Current State (verified from checkout on 2026-10-21)
+
+- Runtime versions in `package.json`: Next.js 16.4.0, React/React DOM 19.3.0, TypeScript 5, Tailwind CSS 4, Node 24 in CI.
+- Durable Supabase-backed media jobs, billing, authenticated APIs, and localStorage legacy library coexist. Do not describe all user library state as cloud-synced.
+- Working tree has pending application changes in `scripts/run-tests.ts`, `src/app/api/ai/worker/route.ts`, `src/services/content-analysis-service.ts`, `src/services/media/transcription-service.ts`, plus new `src/services/ai-job-retry-policy.ts` and `supabase/migrations/202610200001_ai_pipeline_recovery.sql`. Their state is uncommitted and described in HANDOFF.
+- Latest recorded local validation for this change: type-check passed, tests passed 169/169, lint passed with 0 errors and 262 warnings, and `npm run build -- --webpack` passed. Default Turbopack build was blocked by sandbox process/port permissions. These are prior-session results, not rerun during this documentation-only handoff.
+- The earlier implementation-session record reported 168/168 tests and a Google Fonts DNS build block; a later rerun superseded those results. Live staging, provider, database, and worker checks remain UNVERIFIED.
+
 ## Current Production State
 
 - **Bulk Import Engine**: Production-ready for Instagram JSON/ZIP and YouTube Takeout CSV. Concurrency queue, pause/resume, and pre-import breakdown are fully functional.
 - **Data Immutability (P0)**: **RESOLVED**. Authoritative Meta export metadata (canonical URL, creator handle, original caption, saved timestamp, shortcode, FBID) cannot be mutated by remote guest scraping, AI analysis, reprocessing, or duplicate updates.
 - **Authentic Thumbnails (P1)**: **LIMITED**. Authentic media from ZIP archives or verified providers is strictly preserved. When authentic media is inaccessible (e.g. unauthenticated JSON-only imports without Graph API credentials), Keeper displays an honest vector placeholder card; stock photos (Unsplash, Matrix wallpaper) are permanently banned.
 - **Collection Management & Bulk Deletion**: Fully isolated per user with multi-collection unlinking semantics and comprehensive multi-tenant authorization security.
-- **AI Grounding**: High-fidelity local AI rules pipeline with graceful fallbacks for restricted guest content.
+- **AI Grounding**: Durable server-side AI worker with grounded evidence gates and explicit failure states; provider credentials, live APIs, and Supabase production behavior remain environment-dependent and are not verified in this checkout.
 
 ---
 

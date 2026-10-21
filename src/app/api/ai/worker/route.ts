@@ -11,6 +11,7 @@ import { CollectionMatchingService } from "@/services/collection-matching-servic
 import { TranscriptionResult } from "@/services/media/transcription-service";
 import { VisualTextService } from "@/services/media/visual-text-service";
 import { ContentAnalysisService } from "@/services/content-analysis-service";
+import { aiJobRetryDelaySeconds, processingFailureCode, shouldRetryAiJob } from "@/services/ai-job-retry-policy";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -69,16 +70,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const failJob = async (error: unknown) => {
     const message = error instanceof Error ? error.message : "Media processing failed.";
-    const terminal = job.attempts >= 5
-      || failureStatus === "EXTRACTION_FAILED"
-      || failureStatus === "TRANSCRIPTION_FAILED"
-      || message.includes("not configured")
-      || message.includes("too short for grounded AI analysis");
+    const terminal = !shouldRetryAiJob(job.attempts, error);
     const nextStatus = terminal ? "FAILED" : "QUEUED";
-    const delaySeconds = Math.min(3600, 15 * 2 ** Math.max(0, job.attempts - 1));
+    const delaySeconds = aiJobRetryDelaySeconds(job.attempts);
     await admin.from("keeper_ai_jobs").update({
       status: nextStatus,
       last_error: message.slice(0, 1000),
+      failure_code: processingFailureCode(error),
       available_at: new Date(Date.now() + delaySeconds * 1000).toISOString(),
       locked_until: null,
       updated_at: new Date().toISOString(),
@@ -117,6 +115,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           aiGeneratedTags: [],
           aiProcessingStatus: persistedStatus,
           aiProcessingError: message.slice(0, 1000),
+          aiProcessingFailureCode: processingFailureCode(error),
           aiOrganization: { ...priorOrganization, aiAssignedCollectionIds: [] },
         },
         provenance,
@@ -149,7 +148,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const { data: priorTranscript } = await admin.from("keeper_media_transcripts").select("*")
       .eq("media_id", job.media_id).eq("workspace_id", job.workspace_id).maybeSingle();
     const storedTranscript = priorTranscript as { text: string; status: string; language?: string; segments?: TranscriptionResult["segments"]; duration_seconds?: number; confidence?: number; provider?: string; model_version?: string; failure_reason?: string } | null;
-    const trustedTranscriptProviders = new Set(["faster-whisper", "openai-audio-transcriptions", "platform_caption_track", "youtube_caption_track"]);
+    const trustedTranscriptProviders = new Set(["faster-whisper", "openai-audio-transcriptions", "gemini-3.5-transcribe", "deepgram-nova-3", "platform_caption_track", "youtube_caption_track"]);
     let transcript = storedTranscript?.status === "COMPLETED" && storedTranscript.text?.trim()
       && storedTranscript.provider && trustedTranscriptProviders.has(storedTranscript.provider) ? storedTranscript : null;
     if (!transcript) {
@@ -420,6 +419,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       reasoning: groundedAnalysis.collectionReason,
     };
     const collectionMatches = CollectionMatchingService.match(contentRepresentation.text, organizationTags, collections);
+    let modelCollectionDecision: Awaited<ReturnType<typeof ContentAnalysisService.selectCollection>> = null;
+    try {
+      modelCollectionDecision = await ContentAnalysisService.selectCollection(contentRepresentation, organizationTags, collectionMatches.map((candidate) => {
+        const collection = collections.find((entry) => entry.id === candidate.collectionId);
+        return { id: candidate.collectionId, name: candidate.name, description: collection?.description || "" };
+      }));
+    } catch (error) {
+      logServerError({ operation: "ai.worker.collection_model_fallback", route: "/api/ai/worker" }, error);
+    }
+    const modelSelectedCollection = modelCollectionDecision
+      ? collections.find((collection) => collection.id === modelCollectionDecision?.collectionId)
+      : undefined;
     const confidentCollectionMatch = CollectionMatchingService.selectBestMatch(collectionMatches);
     const collectionMatchIsAmbiguous = collectionMatches.length > 1
       && collectionMatches[0].confidence - collectionMatches[1].confidence < 0.12;
@@ -444,10 +455,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       : undefined;
     const matchedCollection = manuallySelectedCollection || (learnedMatch ? collections.find((collection) => collection.id === learnedMatch?.id) : undefined);
     const topCollectionMatch = collectionMatches[0];
-    let selectedCollection = matchedCollection || (confidentCollectionMatch
+    const modelAndMatcherAgree = Boolean(modelSelectedCollection && confidentCollectionMatch?.collectionId === modelSelectedCollection.id);
+    let selectedCollection = matchedCollection || (modelAndMatcherAgree ? modelSelectedCollection : undefined) || (confidentCollectionMatch
       ? collections.find((collection) => collection.id === confidentCollectionMatch.collectionId)
       : undefined);
-    let selectedMatchScore = manuallySelectedCollection ? 1 : matchedCollection && learnedMatch ? learnedMatch.score : topCollectionMatch?.confidence || 0;
+    let selectedMatchScore = manuallySelectedCollection ? 1 : matchedCollection && learnedMatch ? learnedMatch.score
+      : modelAndMatcherAgree ? Math.min(modelCollectionDecision?.confidence || 0, confidentCollectionMatch?.confidence || 0) : topCollectionMatch?.confidence || 0;
     if (autoOrganizationDisabled && !manuallySelectedCollection) selectedCollection = undefined;
     const collectionTopic = CollectionMatchingService.selectCollectionTopic(
       generatedTags,
@@ -516,7 +529,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         decision: autoCreatedCollection || selectedMatchScore >= 0.62 ? "APPLIED" as const : "SUGGESTED" as const,
         targetCollectionId: finalSelectedCollection.id, targetCollectionName: finalSelectedCollection.name,
         confidence: autoCreatedCollection ? suggestedNewCollection?.confidence || 0 : semanticallyRelatedCollection ? Math.max(selectedMatchScore, 0.55) : selectedMatchScore,
-        reasoning: autoCreatedCollection ? suggestedNewCollection?.reason : semanticallyRelatedCollection ? `Reused the semantically similar workspace collection ${semanticallyRelatedCollection.name}.` : topCollectionMatch?.reasoning || organization.reasoning }
+        reasoning: autoCreatedCollection ? suggestedNewCollection?.reason : semanticallyRelatedCollection ? `Reused the semantically similar workspace collection ${semanticallyRelatedCollection.name}.` : modelSelectedCollection ? modelCollectionDecision?.reason : topCollectionMatch?.reasoning || organization.reasoning }
       : { ...organization, primaryTopic: groundedPrimaryTopic, secondaryTopics: groundedSecondaryTopics, decision: "UNCERTAIN" as const, targetCollectionId: undefined, targetCollectionName: undefined,
         confidence: 0, reasoning: autoOrganizationDisabled ? "The user explicitly left this item uncategorized." : "No existing collection met the grounded content-match threshold." };
 
@@ -561,7 +574,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         ])],
       } },
       provenance: { ...enrichedItem.provenance, collectionDecision: {
-        value: { ...finalOrganization, collectionMatches, suggestedNewCollection }, source: "workspace_collection_matcher", basedOn: ["contentRepresentation", "aiGeneratedTags"],
+        value: { ...finalOrganization, collectionMatches, suggestedNewCollection, modelDecision: modelCollectionDecision,
+          candidateIds: collectionMatches.map((candidate) => candidate.collectionId) }, source: "workspace_collection_matcher", basedOn: ["transcript", "aiGeneratedTags"],
         retrievedAt: new Date().toISOString(),
       } },
       ...(analysis.collectionId ? { collectionId: analysis.collectionId } : {}),

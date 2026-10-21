@@ -1,6 +1,6 @@
 # Keeper — Architecture Decision Records (ADRs)
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 This document records key architectural decisions made in Keeper, the rationale behind them, and their consequences.
 

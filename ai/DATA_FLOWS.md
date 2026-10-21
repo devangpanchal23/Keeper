@@ -1,6 +1,6 @@
 # Keeper — End-to-End Data Flows
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 This document traces the 5 critical end-to-end operational data paths through the Keeper codebase.
 

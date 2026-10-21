@@ -1,5 +1,29 @@
 # Current Project Status
 
+## 2026-10-21 — Local media pipeline audit
+
+- Confirmed and fixed: transcript reuse now recognizes persisted Gemini 3.5 Transcribe and Deepgram Nova-3 providers. Before this, retries rejected those provider labels and transcribed the same media again.
+- Confirmed and fixed: Gemini transcription used `mode: "verbatim"`; the current REST contract requires `mode: { "type": "verbatim" }`. Added a mocked REST regression test for the request and returned transcript.
+- Confirmed and fixed in the uncommitted recovery migration: exhausted jobs with `locked_until IS NULL` were excluded from terminal failure handling and could remain stuck. The check now handles NULL or expired leases.
+- Local checks rerun: `npm run type-check` passed; `npm test` passed 169/169; `npm run lint` passed with 0 errors and 262 warnings. Default `npm run build` failed in Turbopack because the sandbox denied process/port creation; `npm run build -- --webpack` then passed. Live Supabase/provider/worker behavior and migration status remain UNVERIFIED.
+- Staging gate did not pass: no independently confirmed staging project ref distinct from production `pmhoqpmbwjclfqnzcrfi`, and no Supabase dashboard/deployment configuration evidence identifying the project as staging. No remote access was attempted.
+
+
+Last updated: 2026-10-21 10:44 IST
+
+## 2026-10-21 handoff audit
+
+- Working tree includes pending AI media reliability changes. See `HANDOFF.md` for exact changed paths and prioritized staging checks.
+- Latest recorded checks: type-check passed, 169/169 assertions passed, lint passed with 0 errors and 262 warnings, and `npm run build -- --webpack` passed. The default Turbopack build was blocked by sandbox process/port permissions. These checks were not rerun during this documentation-only task.
+- Live provider calls, Supabase migration application and worker behavior, and production settings are UNVERIFIED.
+
+## 2026-10-20 — Media pipeline reliability and model adapters
+
+- Added Gemini 3.5 Transcribe and Deepgram Nova-3 REST adapters, configurable fallback for transient failures, and Gemini 3.8 Flash structured grounded analysis/candidate selection. Candidate IDs are server-validated; model selection must agree with the transcript/tag matcher before auto-assignment.
+- Added a Supabase recovery migration for all nonterminal job stages, five-attempt crash recovery, and normalized failure codes. Worker retries transient provider errors with bounded backoff instead of treating every transcription failure as permanent.
+- Local Keeper accuracy evaluation, provider credentials, Supabase migration application, live provider calls, and production behavior are unavailable/unverified. Confidence thresholds are conservative but uncalibrated.
+- Validation: `npm run type-check` passes; `npm test` passes 168/168, including retry classification and recovery-migration contract checks; full lint passes with the repository's 262-warning ceiling and zero errors. Production build is blocked by DNS failure fetching Google fonts. Live Supabase worker behavior remains unverified from this checkout.
+
 ## 2026-10-11 — Vercel monitoring integration
 
 - Added the official Vercel Web Analytics and Speed Insights components once in the root layout, enabled only in production. The packages are dependencies; the Vercel dashboard features still need to be enabled per project, and usage limits should be checked before activation.
@@ -92,8 +116,6 @@
 - Added OpenAI-compatible `ContentAnalysisService`; requires `CONTENT_AI_API_KEY` and `CONTENT_AI_MODEL`. It validates citations against exact normalized source excerpts. Missing provider/configuration or invalid grounded output fails explicitly; item detail provides retry.
 - The faster-whisper adapter is real but no `WHISPER_SERVICE_URL` or token is configured here. YouTube has no authorized audio acquisition path, Instagram guest access cannot acquire audio, and LinkedIn guest access is login-restricted; those sources now fail visibly rather than being labeled processed.
 - Real-URL end-to-end acceptance remains blocked by missing provider credentials/authorized platform access and unavailable Supabase. Do not represent this pipeline as production-verified.
-
-*Last Updated: 2026-10-02*
 
 ---
 

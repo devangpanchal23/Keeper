@@ -1,6 +1,6 @@
 # Keeper — System Architecture
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 Keeper is architected as a modular Next.js application where UI components interact with a centralized client context (`RecallContext`), which delegates domain logic to specialized, decoupled service singletons.
 

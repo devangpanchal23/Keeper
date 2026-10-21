@@ -1,6 +1,6 @@
 # Keeper — Storage & State Management
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 This document explains where data lives in Keeper, how client state syncs with persistence, and how tenant isolation is guaranteed.
 

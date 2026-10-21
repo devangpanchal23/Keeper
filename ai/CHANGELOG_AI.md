@@ -1,5 +1,27 @@
 # Keeper — AI Development Changelog
 
+Last updated: 2026-10-21 10:44 IST
+
+## 2026-10-21 — Local media pipeline audit
+
+- **Root causes:** Gemini transcription request used the wrong `mode` shape; transcript reuse did not trust the newly added Gemini/Deepgram provider labels; exhausted recovery jobs with a NULL lease were never terminally failed.
+- **Changes:** Corrected Gemini request config; allowlisted persisted provider labels for reuse; include NULL leases in exhausted-job recovery. Added request-shape, provider-reuse contract, and migration regression checks.
+- **Validation:** type-check pass; tests 169/169; lint 0 errors, 262 warnings. Default Turbopack build failed because the sandbox denied process/port creation; `npm run build -- --webpack` passed. Live services not verified. No migration was applied.
+
+## Recent GitHub maintenance and branch cleanup
+
+- Git history on `main` contains merged Dependabot PRs #11, #2, #3, #4, and #6. The local and origin/main branch pointers both resolve to `3508baf` (`chore: trigger deploy for new env secret`).
+- Per prior conversation, PRs #7 and #8 were closed because ESLint 10 and TypeScript 7 were incompatible with the repository's current tooling; PR #9 was also closed after review. The `copilot/fix-automated-tests-job` branch was deleted at the user's request. These PR/branch details were not re-queried from GitHub during this documentation update.
+- A successful production-check/deployment outcome was reported by the user after the earlier PR work. Current production behavior was not independently checked in this documentation pass.
+
+
+## 2026-10-20 — Recoverable media processing and model adapters (working tree)
+
+- **Problem:** Provider failures could terminate transcription, and repeated worker crashes could leave recoverable jobs cycling without a terminal attempt cap.
+- **Changes:** Retry transient failures with bounded backoff and normalized codes; recover expired active jobs and fail after five attempts; add Gemini transcription and grounded analysis adapters plus opt-in Deepgram fallback; validate collection candidates and evidence.
+- **Files:** `src/app/api/ai/worker/route.ts`, `src/services/ai-job-retry-policy.ts` (new), `src/services/content-analysis-service.ts`, `src/services/media/transcription-service.ts`, `supabase/migrations/202610200001_ai_pipeline_recovery.sql` (new), `scripts/run-tests.ts`, and related AI docs.
+- **Validation recorded by implementation session:** type-check passed, 168/168 regression assertions, lint with 262 warnings and zero errors. Later same-day validation passed 169/169 and `npm run build -- --webpack`; default Turbopack build was blocked by sandbox process/port permissions. Live provider and Supabase behavior are not verified. Changes are uncommitted.
+
 ## 2026-10-10 — Make the worker scheduler compatible with Vercel Hobby
 
 - **Problem:** The repository's `vercel.json` scheduled the worker every minute, which Hobby rejects. Also, Vercel Cron invokes routes with GET while the worker is authenticated POST-only.
@@ -23,9 +45,7 @@
 
 - **Problem:** Actions failed 31 of 166 assertions. Causes included stale AI-at-import expectations, test collections created outside the tested user's workspace, unverified fake transcript fixtures, and source-status assertions that no longer matched deferred background analysis.
 - **Root cause and changes:** Corrected test fixtures and expectations to the current verified-content and tenant contracts. Imports now classify verified source text of sufficient length as `PARTIAL_CONTENT` while generated AI fields remain pending; only recognized transcript provenance qualifies as full transcript content. Organizer fallback now derives evidence-linked tags from verified transcripts when generated tags are not yet persisted, and it persists the transcript's actual provider to support safe idempotent reuse. Archive image previews are asserted with their export provenance.
-- **Validation:** `node --import tsx scripts/run-tests.ts` passes 166/166; type-check, configured lint, and design audit pass. User-provided Actions screenshots confirm the dependency audit and lint/type/design gate passed. Local production build remains blocked fetching Google Fonts; a new Actions run is needed to verify build and updated test gate.
-
-*Last Updated: 2026-10-02*
+- **Validation:** `node --import tsx scripts/run-tests.ts` passed 166/166 at that point in history; type-check, configured lint, and design audit passed. User-provided Actions screenshots confirmed dependency audit and lint/type/design checks, while the test gate prevented the dependent build. Local production build was blocked fetching Google Fonts at that point; see the 2026-10-21 entries for later validation.
 
 This log tracks architectural modifications and bug fixes performed by AI coding agents on the Keeper codebase.
 

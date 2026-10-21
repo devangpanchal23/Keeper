@@ -1,6 +1,6 @@
 # Keeper — Rules for AI Coding Agents
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 Every AI coding assistant working on the Keeper repository must strictly adhere to this operating contract.
 

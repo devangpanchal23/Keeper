@@ -1,5 +1,7 @@
 # Production monitoring and observability
 
+Last updated: 2026-10-21 10:44 IST
+
 ## Application integrations
 
 - The root layout renders exactly one Vercel Web Analytics component and one Speed Insights component, in production only. Both use the official `@vercel/*` Next.js entrypoints.

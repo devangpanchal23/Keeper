@@ -1,6 +1,6 @@
 # Keeper — AI Pipeline & Grounding Architecture
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 Keeper implements an evidence-grounded AI pipeline designed to summarize, classify, and extract structured metadata from saved content **without hallucination**.
 

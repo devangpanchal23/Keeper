@@ -1,5 +1,88 @@
 # AI Development Handoff
 
+Last updated: 2026-10-21 10:44 IST
+
+## 2026-10-21 local audit findings
+
+- Fixed three local defects in the existing uncommitted media work: Gemini `mode` request shape, transcript provider reuse allowlist (Gemini/Deepgram), and recovery of exhausted jobs whose lease is NULL. Regression coverage is in `scripts/run-tests.ts`.
+- Rechecked locally: type-check passed, tests 169/169, lint 0 errors with 262 warnings. Default Turbopack build failed because the sandbox denied process/port creation; `npm run build -- --webpack` passed. No migration was applied.
+- **Live verification NOT VERIFIED.** The staging safety gate lacks both an independently confirmed staging Supabase project ref distinct from production `pmhoqpmbwjclfqnzcrfi` and dashboard/deployment evidence identifying that ref as staging. Do not access remote Supabase, providers, dashboard, or worker until both are supplied and confirmed.
+- Migration application, deployed worker version/trigger, provider configuration, and live retry/idempotency cases remain unverified.
+- Staging URL check: the supplied Supabase URL parsed to project ref `pmhoqpmbwjclfqnzcrfi`, the known production ref. `.env.local` also has the production project ref. The ref is not a confirmed staging target, so it was not contacted.
+
+
+## Start here
+Read every Markdown file in `ai/`, then inspect `git status`, `git log -n 30 --stat`, and the current diff. Follow `DEVELOPMENT_RULES.md`, preserve the existing design/theme unless asked otherwise, and ask before large structural changes. Source code and migrations determine actual behavior. Only lowercase `ai/` is tracked; do not edit the untracked uppercase `AI/` copy.
+
+## Last changes, most recent first
+
+### 2026-10-20, AI media pipeline recovery and provider adapters (uncommitted)
+- `src/app/api/ai/worker/route.ts`: retry transient provider errors with bounded backoff, store normalized failure codes, and handle exhausted job attempts.
+- `src/services/ai-job-retry-policy.ts` (new): shared retry classification and delay policy.
+- `src/services/media/transcription-service.ts`: Gemini 3.5 Transcribe, optional Deepgram Nova-3 fallback, and shared authenticated video audio extraction.
+- `src/services/content-analysis-service.ts`: Gemini 3.8 Flash structured analysis and collection candidate selection, with server-side candidate/evidence validation.
+- `supabase/migrations/202610200001_ai_pipeline_recovery.sql` (new): reclaim expired active stages and cap crash recovery at five attempts. Apply after migrations `202610070001` through `202610070004` and billing migration.
+- `scripts/run-tests.ts`: retry classification and migration contract assertions.
+- `ai/AI_MEDIA_ARCHITECT.md`, `ai/CHANGELOG_AI.md`, `ai/CURRENT_STATUS.md`, `ai/HANDOFF.md`: prior session notes.
+- Rationale: preserve imported items across provider failures and prevent jobs from looping forever. Model-picked collection must remain within bounded authorized candidates and agree with deterministic transcript/tag matching.
+
+### GitHub pull request and branch work (recent, per Git history and prior user-provided context)
+- Git history on `main` includes merged Dependabot PRs #11, #2, #3, #4, and #6. Latest recorded main commit is `3508baf` (`chore: trigger deploy for new env secret`), after those dependency updates.
+- Prior conversation records PR #7 (ESLint 10) and #8 (TypeScript 7) as closed because the current lint/tooling stack was not compatible; they were not merged. PR #9 was closed after review found no usable changes. Treat these closure details as conversation-reported, not newly checked against GitHub.
+- The `copilot/fix-automated-tests-job` branch was deleted at the user's request. The current checkout is `main...origin/main`. GitHub branch/PR state was not queried during this documentation pass.
+- The user reported that the remaining production checks completed successfully. The latest commit triggers a deployment for an updated environment secret, but the live deployment was not independently checked in this handoff pass.
+
+### 2026-10-11, observability integration (committed)
+- Added Vercel Web Analytics and Speed Insights in root layout, plus structured error logging through instrumentation and monitoring utilities. Dashboard setup/activation was not verified.
+
+### 2026-10-10, worker scheduling and CI/CD (committed)
+- Removed Vercel Cron config and added GitHub Actions worker scheduler, which POSTs to `/api/ai/worker` every five minutes. It requires Actions variable `PRODUCTION_APP_URL` and `AI_WORKER_SECRET` matching Vercel.
+- CI uses Node 24, lint warning ceiling 262, type-check, regression suite, design audit, production dependency audit, and build. Deploy workflow gates Vercel production deploy on these checks and smoke tests, with rollback on smoke failure.
+
+## Current state
+
+- Working tree: `main...origin/main`. Pending non-document files are `scripts/run-tests.ts`, `src/app/api/ai/worker/route.ts`, `src/services/content-analysis-service.ts`, and `src/services/media/transcription-service.ts`; untracked implementation files are `src/services/ai-job-retry-policy.ts` and `supabase/migrations/202610200001_ai_pipeline_recovery.sql`. The 21 tracked Markdown files under `ai/` are also modified for this handoff. Do not overwrite or discard any of these changes.
+- Latest recorded local verification: `npm run type-check` passed; `npm test` passed 169/169; lint passed with 262 warnings and zero errors; `npm run build -- --webpack` passed. The default Turbopack build was blocked by sandbox process/port permissions. This documentation task did not rerun checks.
+- Verified by source presence, not by live integration: Gemini and Deepgram adapters; Supabase recovery migration and worker retry logic.
+- UNVERIFIED: migration application, Supabase RPC/worker behavior, provider credentials/uploads/live API compatibility, production configuration, and collection accuracy on representative data. There is no Keeper evaluation corpus; confidence is uncalibrated.
+
+## Pending / in progress
+
+- All source and documentation changes listed above remain uncommitted. Review the complete diff before deciding what to commit.
+- Do not connect to any database, provider, dashboard, or worker until a Supabase project ref distinct from production `pmhoqpmbwjclfqnzcrfi` is confirmed and dashboard/deployment evidence explicitly identifies it as staging. Do not ask for secrets in chat; use securely configured environment credentials only.
+- After the staging safety gate passes, inspect deployed function/worker version, trigger/queue, and migration status without applying migrations. The migration is not part of verification and its deployed status is currently unknown.
+- If the migration is absent in confirmed staging, obtain the user's approval before applying it. Then verify schema/RPC contracts and recovery behavior.
+- Live staging results are currently NOT VERIFIED for each of: provider HTTP 429 retry, HTTP 503 retry, provider timeout retry, invalid-media terminal failure/no retry, persistent transient failure ending at exactly five attempts, worker termination followed by lease-expiry recovery, duplicate delivery/idempotency, and transcript/tag/collection accuracy.
+- Test Gemini transcription upload and interaction request/response formats, video extraction, timeout behavior, and Deepgram fallback using configured staging credentials.
+- Evaluate collection selection with consented representative Keeper content; calibrate thresholds or disable model-based routing if results are poor.
+- Review the fresh GitHub Actions and production deployment results after the local changes are committed; do not infer deployment health from local checks alone.
+
+## Next steps, priority order
+
+1. Review `git diff` and `git status`; confirm intended scope and avoid losing uncommitted work.
+2. Obtain and verify a staging Supabase URL/ref that differs from production, plus read-only dashboard or deployment evidence labeling it staging. If either check is uncertain, stop before remote access.
+3. Once confirmed, inspect deployed worker/function, version, production-vs-staging target, trigger/queue and recovery migration status. Do not run migrations during verification.
+4. Run isolated staging tests through the real worker/queue for provider 429, 503, timeout, invalid media, five transient attempts, lease expiry after worker termination, and duplicate delivery/idempotency. Capture synthetic job IDs, attempt counts, transitions, terminal states, and redacted evidence.
+5. Verify transcript provenance, source-grounded tags, and collection categorization on synthetic/consented content. Accuracy is not calibrated and remains unverified until evaluated.
+6. Clean only synthetic test data after preserving evidence, confirm no temporary staging settings remain, and report each case PASS/FAIL/NOT VERIFIED. Never test or clean up production data.
+
+## Open questions / risks
+
+- Does production use Gemini as the preferred transcription and analysis provider, or should provider selection remain deployment-specific? No secret values belong in this repository.
+- Does the account have a separate staging Supabase project and dashboard/deployment evidence that identifies it as staging? UNVERIFIED. The last supplied URL resolved to the known production ref.
+- Is the recovery migration applied in any deployed environment? UNVERIFIED.
+- GitHub scheduled Actions are best-effort and can be delayed.
+- YouTube arbitrary audio acquisition, LinkedIn authenticated post access, and restricted Instagram media remain platform limitations.
+- Local legacy library data is not fully synchronized to Supabase; do not claim full multi-device sync.
+
+---
+
+## Historical handoff archive
+
+> The following notes are preserved from the prior handoff for historical context. They describe older states and must not override the current status above or current source code.
+
+# AI Development Handoff
+
 ### Latest follow-up — Vercel Hobby cron limit (2026-10-10)
 - Removed root `vercel.json` because it declared `* * * * *`, which Vercel Hobby rejects. The former Vercel Cron would also issue GET while `/api/ai/worker` only accepts authenticated POST.
 - Added `.github/workflows/ai-worker.yml` to call the worker every five minutes with `batch=3&concurrency=3` using POST. Set GitHub Actions variable `PRODUCTION_APP_URL` and Actions secret `AI_WORKER_SECRET`; set the matching secret in Vercel Production.

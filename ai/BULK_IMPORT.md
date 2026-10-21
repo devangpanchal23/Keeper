@@ -1,6 +1,6 @@
 # Keeper — Bulk Import Subsystem
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 The Bulk Import subsystem orchestrates ingestion of large data exports (JSON, ZIP, CSV) from supported platforms into Keeper. It provides client-side pre-import analysis, concurrency-controlled queue execution, deduplication resolution, and resilient persistence.
 

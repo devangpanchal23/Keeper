@@ -101,7 +101,7 @@ export class OpenAITranscriptionProvider implements SpeechToTextProvider {
   public readonly name = "openai-audio-transcriptions";
   public readonly modelVersion = process.env.OPENAI_TRANSCRIPTION_MODEL || "whisper-1";
 
-  private async extractAudio(video: Uint8Array | ArrayBuffer, mimeType?: string): Promise<{ bytes: Uint8Array; durationSeconds?: number }> {
+  public async extractAudioForProvider(video: Uint8Array | ArrayBuffer, mimeType?: string): Promise<{ bytes: Uint8Array; durationSeconds?: number }> {
     const configuredUrl = process.env.AUDIO_EXTRACTION_SERVICE_URL || process.env.WHISPER_SERVICE_URL;
     if (!configuredUrl) throw new Error("Video audio extraction is not configured. Set AUDIO_EXTRACTION_SERVICE_URL or WHISPER_SERVICE_URL.");
     const endpoint = new URL(configuredUrl);
@@ -136,7 +136,7 @@ export class OpenAITranscriptionProvider implements SpeechToTextProvider {
     let audioMime = incomingMime;
     let durationSeconds: number | undefined;
     if (audioMime.startsWith("video/")) {
-      const extracted = await this.extractAudio(audio, audioMime);
+      const extracted = await this.extractAudioForProvider(audio, audioMime);
       audio = extracted.bytes;
       audioMime = "audio/mp4";
       durationSeconds = extracted.durationSeconds;
@@ -187,9 +187,87 @@ export class OpenAITranscriptionProvider implements SpeechToTextProvider {
   }
 }
 
+/** Gemini 3.5 Transcribe file API adapter. Only audio is uploaded; videos use Keeper's FFmpeg sidecar. */
+export class GeminiTranscriptionProvider implements SpeechToTextProvider {
+  readonly name = "gemini-3.5-transcribe";
+  readonly modelVersion = "gemini-3.5-transcribe";
+
+  async transcribe(input: Uint8Array | ArrayBuffer, languageHint?: string, mimeType?: string): Promise<TranscriptionResult> {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return { status: "unavailable", text: "", segments: [], provider: this.name, modelVersion: this.modelVersion, failureReason: "GEMINI_API_KEY is not configured." };
+    let audio = input instanceof Uint8Array ? input : new Uint8Array(input);
+    let mime = (mimeType || "application/octet-stream").split(";")[0].toLowerCase();
+    let durationSeconds: number | undefined;
+    if (mime.startsWith("video/")) {
+      const extracted = await new OpenAITranscriptionProvider().extractAudioForProvider(audio, mime);
+      audio = extracted.bytes;
+      mime = "audio/mp4";
+      durationSeconds = extracted.durationSeconds;
+    }
+    const supported = new Set(["audio/wav", "audio/mp3", "audio/mpeg", "audio/aiff", "audio/aac", "audio/ogg", "audio/flac", "audio/m4a", "audio/mp4", "audio/webm", "audio/opus", "audio/x-m4a", "audio/x-wav"]);
+    if (!supported.has(mime)) throw new Error(`Gemini transcription does not support this audio format (${mime}).`);
+    if (!audio.byteLength) return { status: "no_speech", text: "", segments: [], provider: this.name, modelVersion: this.modelVersion };
+
+    const started = await fetch("https://generativelanguage.googleapis.com/upload/v1beta/files", { method: "POST",
+      headers: { "x-goog-api-key": apiKey, "X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start",
+        "X-Goog-Upload-Header-Content-Length": String(audio.byteLength), "X-Goog-Upload-Header-Content-Type": mime, "Content-Type": "application/json" },
+      body: JSON.stringify({ file: { display_name: "keeper-audio" } }), signal: AbortSignal.timeout(30_000), cache: "no-store" });
+    if (!started.ok) throw new Error(`Gemini file upload returned HTTP ${started.status}.`);
+    const uploadUrl = started.headers.get("x-goog-upload-url");
+    if (!uploadUrl || new URL(uploadUrl).hostname !== "generativelanguage.googleapis.com") throw new Error("Gemini file upload returned an invalid upload URL.");
+    const uploaded = await fetch(uploadUrl, { method: "POST", headers: { "Content-Length": String(audio.byteLength), "X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize" },
+      body: audio.slice().buffer, signal: AbortSignal.timeout(120_000), cache: "no-store" });
+    if (!uploaded.ok) throw new Error(`Gemini audio upload returned HTTP ${uploaded.status}.`);
+    const file = await uploaded.json() as { file?: { uri?: unknown } };
+    if (typeof file.file?.uri !== "string") throw new Error("Gemini audio upload returned no file URI.");
+    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", { method: "POST",
+      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" }, cache: "no-store", signal: AbortSignal.timeout(150_000),
+      body: JSON.stringify({ model: this.modelVersion, input: [{ type: "audio", uri: file.file.uri, mime_type: mime }],
+        generation_config: { transcription_config: { language_codes: languageHint ? [languageHint] : [], mode: { type: "verbatim" } } } }) });
+    if (!response.ok) throw new Error(`Gemini transcription returned HTTP ${response.status}.`);
+    const result = await response.json() as { output_text?: unknown; outputs?: Array<{ type?: unknown; text?: unknown }>; detected_language?: unknown };
+    const value = typeof result.output_text === "string" ? result.output_text : result.outputs?.find((part) => part.type === "text")?.text;
+    const text = typeof value === "string" ? value.trim() : "";
+    return { status: text ? "transcribed" : "no_speech", text, segments: [], provider: this.name, modelVersion: this.modelVersion,
+      language: typeof result.detected_language === "string" ? result.detected_language : undefined, durationSeconds };
+  }
+}
+
+/** Deepgram Nova-3 multilingual adapter used only as an explicitly configured fallback. */
+export class DeepgramNova3Provider implements SpeechToTextProvider {
+  readonly name = "deepgram-nova-3";
+  readonly modelVersion = "nova-3";
+  async transcribe(input: Uint8Array | ArrayBuffer, languageHint?: string, mimeType?: string): Promise<TranscriptionResult> {
+    const apiKey = process.env.DEEPGRAM_API_KEY;
+    if (!apiKey) return { status: "unavailable", text: "", segments: [], provider: this.name, modelVersion: this.modelVersion, failureReason: "DEEPGRAM_API_KEY is not configured." };
+    let audio = input instanceof Uint8Array ? input : new Uint8Array(input);
+    let audioMime = mimeType || "application/octet-stream";
+    if (audioMime.startsWith("video/")) {
+      const extracted = await new OpenAITranscriptionProvider().extractAudioForProvider(audio, audioMime);
+      audio = extracted.bytes;
+      audioMime = "audio/mp4";
+    }
+    const query = new URLSearchParams({ model: this.modelVersion, smart_format: "true", punctuate: "true", language: languageHint || "multi" });
+    const response = await fetch(`https://api.deepgram.com/v1/listen?${query}`, { method: "POST",
+      headers: { Authorization: `Token ${apiKey}`, "Content-Type": audioMime },
+      body: audio.slice().buffer, signal: AbortSignal.timeout(150_000), cache: "no-store" });
+    if (!response.ok) throw new Error(`Deepgram Nova-3 returned HTTP ${response.status}.`);
+    const result = await response.json() as { results?: { channels?: Array<{ detected_language?: unknown; alternatives?: Array<{ transcript?: unknown; confidence?: unknown; words?: Array<{ start?: number; end?: number; word?: string; confidence?: number }> }> }> } };
+    const channel = result.results?.channels?.[0];
+    const alternative = channel?.alternatives?.[0];
+    const text = typeof alternative?.transcript === "string" ? alternative.transcript.trim() : "";
+    const segments = (alternative?.words || []).flatMap((word) => typeof word.word === "string" ? [{ startMs: (word.start || 0) * 1000, endMs: (word.end || 0) * 1000, text: word.word,
+      ...(typeof word.confidence === "number" ? { confidence: word.confidence } : {}) }] : []);
+    return { status: text ? "transcribed" : "no_speech", text, segments, provider: this.name, modelVersion: this.modelVersion,
+      language: typeof channel?.detected_language === "string" ? channel.detected_language : undefined,
+      confidence: typeof alternative?.confidence === "number" ? alternative.confidence : undefined };
+  }
+}
+
 function configuredProvider(): SpeechToTextProvider {
   const selected = process.env.TRANSCRIPTION_PROVIDER || "auto";
   const openAiKey = process.env.OPENAI_TRANSCRIPTION_API_KEY || process.env.OPENAI_API_KEY;
+  if (selected === "gemini" || (selected === "auto" && process.env.GEMINI_API_KEY)) return new GeminiTranscriptionProvider();
   if (selected === "openai" || (selected === "auto" && openAiKey)) return new OpenAITranscriptionProvider();
   return new FasterWhisperProvider();
 }
@@ -247,6 +325,7 @@ export class TranscriptionService {
         timeoutPromise,
       ]);
       if (cacheKey && (result.status === "transcribed" || result.status === "no_speech")) this.cache.set(cacheKey, result);
+      if (result.status === "failed" || result.status === "unavailable") return await this.transcribeWithFallback(buffer, languageHint, mediaResult?.mimeType, result);
       return result;
     } catch (err: any) {
       const failedResult: TranscriptionResult = {
@@ -257,7 +336,26 @@ export class TranscriptionService {
         modelVersion: this.provider.modelVersion,
         failureReason: err?.message || "Transcription failed unexpectedly.",
       };
-      return failedResult;
+      return await this.transcribeWithFallback(buffer, languageHint, mediaResult?.mimeType, failedResult);
+    }
+  }
+
+  private static async transcribeWithFallback(audio: Uint8Array | ArrayBuffer, languageHint: string | undefined, mimeType: string | undefined, primary: TranscriptionResult): Promise<TranscriptionResult> {
+    const status = Number(primary.failureReason?.match(/HTTP\s+(\d{3})/i)?.[1]);
+    const reason = primary.failureReason || "";
+    const retryable = status === 408 || status === 429 || status >= 500 || /timeout|timed out|network|fetch failed|ECONN|socket/i.test(reason);
+    const fallbackName = process.env.TRANSCRIPTION_FALLBACK;
+    if (!retryable || !fallbackName || fallbackName === primary.provider) return primary;
+    const fallback = fallbackName === "deepgram" ? new DeepgramNova3Provider()
+      : fallbackName === "openai" ? new OpenAITranscriptionProvider()
+      : fallbackName === "faster-whisper" ? new FasterWhisperProvider() : null;
+    if (!fallback) return primary;
+    try {
+      const result = await fallback.transcribe(audio, languageHint, mimeType);
+      return result.status === "failed" || result.status === "unavailable" ? { ...result, failureReason: `${result.failureReason || "Fallback failed."} Primary ${primary.provider} failed: ${primary.failureReason || "provider error"}` } : result;
+    } catch (error) {
+      return { status: "failed", text: "", segments: [], provider: fallback.name, modelVersion: fallback.modelVersion,
+        failureReason: `Fallback failed: ${error instanceof Error ? error.message : "provider error"}. Primary ${primary.provider} failed: ${primary.failureReason || "provider error"}` };
     }
   }
 

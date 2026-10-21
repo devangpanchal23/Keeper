@@ -1,6 +1,6 @@
 # Keeper — Platform Providers
 
-*Last Updated: 2026-10-02*
+*Last updated: 2026-10-21 10:44 IST*
 
 Keeper isolates platform-specific parsing, URL canonicalization, and metadata extraction into modular provider implementations adhering to [`ContentProvider`](file:///Volumes/T7/Devang/Code/Real_Project/Keeper/src/services/providers/content-provider.interface.ts). All providers are registered in [`ProviderRegistry`](file:///Volumes/T7/Devang/Code/Real_Project/Keeper/src/services/providers/provider-registry.ts).
 
