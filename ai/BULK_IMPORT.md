@@ -85,3 +85,13 @@ flowchart TD
 # 2026-10-07 server import boundary
 
 Browser bulk processing now sends each candidate through authenticated `POST /api/ingest` with a stable `jobId:itemId` idempotency key and the workspace's collections. This applies the Postgres deduplication/credit ledger/job transaction for CSV/JSON/URL imports as well as single URLs. Existing in-memory client progress/report state remains a separate UI concern; durable AI jobs live in `keeper_ai_jobs` and are polled/claimed by the worker described in `AI_MEDIA_ARCHITECT.md`.
+
+# 2026-10-24 Canonical Bookmark Identifier & Locate Action
+
+- **Canonical Bookmark ID Linking**:
+  Every successfully processed or updated item assigns `savedItemId = savedItemRecord.id` from the return value of `ContentService.addItem(...)`. This guarantees that the stored report strictly maps to the persisted bookmark in `StorageService`.
+- **Duplicate & Legacy Compatibility**:
+  Candidates skipped or already existing in Keeper retain the existing bookmark's ID (`savedItemId = existingMatch.id`). Historical reports missing or referencing outdated IDs are self-healed in `ImportJobService.getReports` and `ImportReportView.getLocateId` by matching against the user's persisted canonical URLs.
+- **State Synchronization & Locate Retrieval**:
+  Saving items emits `"keeper:items-changed"`, synchronizing `RecallContext` without requiring manual page reloads. `ItemDetailPage` uses a multi-tier fallback (React state -> `ContentService.getById` / `StorageService` -> server media query) guarded by `authLoading`, ensuring the Locate button opens the exact imported bookmark with all categories, collections, and AI metadata intact.
+

@@ -15,8 +15,32 @@ export class ContentService {
   }
 
   static getById(id: string, userId?: string): SavedItem | undefined {
+    if (!id) return undefined;
+    const cleanId = id.trim();
     const items = this.getAll(userId);
-    return items.find((item) => item.id === id);
+
+    // 1. Direct ID match
+    const direct = items.find((item) => item.id === cleanId);
+    if (direct) return direct;
+
+    // 2. Server media ID match
+    const byServerId = items.find((item) => item.metadata?.serverMediaId === cleanId);
+    if (byServerId) return byServerId;
+
+    // 3. Decoded match if encoded
+    if (cleanId.includes("%")) {
+      try {
+        const decoded = decodeURIComponent(cleanId);
+        const byDecoded = items.find(
+          (item) => item.id === decoded || item.metadata?.serverMediaId === decoded
+        );
+        if (byDecoded) return byDecoded;
+      } catch {
+        // ignore decode failure
+      }
+    }
+
+    return undefined;
   }
 
   /**

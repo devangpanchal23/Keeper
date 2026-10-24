@@ -253,10 +253,17 @@ export class ImportJobService {
       }
 
       let itemStatus: ImportItem["status"] = "pending";
+      let existingSavedId: string | undefined = undefined;
 
       if (isAlreadyInKeeper) {
         alreadySavedCount++;
         itemStatus = "duplicate";
+        const matchedExisting = existingItems.find(
+          (item) => !item.trashed && item.url.toLowerCase().trim() === canonical
+        );
+        if (matchedExisting) {
+          existingSavedId = matchedExisting.id;
+        }
       } else if (isDuplicateInBatch) {
         batchDuplicateCount++;
         itemStatus = "duplicate";
@@ -283,6 +290,7 @@ export class ImportJobService {
         collectionId: c.collectionId,
         collectionName: c.collectionName || c.sourceContext || undefined,
         savedTimestamp: c.savedTimestamp,
+        savedItemId: existingSavedId,
         status: itemStatus,
         retryCount: 0,
       });
@@ -458,6 +466,13 @@ export class ImportJobService {
       if (it.status === "duplicate") {
         if (dupStrategy === "skip") {
           it.status = "skipped";
+          if (!it.savedItemId) {
+            const existingMatch = ContentService.checkDuplicate(it.canonicalUrl || it.originalUrl, job.userId);
+            if (existingMatch) {
+              it.savedItemId = existingMatch.id;
+              it.collectionId = it.collectionId || existingMatch.collectionId;
+            }
+          }
           job.skippedCount++;
           return false;
         }
@@ -538,6 +553,8 @@ export class ImportJobService {
             collectionName: item.collectionName,
           };
           let ingestion: IngestionResult;
+          let savedItemRecord: SavedItem;
+
           if (typeof window !== "undefined") {
             const response = await fetch("/api/ingest", {
               method: "POST",
@@ -553,7 +570,7 @@ export class ImportJobService {
             const payload = await response.json() as { success?: boolean; error?: string; data?: IngestionResult };
             if (!response.ok || !payload.success || !payload.data) throw new Error(payload.error || "Server import failed.");
             ingestion = payload.data;
-            ContentService.addItem(ingestion.savedItem, job.userId, dupStrategy);
+            savedItemRecord = ContentService.addItem(ingestion.savedItem, job.userId, dupStrategy);
           } else {
             ingestion = await IngestionService.processUrl(item.originalUrl, {
               userId: job.userId,
@@ -563,15 +580,16 @@ export class ImportJobService {
               duplicateStrategy: dupStrategy,
               initialMetadata,
             });
+            savedItemRecord = ContentService.addItem(ingestion.savedItem, job.userId, dupStrategy);
           }
 
           // Stage 2: SAVING -> COMPLETED / SUCCESS
           item.status = "success";
-          item.savedItemId = ingestion.savedItem.id;
+          item.savedItemId = savedItemRecord.id;
           item.canonicalUrl = ingestion.sourceData.canonicalUrl;
           item.title = ingestion.sourceData.title;
           item.creatorName = ingestion.sourceData.creator.name;
-          item.collectionId = ingestion.savedItem.collectionId;
+          item.collectionId = savedItemRecord.collectionId || ingestion.savedItem.collectionId;
           const assignedCol = existingCollections.find((c) => c.id === item.collectionId);
           item.collectionName = assignedCol?.name || ingestion.aiEnrichment.suggestedCollectionName;
           item.processedAt = new Date().toISOString();
@@ -829,15 +847,70 @@ export class ImportJobService {
 
   public static getReports(userId: string): ImportReport[] {
     const memoryReports = globalReportsStore.get(userId) || [];
-    if (!this.isClient()) return memoryReports;
-    try {
-      const key = `${STORAGE_KEYS.REPORTS_PREFIX}${userId}`;
-      const data = localStorage.getItem(key);
-      const parsed = data ? JSON.parse(data) : [];
-      return Array.isArray(parsed) && parsed.length > 0 ? parsed : memoryReports;
-    } catch {
-      return memoryReports;
+    let reports = memoryReports;
+    if (this.isClient()) {
+      try {
+        const key = `${STORAGE_KEYS.REPORTS_PREFIX}${userId}`;
+        const data = localStorage.getItem(key);
+        const parsed = data ? JSON.parse(data) : [];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          reports = parsed;
+        }
+      } catch {
+        reports = memoryReports;
+      }
     }
+
+    // Deterministic compatibility & self-healing for historical reports:
+    // Ensure every successfully saved item or existing duplicate in the report retains its canonical bookmark ID.
+    const userItems = ContentService.getAll(userId);
+    let changed = false;
+
+    const reconciledReports = reports.map((rep) => {
+      let reportModified = false;
+      const reconciledItems = rep.items.map((it) => {
+        if (it.status === "success" || it.status === "duplicate" || it.status === "skipped") {
+          const exists = it.savedItemId ? userItems.some((u) => u.id === it.savedItemId) : false;
+          if (!exists) {
+            const url = it.canonicalUrl || it.originalUrl;
+            if (url) {
+              const matched = userItems.find(
+                (u) =>
+                  u.url.toLowerCase() === url.toLowerCase() ||
+                  (u.metadata?.canonicalUrl && u.metadata.canonicalUrl.toLowerCase() === url.toLowerCase()) ||
+                  (u.metadata?.originalUrl && u.metadata.originalUrl.toLowerCase() === url.toLowerCase())
+              );
+              if (matched && matched.id !== it.savedItemId) {
+                reportModified = true;
+                return {
+                  ...it,
+                  savedItemId: matched.id,
+                  collectionId: it.collectionId || matched.collectionId,
+                };
+              }
+            }
+          }
+        }
+        return it;
+      });
+
+      if (reportModified) {
+        changed = true;
+        return { ...rep, items: reconciledItems };
+      }
+      return rep;
+    });
+
+    if (changed && this.isClient()) {
+      try {
+        const key = `${STORAGE_KEYS.REPORTS_PREFIX}${userId}`;
+        localStorage.setItem(key, JSON.stringify(reconciledReports.slice(0, 30)));
+      } catch {
+        // Ignore localStorage write failure
+      }
+    }
+
+    return reconciledReports;
   }
 
   public static getReportById(userId: string, reportId: string): ImportReport | null {

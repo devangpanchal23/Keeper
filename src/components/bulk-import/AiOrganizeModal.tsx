@@ -57,8 +57,11 @@ export const AiOrganizeModal: React.FC<AiOrganizeModalProps> = ({
     // Fetch items from storage
     const items: SavedItem[] = [];
     for (const importItem of validItemsWithSavedId) {
-      if (importItem.savedItemId) {
-        const item = ContentService.getById(importItem.savedItemId);
+      const targetId =
+        importItem.savedItemId ||
+        ContentService.checkDuplicate(importItem.canonicalUrl || importItem.originalUrl)?.id;
+      if (targetId) {
+        const item = ContentService.getById(targetId);
         if (item) items.push(item);
       }
     }

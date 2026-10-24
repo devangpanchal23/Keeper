@@ -63,7 +63,7 @@ export class EvidenceFusionService {
    * HARD RULE: FULL_CONTENT is NEVER applied when Keeper only has URL or metadata.
    */
   public static fuseEvidence(params: FuseEvidenceParams): ContentEvidence {
-    const { sourceData, mediaResult, transcription, visualResult } = params;
+    const { sourceData, transcription, visualResult } = params;
     const now = new Date().toISOString();
 
     const rawCaption = sourceData.caption || "";

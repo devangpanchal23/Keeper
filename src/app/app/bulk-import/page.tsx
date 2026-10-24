@@ -26,14 +26,9 @@ import {
 } from "@/services/bulk-import/adapters/instagram-export-adapter";
 import { ImportJobService } from "@/services/bulk-import/import-job-service";
 import { CollectionService } from "@/services/collection-service";
-import { StorageService } from "@/services/storage-service";
 import {
   UploadCloud,
-  Layers,
-  Clock,
   ArrowLeft,
-  Sparkles,
-  FileCheck2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -46,7 +41,7 @@ type ImportStep =
   | "report_view";
 
 export default function BulkImportPage() {
-  const { user, collections, items, addToast, createCollection } = useRecall();
+  const { user, collections, items, addToast, createCollection, refreshWorkspaceItems } = useRecall();
   const userId = user?.id || "user-demo-1";
 
   const [step, setStep] = useState<ImportStep>("platform_selection");
@@ -57,8 +52,7 @@ export default function BulkImportPage() {
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [instagramAnalysis, setInstagramAnalysis] = useState<InstagramExportAnalysis | null>(null);
 
-  // Candidates & Job state
-  const [candidates, setCandidates] = useState<ParsedImportCandidate[]>([]);
+  // Job analysis state
   const [analysisResult, setAnalysisResult] = useState<(PreImportAnalysisBreakdown & { duplicates: number; newItems: number }) | null>(null);
 
   const [activeJob, setActiveJob] = useState<ImportJob | null>(null);
@@ -68,6 +62,7 @@ export default function BulkImportPage() {
 
   // Load existing active job or historical reports on mount
   useEffect(() => {
+    if (refreshWorkspaceItems) refreshWorkspaceItems();
     const existingJob = ImportJobService.getActiveJob(userId);
     if (existingJob && (existingJob.status === "processing" || existingJob.status === "paused")) {
       setActiveJob(existingJob);
@@ -76,7 +71,7 @@ export default function BulkImportPage() {
 
     const pastReports = ImportJobService.getReports(userId);
     setHistoricalReports(pastReports);
-  }, [userId]);
+  }, [userId, refreshWorkspaceItems]);
 
   // Subscribe to live job progress updates
   useEffect(() => {
@@ -85,6 +80,7 @@ export default function BulkImportPage() {
     const unsubscribe = ImportJobService.subscribeProgress(activeJob.id, (updatedJob) => {
       setActiveJob(updatedJob);
       if (updatedJob.status === "completed") {
+        if (refreshWorkspaceItems) refreshWorkspaceItems();
         const report = ImportJobService.generateReport(updatedJob);
         setCurrentReport(report);
         setHistoricalReports(ImportJobService.getReports(userId));
@@ -100,7 +96,7 @@ export default function BulkImportPage() {
     return () => {
       unsubscribe();
     };
-  }, [activeJob?.id, userId, addToast]);
+  }, [activeJob?.id, userId, addToast, refreshWorkspaceItems]);
 
   // ---------------------------------------------------------------------------
   // Candidate Handlers
@@ -251,7 +247,6 @@ export default function BulkImportPage() {
   };
 
   const proceedToAnalysis = (parsed: ParsedImportCandidate[], sourceTitle: string) => {
-    setCandidates(parsed);
     // Pass selectedPlatform to strictly validate that candidates match selected source (YouTube or Instagram)
     const analysis = ImportJobService.analyzeCandidates(parsed, items, selectedPlatform);
     setAnalysisResult(analysis);

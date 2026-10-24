@@ -87,17 +87,18 @@ export class CollectionMatchingService {
    */
   static inferCategories(tags: Array<GeneratedTag | string>, text?: string): InferredCategoryResult {
     const scores: Record<string, number> = {};
-    const tagStrings: string[] = tags.map((t) => typeof t === "string" ? t : t.name);
 
     // 1. Evidence scoring from tags
     for (const tag of tags) {
       const tagName = typeof tag === "string" ? tag : tag.name;
       const tagConf = typeof tag === "object" && typeof tag.confidence === "number" ? tag.confidence : 1;
-      const topic = canonicalCollectionTopic(tagName);
-      if (topic) {
-        // Tag weight scales with specificity: multi-word or compound tags get a bonus
-        const specificityBonus = tagName.includes(" ") ? 0.5 : 0;
-        scores[topic] = (scores[topic] || 0) + (1.5 + specificityBonus) * tagConf;
+      const normalized = normalizedPhrase(tagName);
+      for (const [topic, synonyms] of Object.entries(COLLECTION_SYNONYMS)) {
+        if (synonyms.some((synonym) => normalized === normalizedPhrase(synonym))) {
+          // Tag weight scales with specificity: multi-word or compound tags get a bonus
+          const specificityBonus = tagName.includes(" ") ? 0.5 : 0;
+          scores[topic] = (scores[topic] || 0) + (1.5 + specificityBonus) * tagConf;
+        }
       }
     }
 
@@ -146,7 +147,7 @@ export class CollectionMatchingService {
     const primaryCategory = COLLECTION_CATEGORY_LABELS[bestTopic] || null;
     const secondaryCategories = sortedTopics
       .slice(1)
-      .filter((t) => scores[t] >= 1.0 && scores[t] >= bestScore * 0.4)
+      .filter((t) => scores[t] >= 0.3)
       .map((t) => COLLECTION_CATEGORY_LABELS[t])
       .filter((l): l is string => Boolean(l));
 

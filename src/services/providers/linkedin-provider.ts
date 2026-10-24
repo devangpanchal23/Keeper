@@ -84,11 +84,10 @@ export class LinkedInProvider implements ContentProvider {
   }
 
   async fetchAuthoritativeData(
-    url: string,
-    _signal?: AbortSignal
+    url: string
   ): Promise<AuthoritativeSourceData> {
     const validation = this.validateAndCanonicalize(url);
-    const { id, slug, isPulse } = extractLinkedInDetails(url);
+    const { id, slug } = extractLinkedInDetails(url);
     const now = new Date().toISOString();
 
     const formattedTitle = slug

@@ -137,7 +137,7 @@ export class ReprocessingService {
           const updated = await this.reprocessItem(target, userId);
           updatedMap.set(updated.id, updated);
           reprocessedCount++;
-        } catch (err) {
+        } catch {
           failedCount++;
         }
       }

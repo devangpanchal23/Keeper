@@ -1,8 +1,39 @@
 # Keeper — AI Development Changelog
 
-Last updated: 2026-10-21 15:40 IST
+Last updated: 2026-10-24 10:20 IST
 
-## 2026-10-21 — Instagram Reels AI Accuracy Audit Implementation
+## 2026-10-24 — Bulk Import → Locate Bookmark Resolution Permanent Fix
+
+- **Problem:** When an Instagram Reel URL was imported via Bulk Import, the import succeeded and appeared in Historical Import Reports, but clicking **Locate in Keeper** showed "Bookmark Not Found" / “This item might have been deleted or does not exist.”
+- **Root Causes:**
+  1. *RecallContext Desynchronization:* `ImportJobService` persisted items into local storage via `ContentService.addItem`, but `RecallContext` never reloaded `items` in React state. On client-side navigation (`<Link href="...">`), `RecallContext` kept the stale items array, failing `items.find((i) => i.id === resolvedParams.id)`.
+  2. *Saved Item ID Misattribution:* `ImportJobService.startJob` set `item.savedItemId = ingestion.savedItem.id` instead of the returned canonical ID from `ContentService.addItem(...)`. For existing or updated items, `ingestion.savedItem.id` was an ephemeral server-generated ID that did not match the user's stored bookmark ID.
+  3. *Premature 404 & Missing Storage Fallback:* `ItemDetailPage` exclusively checked in-memory context items without checking `StorageService` or `ContentService.getById`, and lacked an `authLoading` gate, flashing 404 before auth/hydration settled.
+  4. *Legacy/Historical Report Stale IDs:* Existing historical reports containing missing or outdated `savedItemId`s lacked a deterministic reconciliation mechanism.
+- **Changes Implemented:**
+  1. `src/services/bulk-import/import-job-service.ts`:
+     - Saved item canonical ID persistence: `savedItemRecord = ContentService.addItem(...)` -> `item.savedItemId = savedItemRecord.id`.
+     - Preserved `savedItemId` on duplicate items during pre-import analysis (`analyzeCandidates`) and job execution (`dupStrategy === "skip"`).
+     - Deterministic reconciliation in `getReports(userId)` to repair missing or outdated `savedItemId`s against persisted user bookmarks.
+  2. `src/services/content-service.ts`:
+     - Enhanced `ContentService.getById` to resolve by primary ID, `serverMediaId`, or decoded URI.
+  3. `src/services/storage-service.ts`:
+     - Dispatched `"keeper:items-changed"` custom event when items are saved or cleared in the browser.
+  4. `src/context/RecallContext.tsx`:
+     - Added `refreshWorkspaceItems` to `RecallContextType` and context provider.
+     - Added event listeners for `"keeper:items-changed"` and `"storage"` to synchronize workspace items across tabs and import jobs.
+  5. `src/app/app/bulk-import/page.tsx`:
+     - Called `refreshWorkspaceItems()` upon import job completion and on mount.
+  6. `src/components/bulk-import/ImportReportView.tsx`:
+     - Added `getLocateId` to deterministically resolve canonical bookmark IDs across current items, storage, and URL duplicates.
+  7. `src/app/app/item/[id]/page.tsx`:
+     - Added `Loader2` loading gate while `authLoading || isLoadingItem` is true.
+     - Multi-tier bookmark lookup: `items` state -> `ContentService.getById` / `StorageService` fallback -> `serverMediaId` match -> decoded URL match -> `/api/media` server query.
+     - Synchronized retrieved fallback items into `RecallContext`.
+  8. `src/components/bulk-import/AiOrganizeModal.tsx`:
+     - Ensured items in `AiOrganizeModal` resolve by canonical duplicate lookup when needed.
+  9. `scripts/run-tests.ts`:
+     - Added Section 22 regression test suite covering all 10 requirements: canonical ID creation, storage persistence, Locate resolution, collision freedom, historical report self-healing, duplicate handling, multi-tenant isolation, and data integrity.
 
 - **Problem:** AI audit on 3 sample Instagram Reels identified high-priority defects:
   1. *Reel 01:* Mismatch between generic and topic-specific tags (`#Seriously` conversational filler included, `#technology` generic tag vs specific `#macbooktrick`); published date off by one day due to timezone shifts (`2026-10-17` vs `2026-10-18`).

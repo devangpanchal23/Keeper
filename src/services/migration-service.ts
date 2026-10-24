@@ -1,7 +1,6 @@
 import { SavedItem } from "@/types";
 import { MetadataNormalizer } from "./normalizer/metadata-normalizer";
 import { StorageService } from "./storage-service";
-import { AIPipeline } from "./ai-pipeline";
 
 export interface MigrationRepairReport {
   scannedCount: number;

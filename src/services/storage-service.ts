@@ -116,6 +116,11 @@ export class StorageService {
     const storageKey = `${STORAGE_KEYS.ITEMS_PREFIX}${activeId}`;
     try {
       this.getStorage().setItem(storageKey, JSON.stringify(items));
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("keeper:items-changed", { detail: { userId: activeId } })
+        );
+      }
     } catch (err) {
       console.error("StorageService.saveItems error:", err);
     }
@@ -126,6 +131,11 @@ export class StorageService {
     const storageKey = `${STORAGE_KEYS.ITEMS_PREFIX}${activeId}`;
     try {
       this.getStorage().removeItem(storageKey);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("keeper:items-changed", { detail: { userId: activeId } })
+        );
+      }
     } catch (err) {
       console.error("StorageService.clearUserData error:", err);
     }

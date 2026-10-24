@@ -23,6 +23,8 @@ import { cn } from "@/lib/utils";
 import { PlatformBadge } from "../common/PlatformBadge";
 import { ContentTypeBadge } from "../common/ContentTypeBadge";
 import { AiOrganizeModal } from "./AiOrganizeModal";
+import { useRecall } from "@/context/RecallContext";
+import { ContentService } from "@/services/content-service";
 
 interface ImportReportViewProps {
   report: ImportReport;
@@ -44,8 +46,33 @@ export const ImportReportView: React.FC<ImportReportViewProps> = ({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isOrganizeModalOpen, setIsOrganizeModalOpen] = useState(false);
 
+  const { items, user } = useRecall();
+
+  // Helper to resolve canonical bookmark id for an item (ensures legacy and newly imported items locate reliably)
+  const getLocateId = (item: ImportItem): string | undefined => {
+    if (item.savedItemId) {
+      if (items.some((i) => i.id === item.savedItemId)) return item.savedItemId;
+      const stored = ContentService.getById(item.savedItemId, user?.id);
+      if (stored) return stored.id;
+    }
+    const url = item.canonicalUrl || item.originalUrl;
+    if (url) {
+      const matchInItems = items.find(
+        (i) =>
+          i.url.toLowerCase() === url.toLowerCase() ||
+          (i.metadata?.canonicalUrl && i.metadata.canonicalUrl.toLowerCase() === url.toLowerCase()) ||
+          (i.metadata?.originalUrl && i.metadata.originalUrl.toLowerCase() === url.toLowerCase())
+      );
+      if (matchInItems) return matchInItems.id;
+
+      const duplicate = ContentService.checkDuplicate(url, user?.id);
+      if (duplicate) return duplicate.id;
+    }
+    return item.savedItemId;
+  };
+
   // Eligible items in this report scope that have a saved item
-  const eligibleItems = report.items.filter((item) => Boolean(item.savedItemId));
+  const eligibleItems = report.items.filter((item) => Boolean(getLocateId(item)));
   const isAllSelected = eligibleItems.length > 0 && eligibleItems.every((item) => selectedIds.has(item.id));
 
   const handleToggleSelectAll = () => {
@@ -306,7 +333,7 @@ export const ImportReportView: React.FC<ImportReportViewProps> = ({
             >
               {/* Item Overview & Mapping */}
               <div className="flex items-start gap-3 min-w-0 max-w-full md:max-w-[70%]">
-                {item.savedItemId ? (
+                {getLocateId(item) ? (
                   <div className="pt-0.5 shrink-0">
                     <input
                       type="checkbox"
@@ -391,19 +418,22 @@ export const ImportReportView: React.FC<ImportReportViewProps> = ({
 
               {/* Destination Action Link (Direct navigation to locate in Keeper) */}
               <div className="flex items-center gap-2 shrink-0 md:self-center">
-                {item.savedItemId ? (
-                  <Link
-                    href={`/app/item/${item.savedItemId}`}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 text-xs font-semibold transition-all"
-                  >
-                    <span>Locate in Keeper</span>
-                    <ArrowRight className="w-3 h-3 text-indigo-500" />
-                  </Link>
-                ) : (
-                  <span className="text-[11px] text-zinc-400">
-                    {item.status === "duplicate" ? "Kept existing save" : "Not stored"}
-                  </span>
-                )}
+                {(() => {
+                  const targetBookmarkId = getLocateId(item);
+                  return targetBookmarkId ? (
+                    <Link
+                      href={`/app/item/${targetBookmarkId}`}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 text-xs font-semibold transition-all"
+                    >
+                      <span>Locate in Keeper</span>
+                      <ArrowRight className="w-3 h-3 text-indigo-500" />
+                    </Link>
+                  ) : (
+                    <span className="text-[11px] text-zinc-400">
+                      {item.status === "duplicate" ? "Kept existing save" : "Not stored"}
+                    </span>
+                  );
+                })()}
               </div>
             </div>
           ))
@@ -414,7 +444,9 @@ export const ImportReportView: React.FC<ImportReportViewProps> = ({
       <AiOrganizeModal
         isOpen={isOrganizeModalOpen}
         onClose={() => setIsOrganizeModalOpen(false)}
-        selectedImportItems={report.items.filter((i) => selectedIds.has(i.id))}
+        selectedImportItems={report.items
+          .filter((i) => selectedIds.has(i.id))
+          .map((i) => ({ ...i, savedItemId: getLocateId(i) || i.savedItemId }))}
       />
     </div>
   );

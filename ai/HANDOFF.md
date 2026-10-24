@@ -1,6 +1,24 @@
 # AI Development Handoff
 
-Last updated: 2026-10-21 15:40 IST
+Last updated: 2026-10-24 10:22 IST
+
+## 2026-10-24 Bulk Import → Locate Bookmark Resolution Permanent Fix
+- Diagnosed and permanently fixed the root cause of "Bookmark Not Found" / “This item might have been deleted or does not exist.” when clicking Locate in Keeper from bulk import reports.
+- Root causes:
+  1. `RecallContext` items state was not reloaded when bulk import jobs added items via `ContentService.addItem`, leaving in-memory state stale upon client-side router navigation.
+  2. `ImportJobService.startJob` previously assigned `item.savedItemId = ingestion.savedItem.id` instead of capturing the canonical ID returned by `ContentService.addItem(...)`. For existing or updated items, `ingestion.savedItem.id` was an ephemeral server-generated ID absent from client storage.
+  3. `ItemDetailPage` checked only the in-memory array and lacked an `authLoading` gate, causing premature 404 EmptyState rendering without consulting `StorageService` or `ContentService.getById`.
+  4. Historical import reports lacked a deterministic self-healing mechanism for missing/stale references.
+- Key files updated:
+  - `src/services/bulk-import/import-job-service.ts`: Canonical `savedItemId` linking, duplicate reference preservation, and historical report reconciliation in `getReports`.
+  - `src/services/content-service.ts`: Lookup by ID, `serverMediaId`, and decoded URI in `getById`.
+  - `src/services/storage-service.ts`: `"keeper:items-changed"` custom event dispatch on save/clear.
+  - `src/context/RecallContext.tsx`: `refreshWorkspaceItems` helper and storage/custom event listeners for instant reactivity.
+  - `src/app/app/bulk-import/page.tsx`: Refresh items upon import completion and mount.
+  - `src/components/bulk-import/ImportReportView.tsx`: `getLocateId` helper ensuring canonical bookmark resolution.
+  - `src/app/app/item/[id]/page.tsx`: `Loader2` loading gate, multi-tier fallback lookup (context -> storage -> server media), and state rehydration.
+  - `src/components/bulk-import/AiOrganizeModal.tsx`: Resilient candidate resolution.
+  - `scripts/run-tests.ts`: Section 22 regression test suite covering all 10 requirements.
 
 ## 2026-10-21 Instagram Reels AI Accuracy Audit Implementation
 - Fixed tag generation, category allocation, creator attribution, and publication date precision for Instagram Reels.

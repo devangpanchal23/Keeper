@@ -1,7 +1,5 @@
 import {
   AuthoritativeSourceData,
-  ContentType,
-  Creator,
   FieldProvenance,
   Platform,
 } from "@/types";
@@ -10,7 +8,7 @@ import { ContentProvider, UrlValidationResult } from "./content-provider.interfa
 export class GenericWebsiteProvider implements ContentProvider {
   readonly platform: Platform = "website";
 
-  canHandle(_url: string): boolean {
+  canHandle(): boolean {
     return true; // Fallback for any standard web URL
   }
 

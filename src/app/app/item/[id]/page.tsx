@@ -16,6 +16,8 @@ import {
   INSTAGRAM_POST_PLACEHOLDER,
 } from "@/services/media/instagram-placeholders";
 import { CONTENT_PREVIEW_PLACEHOLDER } from "@/services/media/content-placeholder";
+import { StorageService } from "@/services/storage-service";
+import { ContentService } from "@/services/content-service";
 import {
   ArrowLeft,
   ExternalLink,
@@ -43,6 +45,7 @@ import {
   Layers,
   Volume2,
   FileText,
+  Loader2,
 } from "lucide-react";
 
 export default function ItemDetailPage({
@@ -55,6 +58,9 @@ export default function ItemDetailPage({
   const {
     items,
     collections,
+    user,
+    authLoading,
+    refreshWorkspaceItems,
     createCollection,
     refreshWorkspaceCollections,
     updateItem,
@@ -63,13 +69,100 @@ export default function ItemDetailPage({
     archiveItem,
     unarchiveItem,
     trashItem,
-    restoreItem,
-    permanentDeleteItem,
     addToast,
     recordView,
   } = useRecall();
 
-  const item = items.find((i) => i.id === resolvedParams.id);
+  const [isLoadingItem, setIsLoadingItem] = useState(false);
+  const [resolvedFallbackItem, setResolvedFallbackItem] = useState<SavedItem | null>(null);
+
+  const rawTargetId = resolvedParams.id;
+  const decodedTargetId = (() => {
+    try {
+      return decodeURIComponent(rawTargetId);
+    } catch {
+      return rawTargetId;
+    }
+  })();
+
+  // 1. Direct match in RecallContext items state
+  const itemInState = items.find(
+    (i) =>
+      i.id === rawTargetId ||
+      i.id === decodedTargetId ||
+      i.metadata?.serverMediaId === rawTargetId ||
+      i.metadata?.serverMediaId === decodedTargetId ||
+      i.url.toLowerCase() === decodedTargetId.toLowerCase()
+  );
+
+  // 2. Synchronous storage fallback
+  const itemInStorage = (() => {
+    if (itemInState) return itemInState;
+    if (typeof window === "undefined") return undefined;
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    const stored =
+      ContentService.getById(rawTargetId, activeUserId) ||
+      ContentService.getById(decodedTargetId, activeUserId);
+    if (stored) return stored;
+
+    const allStored = StorageService.getItems(activeUserId);
+    return allStored.find(
+      (i) =>
+        i.id === rawTargetId ||
+        i.id === decodedTargetId ||
+        i.metadata?.serverMediaId === rawTargetId ||
+        i.metadata?.serverMediaId === decodedTargetId ||
+        i.url.toLowerCase() === decodedTargetId.toLowerCase()
+    );
+  })();
+
+  const item = itemInState || resolvedFallbackItem || itemInStorage;
+
+  // Synchronize state if found in storage fallback
+  useEffect(() => {
+    if (!itemInState && itemInStorage) {
+      setResolvedFallbackItem(itemInStorage);
+      if (refreshWorkspaceItems) {
+        refreshWorkspaceItems();
+      }
+    }
+  }, [itemInState, itemInStorage, refreshWorkspaceItems]);
+
+  // Server media query fallback if still not found and authenticated
+  useEffect(() => {
+    if (item || authLoading || typeof window === "undefined") return;
+    let cancelled = false;
+    const checkServerMedia = async () => {
+      setIsLoadingItem(true);
+      try {
+        const response = await fetch("/api/media", { cache: "no-store" });
+        if (!response.ok || cancelled) return;
+        const payload = (await response.json()) as { items?: SavedItem[] };
+        const found = (payload.items || []).find(
+          (i) =>
+            i.id === rawTargetId ||
+            i.id === decodedTargetId ||
+            i.metadata?.serverMediaId === rawTargetId ||
+            i.metadata?.serverMediaId === decodedTargetId ||
+            i.url.toLowerCase() === decodedTargetId.toLowerCase()
+        );
+        if (found && !cancelled) {
+          const activeUserId = user?.id || StorageService.getActiveUserId();
+          ContentService.addItem(found, activeUserId, "skip");
+          setResolvedFallbackItem(found);
+          if (refreshWorkspaceItems) refreshWorkspaceItems();
+        }
+      } catch {
+        // Network failure, proceed to empty state
+      } finally {
+        if (!cancelled) setIsLoadingItem(false);
+      }
+    };
+    void checkServerMedia();
+    return () => {
+      cancelled = true;
+    };
+  }, [item, authLoading, rawTargetId, decodedTargetId, user?.id, refreshWorkspaceItems]);
 
   // Local state for reprocessing
   const [isReprocessing, setIsReprocessing] = useState(false);
@@ -121,6 +214,17 @@ export default function ItemDetailPage({
     return () => { stopped = true; clearTimeout(timer); };
   }, [item?.id, item?.metadata?.serverMediaId, item?.metadata?.aiProcessingStatus]);
 
+  if (authLoading || isLoadingItem) {
+    return (
+      <div className="p-8 max-w-4xl mx-auto flex flex-col items-center justify-center min-h-[400px] gap-3">
+        <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
+        <p className="text-xs text-zinc-500 dark:text-zinc-400 font-medium">
+          Loading bookmark...
+        </p>
+      </div>
+    );
+  }
+
   if (!item) {
     return (
       <div className="p-8 max-w-4xl mx-auto">
@@ -140,7 +244,6 @@ export default function ItemDetailPage({
     );
   }
 
-  const currentCollection = collections.find((c) => c.id === item.collectionId);
   const contentRepresentation = item.metadata?.contentRepresentation;
   const assetClassification = item.metadata?.assetClassification;
   const generatedContent = item.metadata?.generatedContent as { detailedDescription?: string | null; topics?: string[]; collectionReason?: string | null } | undefined;

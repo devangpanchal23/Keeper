@@ -2,7 +2,6 @@ import {
   ContentType,
   Creator,
   Community,
-  ItemMetadata,
   Platform,
   ContentProcessingStatus,
   FieldProvenance,
@@ -483,9 +482,12 @@ export class InstagramProvider extends BasePlatformProvider {
     return details.code;
   }
 
-  getThumbnail(url: string, _contentId?: string | null): string {
+  getThumbnail(url: string, contentId?: string | null): string {
     const details = extractInstagramDetails(url);
-    return details.isReel ? INSTAGRAM_REEL_PLACEHOLDER : INSTAGRAM_POST_PLACEHOLDER;
+    const code = contentId || details.code;
+    return details.isReel || (code ? code.length > 20 : false)
+      ? INSTAGRAM_REEL_PLACEHOLDER
+      : INSTAGRAM_POST_PLACEHOLDER;
   }
 
   normalizeUrl(url: string): string {
@@ -994,7 +996,7 @@ export class LinkedInProvider extends BasePlatformProvider {
     return normalizeUrl(url);
   }
 
-  async fetchMetadata(url: string, contentId?: string | null): Promise<VerifiedSourceMetadata> {
+  async fetchMetadata(url: string): Promise<VerifiedSourceMetadata> {
     const { id, slug, isPulse, canonicalUrl } = extractLinkedInDetails(url);
     const thumbnail = this.getThumbnail(url, id);
     const domain = "linkedin.com";
@@ -1381,7 +1383,7 @@ export class FacebookProvider extends BasePlatformProvider {
     return normalizeUrl(url);
   }
 
-  async fetchMetadata(url: string, contentId?: string | null): Promise<VerifiedSourceMetadata> {
+  async fetchMetadata(url: string): Promise<VerifiedSourceMetadata> {
     const { id, canonicalUrl } = extractFacebookDetails(url);
     const thumbnail = this.getThumbnail(url, id);
     const title = id ? `Facebook Post • ${id}` : "Facebook Post";

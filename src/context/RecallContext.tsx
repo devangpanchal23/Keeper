@@ -82,6 +82,7 @@ export interface RecallContextType {
 
   createCollection: (col: Omit<Collection, "id" | "createdAt" | "updatedAt">) => Collection;
   refreshWorkspaceCollections: () => Promise<void>;
+  refreshWorkspaceItems: () => SavedItem[];
   updateCollection: (id: string, updates: Partial<Omit<Collection, "id" | "createdAt">>) => void;
   deleteCollection: (id: string) => void;
   deleteCollectionItems: (collectionId: string, itemIds?: string[], selectAll?: boolean) => Promise<DeleteCollectionItemsResult>;
@@ -217,6 +218,26 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   }, [theme]);
+
+  // Synchronize items with storage changes (e.g. bulk import or multi-tab saves)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleItemsChanged = (e?: Event) => {
+      const customEvent = e as CustomEvent<{ userId?: string }> | undefined;
+      const targetUserId = customEvent?.detail?.userId;
+      const activeId = user?.id || StorageService.getActiveUserId();
+      if (!targetUserId || targetUserId === activeId) {
+        const latest = StorageService.getItems(activeId);
+        setItems(latest);
+      }
+    };
+    window.addEventListener("keeper:items-changed", handleItemsChanged);
+    window.addEventListener("storage", handleItemsChanged);
+    return () => {
+      window.removeEventListener("keeper:items-changed", handleItemsChanged);
+      window.removeEventListener("storage", handleItemsChanged);
+    };
+  }, [user?.id]);
 
   // Load user from active session on initial mount
   useEffect(() => {
@@ -638,6 +659,13 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const refreshWorkspaceItems = useCallback((): SavedItem[] => {
+    const activeId = user?.id || StorageService.getActiveUserId();
+    const latest = StorageService.getItems(activeId);
+    setItems(latest);
+    return latest;
+  }, [user?.id]);
+
   const updateCollection = (id: string, updates: Partial<Omit<Collection, "id" | "createdAt">>) => {
     CollectionService.update(id, updates);
     setCollections(CollectionService.getAll());
@@ -748,6 +776,7 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
         emptyTrash,
       createCollection,
       refreshWorkspaceCollections,
+      refreshWorkspaceItems,
         updateCollection,
         deleteCollection,
         deleteCollectionItems,

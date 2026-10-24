@@ -137,14 +137,14 @@ export class InstagramProvider implements ContentProvider {
    * Clearly generic Instagram placeholder when authentic thumbnail cannot be obtained.
    * NEVER returns misleading stock photography (no laptops, offices, or Matrix code)!
    */
-  public getFallbackThumbnail(isReel: boolean, _code?: string): string {
+  public getFallbackThumbnail(isReel: boolean): string {
     return isReel ? INSTAGRAM_REEL_PLACEHOLDER : INSTAGRAM_POST_PLACEHOLDER;
   }
 
   /**
    * Helper to parse Instagram captioned embed HTML.
    */
-  private parseEmbedHtml(html: string, code: string): {
+  private parseEmbedHtml(html: string): {
     username?: string;
     caption?: string;
     avatarUrl?: string;
@@ -376,7 +376,7 @@ export class InstagramProvider implements ContentProvider {
     const canonicalUrl = validation.canonicalUrl;
     const now = new Date().toISOString();
 
-    const fallbackThumbnail = this.getFallbackThumbnail(isReel, code);
+    const fallbackThumbnail = this.getFallbackThumbnail(isReel);
 
     const provenance: Record<string, FieldProvenance> = {
       canonicalUrl: { value: canonicalUrl, source: "instagram_canonicalizer", retrievedAt: now },
@@ -475,7 +475,7 @@ export class InstagramProvider implements ContentProvider {
           html.includes("Login • Instagram");
 
         if (!isLoginOrRestricted) {
-          const parsed = this.parseEmbedHtml(html, code);
+          const parsed = this.parseEmbedHtml(html);
           const caption = parsed.caption ? MetadataNormalizer.normalizeText(parsed.caption) : undefined;
           const hasAuthenticThumb = this.isValidThumbnailUrl(parsed.thumbnailUrl);
           const thumbnail = hasAuthenticThumb ? parsed.thumbnailUrl! : fallbackThumbnail;

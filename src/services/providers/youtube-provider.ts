@@ -183,7 +183,7 @@ export class YouTubeProvider implements ContentProvider {
             };
           }
         }
-      } catch (err) {
+      } catch {
         // Fall back to oEmbed
       }
     }

@@ -22,6 +22,8 @@
  * 18. Multi-Tenant Collection Security & Adversarial Isolation Tests
  * 19. Instagram JSON Metadata Accuracy & Mojibake Normalization Tests
  * 20. Production Collection Delete Management & Security Tests
+ * 21. Instagram Reels AI Accuracy Audit Regression Tests
+ * 22. Bulk Import -> Locate Bookmark Resolution & Data Integrity Regression Tests
  */
 
 import { hashPassword, verifyPassword, generateInitialsAvatar } from "../src/services/auth-service";
@@ -5453,15 +5455,23 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       }
     });
 
-    await test("Reel 01: Timezone-safe publication date parsing prevents off-by-one day shift", () => {
+    await test("Reel 01: Timezone-safe publication date parsing prevents off-by-one day shift across timezone boundaries", () => {
       const parsedUtc = MetadataNormalizer.parseAuthoritativeDate("October 18, 2026");
       assert(parsedUtc.iso !== null, "Authoritative date string must parse successfully");
       assertEqual(parsedUtc.iso, "2026-10-18T12:00:00.000Z", "Must produce UTC midday timestamp to prevent midnight crossing across timezones");
-      assertEqual(formatDate(parsedUtc.iso!), "2026-10-18", "formatDate must format to calendar date 2026-10-18 regardless of client timezone");
+      assertEqual(parsedUtc.formattedDate, "2026-10-18", "Authoritative date must format to calendar date 2026-10-18 regardless of client timezone");
 
-      // Verify ISO date string with midnight UTC
-      const parsedIso = MetadataNormalizer.parseAuthoritativeDate("2026-10-18T00:00:00.000Z");
-      assertEqual(formatDate(parsedIso.iso!), "2026-10-18", "formatDate formats midnight UTC without shifting to 2026-10-17");
+      // Verify ISO date string with midnight UTC (start of day boundary)
+      const parsedIsoMidnight = MetadataNormalizer.parseAuthoritativeDate("2026-10-18T00:00:00.000Z");
+      assertEqual(parsedIsoMidnight.formattedDate, "2026-10-18", "Authoritative date formats midnight UTC without shifting to 2026-10-17");
+
+      // Verify ISO date string with end of day boundary (23:59:59 UTC)
+      const parsedIsoEndOfDay = MetadataNormalizer.parseAuthoritativeDate("2026-10-18T23:59:59.000Z");
+      assertEqual(parsedIsoEndOfDay.formattedDate, "2026-10-18", "Authoritative date formats 23:59:59 UTC without shifting to 2026-10-19");
+
+      // Verify ISO date string with positive timezone offset (+05:30)
+      const parsedWithOffset = MetadataNormalizer.parseAuthoritativeDate("2026-10-18T14:30:00+05:30");
+      assertEqual(parsedWithOffset.formattedDate, "2026-10-18", "Calendar date 2026-10-18 preserved under timezone offset");
     });
 
     // --- REEL 02: Creator Attribution & Rejection of Short Noise Tags ---
@@ -5513,6 +5523,16 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       // Verify backward-compatible method also respects cumulative evidence
       const legacyCat = CollectionMatchingService.inferCollectionCategory(tags, text);
       assertEqual(legacyCat, "Business", "Legacy inferCollectionCategory returns Business");
+    });
+
+    await test("Reel 03: Cumulative evidence prioritizes Travel when travel tags dominate over incidental business keyword", () => {
+      const travelTags = ["Travel", "Vacation", "Tourism"];
+      const travelText = "Best 10 places to visit in Japan on a budget. Tips on running your freelance business remotely while traveling.";
+
+      const catResult = CollectionMatchingService.inferCategories(travelTags, travelText);
+      assertEqual(catResult.primaryCategory, "Travel", "Primary category must be Travel when travel evidence dominates");
+      assert(catResult.confidence >= 0.7, "High confidence for dominant Travel topic");
+      assert(catResult.secondaryCategories.includes("Business"), "Incidental business keyword recorded as secondary category");
     });
 
     await test("Reel 03: Preserves original publication date separately from import/saved date", () => {
@@ -5569,6 +5589,356 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       const catResult = CollectionMatchingService.inferCategories(["Travel", "Business"], "A balanced review of both topics equally");
       assert(typeof catResult.primaryCategory === "string", "Selects a primary category");
       assert(catResult.secondaryCategories.length > 0, "Secondary category is tracked for multi-topic content");
+    });
+
+    // ---------------------------------------------------------------------------
+    // 22. Bulk Import -> Locate Bookmark Resolution & Data Integrity Regression Suite
+    // ---------------------------------------------------------------------------
+    console.log("\n22. Bulk Import -> Locate Bookmark Resolution & Data Integrity Regression Tests:");
+
+    await test("Bulk Import: A successful Instagram Reel import creates and references the exact canonical savedItemId", async () => {
+      const locateUser = `locate-test-user-${Date.now()}`;
+      StorageService.setImportLimits({ total: 100, used: 0 }, locateUser);
+
+      const targetCol = CollectionService.create({
+        name: "Reel Inspiration",
+        description: "Test Collection for Instagram Reels",
+        color: "#6366f1",
+        icon: "Folder",
+      }, locateUser);
+
+      const candidate: ParsedImportCandidate = {
+        originalUrl: "https://www.instagram.com/reel/C8ReelTest123/",
+        platform: "instagram",
+        title: "5 Productivity Hacks for Creators",
+        creatorName: "@creatorpro",
+        caption: "5 Productivity Hacks for Creators in 2026. #productivity #creators",
+        collectionId: targetCol.id,
+        collectionName: targetCol.name,
+      };
+
+      const candidateItems = ImportJobService.analyzeCandidates([candidate], [], "instagram").candidateItems;
+      const job = ImportJobService.createJob({
+        userId: locateUser,
+        platform: "instagram",
+        sourceType: "url_list",
+        sourceName: "Instagram Reel Test",
+        items: candidateItems,
+        options: {
+          autoOrganize: false,
+          skipDuplicates: false,
+          defaultTags: [],
+          targetCollectionId: targetCol.id,
+        },
+      });
+
+      const report = await ImportJobService.startJob(job.id);
+      assertEqual(report.summary.imported, 1, "Exactly 1 item imported");
+      const reportItem = report.items[0];
+      assertEqual(reportItem.status, "success", "Item status is success");
+      assert(typeof reportItem.savedItemId === "string" && reportItem.savedItemId.length > 0, "savedItemId is assigned");
+
+      // Verify that the saved item actually exists in StorageService with this exact ID
+      const savedItems = StorageService.getItems(locateUser);
+      const matchedSaved = savedItems.find((i) => i.id === reportItem.savedItemId);
+      assert(matchedSaved !== undefined, "SavedItem found in storage with the exact savedItemId");
+      assertEqual(matchedSaved?.url, "https://www.instagram.com/reel/C8ReelTest123/", "URL matches canonical Reel URL");
+      assertEqual(matchedSaved?.collectionId, targetCol.id, "Assigned to the correct target collection");
+
+      // Verify Locate resolution: ContentService.getById resolves this exact bookmark
+      const located = ContentService.getById(reportItem.savedItemId, locateUser);
+      assert(located !== undefined, "Locate action via ContentService.getById finds the bookmark");
+      assertEqual(located?.id, reportItem.savedItemId, "Resolved bookmark ID matches report savedItemId");
+      assertEqual(located?.title, "5 Productivity Hacks for Creators", "Bookmark title preserved");
+    });
+
+    await test("Bulk Import: Multiple imported URLs resolve to their respective bookmarks without ID collisions", async () => {
+      const multiUser = `multi-locate-user-${Date.now()}`;
+      StorageService.setImportLimits({ total: 100, used: 0 }, multiUser);
+
+      const candidates: ParsedImportCandidate[] = [
+        {
+          originalUrl: "https://www.instagram.com/reel/MultiReel01/",
+          platform: "instagram",
+          title: "MacBook Quick Tips",
+          creatorName: "@techguide",
+          caption: "Quick tips for your Mac. #macbook",
+        },
+        {
+          originalUrl: "https://www.instagram.com/reel/MultiReel02/",
+          platform: "instagram",
+          title: "Cooking 101 Pasta",
+          creatorName: "@chefitaly",
+          caption: "How to make authentic pasta. #cooking",
+        },
+        {
+          originalUrl: "https://www.instagram.com/reel/MultiReel03/",
+          platform: "instagram",
+          title: "Morning Routine",
+          creatorName: "@fitlife",
+          caption: "Daily fitness routine. #fitness",
+        },
+      ];
+
+      const candidateItems = ImportJobService.analyzeCandidates(candidates, [], "instagram").candidateItems;
+      const job = ImportJobService.createJob({
+        userId: multiUser,
+        platform: "instagram",
+        sourceType: "url_list",
+        sourceName: "Batch Instagram Reels",
+        items: candidateItems,
+        options: {
+          autoOrganize: false,
+          skipDuplicates: false,
+          defaultTags: [],
+        },
+      });
+
+      const report = await ImportJobService.startJob(job.id);
+      assertEqual(report.summary.imported, 3, "All 3 items imported");
+
+      const idSet = new Set<string>();
+      for (const item of report.items) {
+        assert(typeof item.savedItemId === "string", "Each item has a string savedItemId");
+        assert(!idSet.has(item.savedItemId!), "No ID collisions among imported items");
+        idSet.add(item.savedItemId!);
+
+        const located = ContentService.getById(item.savedItemId!, multiUser);
+        assert(located !== undefined, `Bookmark ${item.savedItemId} successfully located in storage`);
+        assertEqual(located?.url, item.canonicalUrl, "Located bookmark matches item canonicalUrl");
+      }
+      assertEqual(idSet.size, 3, "3 distinct canonical bookmark IDs created");
+    });
+
+    await test("Historical Reports: Reconciles legacy records with missing or mismatched savedItemId", () => {
+      const legacyUser = `legacy-user-${Date.now()}`;
+      // Pre-seed an existing saved item in the user's storage
+      const preExistingBookmark: SavedItem = {
+        id: "save-legacy-canonical-999",
+        title: "Legacy Stored Bookmark",
+        url: "https://www.instagram.com/reel/LegacyReel777/",
+        thumbnail: "https://example.com/legacy.jpg",
+        platform: "instagram",
+        contentType: "reel",
+        creator: { name: "Legacy Creator", username: "legacy.creator" },
+        description: "Legacy Reel description",
+        savedDate: new Date().toISOString(),
+        collectionId: "legacy-col",
+        collections: ["legacy-col"],
+        tags: ["Legacy"],
+        favorite: false,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Legacy Quick", standard: "Legacy Standard", detailed: "Legacy Detailed" },
+        keyPoints: ["Legacy Point"],
+        topics: ["Legacy"],
+        personalNotes: "",
+        metadata: {
+          canonicalUrl: "https://www.instagram.com/reel/LegacyReel777/",
+        },
+      };
+      StorageService.saveItems([preExistingBookmark], legacyUser);
+
+      // Create a historical report where savedItemId is missing or points to a non-existent ID
+      const legacyReport: any = {
+        id: `report-legacy-test`,
+        jobId: "job-legacy-test",
+        userId: legacyUser,
+        platform: "instagram",
+        accountName: "Connected Account",
+        sourceName: "Historical Import",
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: 1200,
+        summary: {
+          totalDiscovered: 1,
+          alreadyExisted: 0,
+          eligible: 1,
+          imported: 1,
+          failed: 0,
+          skipped: 0,
+          duplicates: 0,
+          unsupported: 0,
+          successPercentage: 100,
+        },
+        items: [
+          {
+            id: "legacy-item-1",
+            jobId: "job-legacy-test",
+            originalUrl: "https://www.instagram.com/reel/LegacyReel777/",
+            canonicalUrl: "https://www.instagram.com/reel/LegacyReel777/",
+            platform: "instagram",
+            contentType: "reel",
+            title: "Legacy Stored Bookmark",
+            status: "success",
+            savedItemId: "non-existent-old-id", // stale reference
+            retryCount: 0,
+          },
+        ],
+      };
+
+      ImportJobService.saveReport(legacyReport);
+
+      // Calling getReports must deterministically repair the stale savedItemId to the real canonical ID
+      const reports = ImportJobService.getReports(legacyUser);
+      assertEqual(reports.length, 1, "Historical report retrieved");
+      const reconciledItem = reports[0].items[0];
+      assertEqual(
+        reconciledItem.savedItemId,
+        "save-legacy-canonical-999",
+        "Historical report item safely reconciled to canonical bookmark ID"
+      );
+
+      // Now Locate action can resolve it directly
+      const located = ContentService.getById(reconciledItem.savedItemId!, legacyUser);
+      assert(located !== undefined, "Locate action succeeds using reconciled ID");
+      assertEqual(located?.title, "Legacy Stored Bookmark", "Correct legacy bookmark opened");
+    });
+
+    await test("Duplicate Handling: Duplicate imports retain canonical existing bookmark ID without duplicating", async () => {
+      const dupUser = `dup-user-${Date.now()}`;
+      StorageService.setImportLimits({ total: 100, used: 0 }, dupUser);
+
+      // First import
+      const candidate: ParsedImportCandidate = {
+        originalUrl: "https://www.instagram.com/reel/C8DupReel/",
+        platform: "instagram",
+        title: "Duplicate Reel Test",
+        creatorName: "@dupcreator",
+        caption: "Testing duplicate retention. #duplicate",
+      };
+
+      const candidateItems1 = ImportJobService.analyzeCandidates([candidate], [], "instagram").candidateItems;
+      const job1 = ImportJobService.createJob({
+        userId: dupUser,
+        platform: "instagram",
+        sourceType: "url_list",
+        sourceName: "First Import",
+        items: candidateItems1,
+        options: {
+          autoOrganize: false,
+          skipDuplicates: false,
+          defaultTags: [],
+        },
+      });
+      const report1 = await ImportJobService.startJob(job1.id);
+      const originalBookmarkId = report1.items[0].savedItemId;
+      assert(Boolean(originalBookmarkId), "Initial import assigned savedItemId");
+
+      // Second import with skipDuplicates: true
+      const existingItems = StorageService.getItems(dupUser);
+      const preAnalysis = ImportJobService.analyzeCandidates([candidate], existingItems, "instagram");
+      assertEqual(preAnalysis.duplicates, 1, "Candidate detected as duplicate in pre-import analysis");
+      assertEqual(preAnalysis.candidateItems[0].savedItemId, originalBookmarkId, "Candidate pre-import attaches existing savedItemId");
+
+      const job2 = ImportJobService.createJob({
+        userId: dupUser,
+        platform: "instagram",
+        sourceType: "url_list",
+        sourceName: "Second Import (Duplicate)",
+        items: preAnalysis.candidateItems,
+        options: {
+          autoOrganize: false,
+          skipDuplicates: true,
+          duplicateStrategy: "skip",
+          defaultTags: [],
+        },
+      });
+      const report2 = await ImportJobService.startJob(job2.id);
+      assertEqual(report2.summary.alreadyExisted, 1, "Duplicate count tracked in report");
+      assertEqual(report2.items[0].status, "skipped", "Duplicate item skipped");
+      assertEqual(report2.items[0].savedItemId, originalBookmarkId, "Skipped duplicate retains existing savedItemId for Locate");
+
+      // Verify no duplicate records created in StorageService
+      const allItems = StorageService.getItems(dupUser);
+      assertEqual(allItems.length, 1, "Storage contains exactly 1 bookmark (no duplicates)");
+
+      // Locate opens the existing bookmark
+      const located = ContentService.getById(report2.items[0].savedItemId!, dupUser);
+      assert(located !== undefined, "Locate button successfully finds the existing bookmark");
+      assertEqual(located?.id, originalBookmarkId, "Locate resolves to original bookmark ID");
+    });
+
+    await test("Security & Multi-Tenant Isolation: Cross-workspace bookmark retrieval remains strictly blocked", () => {
+      const userAlice = `alice-${Date.now()}`;
+      const userBob = `bob-${Date.now()}`;
+
+      const aliceItem: SavedItem = {
+        id: "alice-private-reel",
+        title: "Alice Private Bookmark",
+        url: "https://www.instagram.com/reel/AliceSecret/",
+        thumbnail: "https://example.com/alice.jpg",
+        platform: "instagram",
+        contentType: "reel",
+        creator: { name: "Alice", username: "alice" },
+        description: "Alice private content",
+        savedDate: new Date().toISOString(),
+        collectionId: "alice-col",
+        collections: ["alice-col"],
+        tags: ["AliceTag"],
+        favorite: false,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Alice Quick", standard: "Alice Standard", detailed: "Alice Detailed" },
+        keyPoints: ["Alice Point"],
+        topics: ["Alice"],
+        personalNotes: "",
+        metadata: {
+          canonicalUrl: "https://www.instagram.com/reel/AliceSecret/",
+        },
+      };
+
+      StorageService.saveItems([aliceItem], userAlice);
+
+      // Alice can locate her bookmark
+      const aliceFound = ContentService.getById("alice-private-reel", userAlice);
+      assert(aliceFound !== undefined, "Alice can locate her own bookmark");
+
+      // Bob MUST NOT be able to locate Alice's bookmark
+      const bobAttempt = ContentService.getById("alice-private-reel", userBob);
+      assertEqual(bobAttempt, undefined, "Bob cannot locate Alice's bookmark (tenant isolation enforced)");
+
+      // Nonexistent item ID produces undefined (not found)
+      const nonExistent = ContentService.getById("does-not-exist-at-all", userAlice);
+      assertEqual(nonExistent, undefined, "Nonexistent ID returns undefined for not found state");
+    });
+
+    await test("Integrity Protection: Content transcription, AI tags, category, and metadata are intact", async () => {
+      const integrityUser = `integrity-user-${Date.now()}`;
+      StorageService.setImportLimits({ total: 100, used: 0 }, integrityUser);
+
+      const candidate: ParsedImportCandidate = {
+        originalUrl: "https://www.instagram.com/reel/C8IntegrityReel/",
+        platform: "instagram",
+        title: "Advanced TypeScript Techniques",
+        creatorName: "@tsguru",
+        caption: "Mastering advanced TypeScript patterns and utility types. #typescript #coding",
+      };
+
+      const candidateItems = ImportJobService.analyzeCandidates([candidate], [], "instagram").candidateItems;
+      const job = ImportJobService.createJob({
+        userId: integrityUser,
+        platform: "instagram",
+        sourceType: "url_list",
+        sourceName: "Integrity Test",
+        items: candidateItems,
+        options: {
+          autoOrganize: false,
+          skipDuplicates: false,
+          defaultTags: [],
+        },
+      });
+
+      const report = await ImportJobService.startJob(job.id);
+      const savedItemId = report.items[0].savedItemId!;
+      const bookmark = ContentService.getById(savedItemId, integrityUser);
+
+      assert(bookmark !== undefined, "Bookmark is persisted and locatable");
+      assertEqual(bookmark?.creator?.name, "@tsguru", "Creator preserved");
+      assert(bookmark?.description.includes("Mastering advanced TypeScript"), "Caption preserved");
+      assertEqual(bookmark?.platform, "instagram", "Platform preserved");
+      assertEqual(bookmark?.contentType, "reel", "Content type preserved as reel");
+      assert(bookmark?.metadata !== undefined, "Metadata preserved");
     });
 
     // Summary
