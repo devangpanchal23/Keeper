@@ -1,5 +1,13 @@
 # Current Project Status
 
+## 2026-10-24 — Patch vulnerable Next.js dependency reported by GitHub Actions
+
+- **Root cause:** `package.json` and `package-lock.json` pinned `next` and `eslint-config-next` to `16.4.0`. GitHub's production dependency audit reported critical Next.js advisories affecting versions through `16.4.0` and failed both CI security audit and the deployment quality gate.
+- **Fix:** Updated both packages to `16.4.3` and regenerated the npm lockfile. This is a patch-level update and does not change application components.
+- **Validation on this checkout:** production audit passed with 0 vulnerabilities; type-check passed; lint passed with 242 warnings under the configured ceiling of 262; design audit passed; regression suite passed 186/186.
+- **Build limitation:** `npm run build` could not complete locally. The default Turbopack build is blocked by the sandbox's process/port restriction; the Webpack build cannot resolve `fonts.googleapis.com`. No build source error was reported. Re-run the normal build on GitHub Actions, which has network access.
+- **Next step:** Push this dependency-only fix and confirm all GitHub Actions gates, especially Production Build Verification and the deployment quality gate, before starting production feature work. Full `npm audit` still reports one high development-tooling advisory; the blocking production audit is clean.
+
 ## 2026-10-24 — Bulk Import → Locate Bookmark Resolution Permanent Fix
 
 - **Problem Addressed:** Successfully imported Instagram Reels appeared in Historical Import Reports, but clicking **Locate in Keeper** showed "Bookmark Not Found" / “This item might have been deleted or does not exist.”

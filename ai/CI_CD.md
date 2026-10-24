@@ -28,7 +28,9 @@ The workflow files cannot configure GitHub repository settings, environment revi
 
 ## Dependency updates and current gate status
 
-Dependabot opens weekly npm and GitHub Actions update PRs. Review and merge updates through the same CI gates. Both workflows audit production dependencies because `eslint-config-next` currently brings in development-only `braces@3.0.3` via `fast-glob` and `micromatch`. GitHub Advisory Database marks that version high severity with no patched release, so a full-tree `npm audit --audit-level=high` cannot pass by upgrading the current chain. Do not force a framework downgrade or silently waive runtime dependencies; CI blocks on production dependency advisories while Dependabot continues checking the development toolchain.
+Dependabot opens weekly npm and GitHub Actions update PRs. Review and merge updates through the same CI gates. Both workflows audit production dependencies because `eslint-config-next` currently brings in development-only `braces@3.0.3` via `fast-glob` and `micromatch`. GitHub Advisory Database marks that version high severity with no patched release, so a full-tree `npm audit --audit-level=high` may still fail even while the blocking production audit passes.
+
+On 2026-10-24, the Next.js `16.4.0` critical/high advisory failure was fixed by upgrading `next` and `eslint-config-next` to `16.4.3` and regenerating `package-lock.json`. The production audit passed locally with 0 vulnerabilities. Hosted GitHub Actions must confirm the build and remote gates after this change is pushed.
 
 The existing lint baseline has 262 warnings. Two Node helper scripts intentionally use CommonJS in this non-ESM package; their file-level ESLint exceptions resolve the 4 hard lint errors. CI enforces the current warning ceiling (`--max-warnings=262`) so warning debt cannot grow unnoticed. `tsx` is pinned in `package-lock.json` and the npm scripts invoke that local binary. Reduce lint warnings as follow-up maintenance; do not disable or mark these jobs successful to force a release.
 

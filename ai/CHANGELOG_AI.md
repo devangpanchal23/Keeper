@@ -2,6 +2,14 @@
 
 Last updated: 2026-10-24 10:20 IST
 
+## 2026-10-24 — GitHub Actions Next.js security audit fix
+
+- **Problem:** GitHub Actions' production dependency audit failed because Next.js `16.4.0` was affected by three newly reported advisories.
+- **Root cause:** `next` and `eslint-config-next` were exactly pinned at the vulnerable version in `package.json` and `package-lock.json`.
+- **Fix:** Updated both packages to `16.4.3` and regenerated the lockfile. No unrelated application components were modified.
+- **Validation:** Production audit passed with 0 vulnerabilities; type-check, design audit, lint (242 warnings under the 262 ceiling), and all 186 tests passed. The local build could not complete because the sandbox blocks Turbopack process/port creation and cannot resolve Google Fonts in the Webpack retry. A hosted GitHub Actions build is still required.
+- **Remaining:** Full-tree npm audit still has one high development-only advisory. Production dependency audit is clean. Push and verify CI/CD on GitHub before resuming feature work.
+
 ## 2026-10-24 — Bulk Import → Locate Bookmark Resolution Permanent Fix
 
 - **Problem:** When an Instagram Reel URL was imported via Bulk Import, the import succeeded and appeared in Historical Import Reports, but clicking **Locate in Keeper** showed "Bookmark Not Found" / “This item might have been deleted or does not exist.”
