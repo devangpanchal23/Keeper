@@ -85,6 +85,10 @@ import { CollectionMatchingService } from "../src/services/collection-matching-s
 import { AssetClassificationService } from "../src/services/asset-classification-service";
 import { VisualTextService } from "../src/services/media/visual-text-service";
 import { aiJobRetryDelaySeconds, MAX_AI_JOB_ATTEMPTS, processingFailureCode, shouldRetryAiJob } from "../src/services/ai-job-retry-policy";
+import { createHmac } from "node:crypto";
+import { handleRazorpayWebhook, type RazorpayWebhookStore } from "../src/lib/razorpay-webhook-handler";
+import { verifyRazorpaySubscriptionSignature, verifyRazorpayWebhookSignature } from "../src/lib/razorpay-signatures";
+import { createReceiptRetryTask } from "../src/lib/razorpay-receipts";
 
 interface TestResult {
   name: string;
@@ -6240,6 +6244,195 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       assertEqual(bookmark?.platform, "instagram", "Platform preserved");
       assertEqual(bookmark?.contentType, "reel", "Content type preserved as reel");
       assert(bookmark?.metadata !== undefined, "Metadata preserved");
+    });
+
+    console.log("\n24. Razorpay Webhook & Receipt Reliability Tests:");
+
+    const razorpaySecret = "test-webhook-secret-never-logged";
+    const webhookSignature = (raw: string) => createHmac("sha256", razorpaySecret).update(raw).digest("hex");
+    const makeWebhookStore = (status = "authenticated") => {
+      const calls: string[] = [];
+      let eventProcessed = false;
+      const store: RazorpayWebhookStore = {
+        async claimEvent() { calls.push("claim"); return eventProcessed ? "processed" : "claimed"; },
+        async markEventProcessed() { calls.push("processed"); eventProcessed = true; },
+        async findSubscription() { calls.push("find-subscription"); return { id: "local-sub-1", user_id: "user-1", plan: "pro", billing_cycle: "monthly", amount: 1000, currency: "INR", status }; },
+        async updateSubscription(_id, values) { calls.push(`subscription:${String(values.status)}`); },
+        async upsertCapturedPayment() { calls.push("payment-upsert"); },
+        async recordPaymentFailure() { calls.push("payment-failure"); },
+        async updateReceiptUrl() { calls.push("receipt-update"); },
+      };
+      return { calls, store };
+    };
+    const makeSignedWebhook = (payload: Record<string, unknown>, event = "subscription.activated", eventId = "evt-1") => {
+      const raw = JSON.stringify({ event, payload });
+      return new Request("https://keeper.test/api/webhooks/razorpay", {
+        method: "POST",
+        headers: { "x-razorpay-signature": webhookSignature(raw), "x-razorpay-event-id": eventId },
+        body: raw,
+      });
+    };
+
+    await test("Razorpay webhook accepts a valid raw-body signature", async () => {
+      const { calls, store } = makeWebhookStore();
+      const response = await handleRazorpayWebhook(makeSignedWebhook({ subscription: { entity: { id: "sub-1" } } }), {
+        webhookSecret: razorpaySecret, createStore: () => store, scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {},
+      });
+      assertEqual(response.status, 200, "Valid signed webhook is accepted");
+      assert(calls.includes("subscription:active"), "Expected subscription activation write");
+    });
+
+    await test("Razorpay webhook rejects an invalid signature before database access", async () => {
+      const { calls, store } = makeWebhookStore();
+      let storeCreations = 0;
+      const request = makeSignedWebhook({ subscription: { entity: { id: "sub-1" } } });
+      const raw = await request.text();
+      const badRequest = new Request(request.url, { method: "POST", headers: { "x-razorpay-signature": "0".repeat(64), "x-razorpay-event-id": "evt-1" }, body: raw });
+      const response = await handleRazorpayWebhook(badRequest, {
+        webhookSecret: razorpaySecret, createStore: () => { storeCreations += 1; return store; }, scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {},
+      });
+      assertEqual(response.status, 400, "Invalid signature is rejected");
+      assertEqual(calls.length, 0, "No store access before signature verification");
+      assertEqual(storeCreations, 0, "Invalid signature never creates the store");
+    });
+
+    await test("Razorpay webhook rejects a missing secret without database access", async () => {
+      const { calls, store } = makeWebhookStore();
+      const response = await handleRazorpayWebhook(makeSignedWebhook({}), {
+        webhookSecret: undefined, createStore: () => store, scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {},
+      });
+      assertEqual(response.status, 401, "Missing secret is rejected");
+      assertEqual(calls.length, 0, "Missing secret does not access the store");
+    });
+
+    await test("Razorpay webhook rejects each missing authentication header without database access", async () => {
+      const { calls, store } = makeWebhookStore();
+      const raw = JSON.stringify({ event: "subscription.activated", payload: { subscription: { entity: { id: "sub-1" } } } });
+      const baseHeaders = { "x-razorpay-signature": webhookSignature(raw), "x-razorpay-event-id": "evt-headers" };
+      for (const headers of [
+        new Headers({ "x-razorpay-event-id": "evt-headers" }),
+        new Headers({ "x-razorpay-signature": webhookSignature(raw) }),
+      ]) {
+        const response = await handleRazorpayWebhook(new Request("https://keeper.test", { method: "POST", headers, body: raw }), {
+          webhookSecret: razorpaySecret, createStore: () => store, scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {},
+        });
+        assertEqual(response.status, 401, "Missing signature or event ID gets 401");
+      }
+      const missingSecretResponse = await handleRazorpayWebhook(new Request("https://keeper.test", { method: "POST", headers: baseHeaders, body: raw }), {
+        webhookSecret: undefined, createStore: () => store, scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {},
+      });
+      assertEqual(missingSecretResponse.status, 401, "Missing webhook secret gets 401");
+      assertEqual(calls.length, 0, "Authentication failures never create or access the store");
+    });
+
+    await test("Razorpay webhook rejects signed invalid JSON before creating the store", async () => {
+      let storeCreations = 0;
+      const raw = "not valid json";
+      const response = await handleRazorpayWebhook(new Request("https://keeper.test", {
+        method: "POST", headers: { "x-razorpay-signature": webhookSignature(raw), "x-razorpay-event-id": "evt-json" }, body: raw,
+      }), {
+        webhookSecret: razorpaySecret, createStore: () => { storeCreations += 1; throw new Error("store should not be created"); },
+        scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {},
+      });
+      assertEqual(response.status, 400, "Signed invalid JSON gets 400");
+      assertEqual(storeCreations, 0, "Invalid JSON never creates the store");
+    });
+
+    await test("Razorpay webhook marks an unknown subscription event processed", async () => {
+      const { calls, store } = makeWebhookStore();
+      store.findSubscription = async () => { calls.push("unknown-subscription"); return null; };
+      const response = await handleRazorpayWebhook(makeSignedWebhook({ subscription: { entity: { id: "unknown-sub" } } }), {
+        webhookSecret: razorpaySecret, createStore: () => store, scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {},
+      });
+      assertEqual(response.status, 200, "Unknown subscription is acknowledged");
+      assert(calls.includes("processed"), "Unknown subscription event is marked processed");
+    });
+
+    await test("Razorpay unrelated event without subscription ID is acknowledged and left unprocessed", async () => {
+      let storeCreations = 0;
+      const response = await handleRazorpayWebhook(makeSignedWebhook({}, "some.unrelated.event", "evt-no-sub"), {
+        webhookSecret: razorpaySecret, createStore: () => { storeCreations += 1; throw new Error("store should not be created"); },
+        scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {},
+      });
+      assertEqual(response.status, 200, "Unrelated event without subscription ID is acknowledged");
+      assertEqual(storeCreations, 0, "No-subscription no-op does not access storage");
+    });
+
+    await test("Razorpay store configuration failure returns a controlled 500", async () => {
+      let logged = false;
+      const response = await handleRazorpayWebhook(makeSignedWebhook({ subscription: { entity: { id: "sub-1" } } }), {
+        webhookSecret: razorpaySecret, createStore: () => { throw new Error("service role missing"); },
+        scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => { logged = true; },
+      });
+      assertEqual(response.status, 500, "Store construction failure returns 500");
+      assert(logged, "Store construction failure is logged through sanitized logger");
+    });
+
+    await test("Razorpay processed duplicate event returns 200 without repeating writes", async () => {
+      const { calls, store } = makeWebhookStore();
+      const dependencies = { webhookSecret: razorpaySecret, createStore: () => store, scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {} };
+      await handleRazorpayWebhook(makeSignedWebhook({ subscription: { entity: { id: "sub-1" } } }), dependencies);
+      const response = await handleRazorpayWebhook(makeSignedWebhook({ subscription: { entity: { id: "sub-1" } } }), dependencies);
+      assertEqual(response.status, 200, "Duplicate is acknowledged");
+      assertEqual(calls.filter((call) => call === "subscription:active").length, 1, "Duplicate does not repeat state write");
+    });
+
+    await test("Razorpay concurrent duplicate delivery uses idempotent writes and acknowledges both", async () => {
+      const calls: string[] = [];
+      let processed = false;
+      let persistedFailureRows = 0;
+      const store: RazorpayWebhookStore = {
+        async claimEvent() { calls.push("claim"); return processed ? "processed" : "unprocessed"; },
+        async markEventProcessed() { calls.push("processed"); processed = true; },
+        async findSubscription() { return null; }, async updateSubscription() {}, async upsertCapturedPayment() {},
+        async recordPaymentFailure() { if (!calls.includes("failure-write")) persistedFailureRows += 1; calls.push("failure-write"); },
+        async updateReceiptUrl() {},
+      };
+      const request = () => makeSignedWebhook({ payment: { entity: { id: "pay-1", error_code: "BAD" } } }, "payment.failed", "evt-concurrent");
+      const dependencies = { webhookSecret: razorpaySecret, createStore: () => store, scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {} };
+      const responses = await Promise.all([handleRazorpayWebhook(request(), dependencies), handleRazorpayWebhook(request(), dependencies)]);
+      assert(responses.every((response) => response.status === 200), "Both deliveries are acknowledged");
+      assertEqual(persistedFailureRows, 1, "Unique event_id upsert protects the failure record from duplicate rows");
+    });
+
+    await test("Razorpay callback accepts a valid signature and rejects a tampered signature", () => {
+      const callbackSignature = createHmac("sha256", razorpaySecret).update("pay-1|sub-1").digest("hex");
+      assert(verifyRazorpaySubscriptionSignature("pay-1", "sub-1", callbackSignature, razorpaySecret), "Valid callback signature passes");
+      assert(!verifyRazorpaySubscriptionSignature("pay-other", "sub-1", callbackSignature, razorpaySecret), "Tampered callback details fail");
+      assert(!verifyRazorpaySubscriptionSignature("pay-1", "sub-1", callbackSignature, undefined), "Missing callback secret fails closed");
+    });
+
+    await test("subscription.authenticated cannot overwrite active or cancelled state", async () => {
+      for (const existingStatus of ["active", "cancelled"]) {
+        const { calls, store } = makeWebhookStore(existingStatus);
+        const response = await handleRazorpayWebhook(makeSignedWebhook({ subscription: { entity: { id: "sub-1", status: "authenticated" } } }, "subscription.authenticated", `evt-${existingStatus}`), {
+          webhookSecret: razorpaySecret, createStore: () => store, scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {},
+        });
+        assertEqual(response.status, 200, `${existingStatus} event is acknowledged`);
+        assert(!calls.some((call) => call.startsWith("subscription:")), `${existingStatus} state is preserved`);
+      }
+    });
+
+    await test("payment.failed is recorded and never activates a subscription", async () => {
+      const { calls, store } = makeWebhookStore();
+      const response = await handleRazorpayWebhook(makeSignedWebhook({
+        subscription: { entity: { id: "sub-1" } },
+        payment: { entity: { id: "pay-failed", subscription_id: "sub-1", amount: 1000, currency: "INR", error_code: "BAD", error_reason: "Declined" } },
+      }, "payment.failed", "evt-failed"), {
+        webhookSecret: razorpaySecret, createStore: () => store, scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {},
+      });
+      assertEqual(response.status, 200, "Failed payment event is acknowledged after recording");
+      assert(calls.includes("payment-failure"), "Failure is recorded");
+      assert(!calls.some((call) => call.startsWith("subscription:")), "Failure never activates a subscription");
+    });
+
+    await test("Receipt retry is capped at three and times out each invoice fetch", async () => {
+      let fetchCount = 0;
+      const retry = createReceiptRetryTask(Array.from({ length: 5 }, (_, index) => ({ razorpay_payment_id: `pay-${index}`, razorpay_invoice_id: `inv-${index}`, receipt_url: null })), {
+        fetchInvoice: async () => { fetchCount += 1; return new Promise(() => {}); }, saveReceiptUrl: async () => {}, timeoutMs: 2,
+      });
+      await retry();
+      assertEqual(fetchCount, 3, "At most three recent invoices are retried");
     });
 
     // Summary

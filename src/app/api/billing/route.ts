@@ -1,5 +1,8 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { getRazorpayClient } from "@/lib/razorpay";
+import { createReceiptRetryTask } from "@/lib/razorpay-receipts";
 import { logServerError } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
@@ -35,7 +38,22 @@ export async function GET() {
       return entry;
     });
 
-    return NextResponse.json({ current, subscriptions: displaySubscriptions, payments: paymentsResult.data || [], tier }, { headers: { "Cache-Control": "no-store" } });
+    const payments = paymentsResult.data || [];
+    const response = NextResponse.json({ current, subscriptions: displaySubscriptions, payments, tier }, { headers: { "Cache-Control": "no-store" } });
+    const missingReceipts = payments.filter((payment) => !payment.receipt_url && payment.razorpay_invoice_id).slice(0, 3);
+    if (missingReceipts.length) {
+      after(createReceiptRetryTask(missingReceipts, {
+        fetchInvoice: (invoiceId) => getRazorpayClient().invoices.fetch(invoiceId),
+        saveReceiptUrl: async (paymentId, receiptUrl) => {
+          const admin = createSupabaseAdminClient();
+          const { error } = await admin.from("billing_payments").update({ receipt_url: receiptUrl })
+            .eq("razorpay_payment_id", paymentId).eq("user_id", user.id).is("receipt_url", null);
+          if (error) throw new Error("Payment receipt link could not be saved.");
+        },
+        timeoutMs: 2_000,
+      }));
+    }
+    return response;
   } catch (error) {
     logServerError({ operation: "billing.profile.query", route: "/api/billing" }, error);
     return NextResponse.json({ error: "Billing records could not be loaded." }, { status: 503 });
