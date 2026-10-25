@@ -398,14 +398,45 @@ export class AIService {
       collections
     );
     const intent = SearchService.parseQueryIntent(assistantQuery);
-    const searchResults = rankedResults.filter((result) => SearchService.hasGroundedTopicMatch(result.item, intent));
+    const metadataOnlyQuery = intent.cleanKeywords.length === 0 && (!!intent.platform || !!intent.contentType || !!intent.isFavorite);
+    let searchResults = metadataOnlyQuery
+      ? SearchService.search(activeItems, {
+          query: "",
+          collectionId,
+          platform: intent.platform || "all",
+          contentType: intent.contentType || "all",
+          favoriteOnly: !!intent.isFavorite,
+          sortBy: intent.isOldest ? "oldest" : "newest",
+        }, collections)
+        .slice(0, 4)
+        .map((result) => ({ ...result, score: 55 }))
+      : rankedResults.filter((result) => SearchService.hasGroundedTopicMatch(result.item, intent));
+    let isClosestMatch = false;
+    let fallbackKind: "closest" | "metadata" | "recent" | null = null;
 
-    // 2. Strict Thresholding: if nothing matches, return clear honest response
+    // Keep a useful, explicitly low-confidence path for vague or unmatched queries.
+    // SearchService.search with an empty query still applies platform, type, and collection filters.
+    if (searchResults.length === 0 && activeItems.length > 0) {
+      const fuzzyClosest = SearchService.searchClosestAssistantMatches(activeItems, assistantQuery, collectionId, collections);
+      const fallbackItems = fuzzyClosest.length ? fuzzyClosest : SearchService.search(activeItems, {
+        query: "",
+        collectionId,
+        platform: intent.platform || "all",
+        contentType: intent.contentType || "all",
+        favoriteOnly: !!intent.isFavorite,
+        sortBy: intent.isOldest ? "oldest" : "newest",
+      }, collections).slice(0, 3);
+      searchResults = fallbackItems.map((result) => ({ ...result, score: 1 }));
+      isClosestMatch = fallbackItems.length > 0;
+      fallbackKind = fuzzyClosest.length ? "closest" : (intent.platform || intent.contentType || intent.isFavorite) ? "metadata" : "recent";
+    }
+
+    // 2. A truly empty library or impossible structured filter remains an honest empty result.
     if (searchResults.length === 0) {
       return {
         id: `ai-ans-${Date.now()}`,
         query,
-        answer: "I couldn't find anything relevant in your saved library.",
+        answer: "I couldn't find anything relevant in your saved library, and there are no close items in this search scope.",
         keyInsights: [],
         referencedItems: [],
         confidence: 0,
@@ -428,7 +459,7 @@ export class AIService {
       .slice(0, 8);
     let generated: GroundedAssistantResult | null = null;
     let providerNotice: string | undefined;
-    if (typeof window !== "undefined" && allowExternalSynthesis && !(followUp && previousQuestion)) {
+    if (typeof window !== "undefined" && allowExternalSynthesis && !isClosestMatch && !(followUp && previousQuestion)) {
       try {
         const response = await fetch("/api/ai/assistant-answer", {
           method: "POST",
@@ -447,17 +478,21 @@ export class AIService {
     const modelReferences = generated?.relevantItemIds
       ?.map((id) => candidateResults.find((result) => result.item.id === id)?.item)
       .filter((item): item is SavedItem => !!item) || [];
-    const localReferences = searchResults
-      .filter((result) => result.score >= minScoreCutoff && SearchService.hasGroundedTopicMatch(result.item, queryIntent))
-      .slice(0, 4)
-      .map((result) => result.item);
+    const localReferences = isClosestMatch
+      ? searchResults.slice(0, 3).map((result) => result.item)
+      : metadataOnlyQuery
+        ? searchResults.map((result) => result.item)
+      : searchResults
+        .filter((result) => result.score >= minScoreCutoff && SearchService.hasGroundedTopicMatch(result.item, queryIntent))
+        .slice(0, 4)
+        .map((result) => result.item);
     const referencedItems = generated ? modelReferences : localReferences;
 
     if (referencedItems.length === 0) {
       return {
         id: `ai-ans-${Date.now()}`,
         query,
-        answer: "I couldn't find anything relevant in your saved library.",
+        answer: "I couldn't find anything relevant in your saved library, and there are no close items in this search scope.",
         keyInsights: [],
         referencedItems: [],
         confidence: 0,
@@ -470,9 +505,30 @@ export class AIService {
       };
     }
 
+    const collectionLabel = (item: SavedItem): string => {
+      const ids = item.collections?.length ? item.collections : item.collectionId ? [item.collectionId] : [];
+      const names = ids.map((id) => collections.find((collection) => collection.id === id)?.name).filter((name): name is string => !!name);
+      return names.length ? names.join(", ") : "Unfiled";
+    };
+    const transcriptPending = (item: SavedItem): boolean => {
+      const status = String(item.metadata?.aiProcessingStatus || "").toUpperCase();
+      return status !== "" && !["COMPLETED", "READY", "SUCCEEDED"].includes(status);
+    };
+    const citation = (item: SavedItem): string => `${item.title} (${item.platform.toUpperCase()}, ${collectionLabel(item)}, ${item.url || "link unavailable"})`;
+
     // 4. Prefer evidence-validated model prose, otherwise use saved source fields only.
     let answer = "";
-    if (generated?.answer && modelReferences.length) {
+    if (isClosestMatch) {
+      const fallbackDescription = fallbackKind === "closest"
+        ? "the closest saved items I found"
+        : fallbackKind === "metadata"
+          ? "saved items matching your platform or content-type filters"
+          : "a few recent items from your current search scope";
+      answer = `I couldn't confirm a strong text match for “${query}”. Here are ${fallbackDescription}:\n\n`;
+      referencedItems.forEach((item, index) => {
+        answer += `${index + 1}. ${citation(item)}${transcriptPending(item) ? " (transcript pending)" : ""}\n`;
+      });
+    } else if (generated?.answer && modelReferences.length) {
       answer = generated.answer;
       const limitedSources = modelReferences.filter((item) => item.isLimited || item.contentStatus === "METADATA_ONLY" || item.contentStatus === "INSUFFICIENT_CONTENT");
       if (limitedSources.length) {
@@ -485,7 +541,8 @@ export class AIService {
         SearchService.textMatchesQuery(line, { ...queryIntent, cleanKeywords: [keyword] })
       ));
       const sourceExcerpt = (supportedLines.length ? supportedLines : sourceLines).slice(0, 2).join("\n");
-      answer = `I found a saved item that matches ${queryIntent.cleanKeywords.join(", ") || "your search"}:\n\n${item.title} (${item.platform.toUpperCase()}) [Source: ${item.title}].`;
+      answer = `I found a saved item that matches ${queryIntent.cleanKeywords.join(", ") || "your search"}:\n\n${citation(item)} [Source: ${item.title}].`;
+      if (transcriptPending(item)) answer += " Transcript pending.";
       if (sourceExcerpt) {
         answer += `\n\n“${sourceExcerpt}” [Source: ${item.title}]`;
       } else {
@@ -500,7 +557,7 @@ export class AIService {
     } else {
       answer = `I found ${referencedItems.length} saved resources that match ${queryIntent.cleanKeywords.join(", ") || "your search"}:\n\n`;
       referencedItems.forEach((item, index) => {
-        answer += `${index + 1}. ${item.title} (${item.platform.toUpperCase()}) [Source: ${item.title}]\n`;
+        answer += `${index + 1}. ${citation(item)} [Source: ${item.title}]${transcriptPending(item) ? " (transcript pending)" : ""}\n`;
         const sourceLines = SearchService.getGroundedSources(item);
         answer += sourceLines.length ? `“${sourceLines.slice(0, 2).join("\n")}” [Source: ${item.title}]\n\n` : `No readable source text is available for this item yet. [Source: ${item.title}]\n\n`;
         if (item.isLimited || item.contentStatus === "METADATA_ONLY" || item.contentStatus === "INSUFFICIENT_CONTENT") {
@@ -544,7 +601,7 @@ export class AIService {
       suggestedFollowUps.push("Which of these bookmarks are marked as favorites?");
     }
 
-    const confidence = generated?.confidence ?? Math.min(0.78, Math.max(0.35, topScore / 150));
+    const confidence = generated?.confidence ?? (isClosestMatch ? 0.18 : Math.min(0.78, Math.max(0.35, topScore / 150)));
 
     return {
       id: `ai-ans-${Date.now()}`,

@@ -26,6 +26,8 @@ const STOP_WORDS = new Set([
   "that", "the", "their", "them", "then", "there", "these", "they", "thing",
   "things", "this", "those", "through", "to", "too", "under", "until", "up",
   "very", "was", "we", "were", "what", "when", "where", "which", "while",
+  "kind", "kinds", "existing", "exist", "exists", "collection", "collections", "deleted", "delete", "removed", "trash", "trashed",
+  "kya", "kiya", "hain", "hai", "tha", "the", "mein", "mere", "meri", "mera", "apne", "apni", "apna",
   "who", "whom", "why", "will", "with", "would", "you", "your"
 ]);
 
@@ -78,6 +80,13 @@ export class SearchService {
   /** Removes conversational framing only for assistant requests, leaving general search behavior unchanged. */
   static cleanAssistantQuery(query: string): string {
     return query
+      // Basic Hinglish normalization for common library-search phrasing.
+      .replace(/\b(kya)\b/gi, "what")
+      .replace(/\b(mere|meri|mera|apne|apni|apna)\b/gi, "my")
+      .replace(/\b(maine|humne)\b/gi, "saved")
+      .replace(/\b(dikhao|dikhaiye|batao|bataye)\b/gi, "show")
+      .replace(/\b(ke baare mein|ke bare mein|baare mein|bare mein)\b/gi, "about")
+      .replace(/\b(par|ke|ki|ka)\b/gi, "about")
       .replace(/\b(?:in|from|across|within)\s+(?:(?:my|the)\s+)?keeper(?:\s+project)?\b/gi, " ")
       .replace(/\b(?:in|from|across|within)\s+(?:my|the)\s+collections?\b/gi, " ")
       .replace(/\b(?:something|anything|related|finding|searching|looking|im)\b/gi, " ")
@@ -126,6 +135,70 @@ export class SearchService {
     return this.textMatchesQuery(this.getGroundedText(item), intent);
   }
 
+  /** Finds low-confidence title/metadata candidates for assistant fallback, including one-character typos. */
+  static searchClosestAssistantMatches(
+    items: SavedItem[],
+    query: string,
+    collectionId = "all",
+    collections: Collection[] = []
+  ): SearchResult[] {
+    const intent = this.parseQueryIntent(this.cleanAssistantQuery(query));
+    if (intent.cleanKeywords.length === 0) return [];
+    const collectionNames = new Map(collections.map((collection) => [collection.id, collection.name.toLocaleLowerCase()]));
+    const isOneEditAway = (left: string, right: string): boolean => {
+      if (Math.abs(left.length - right.length) > 1 || left.length < 5 || right.length < 5) return false;
+      let i = 0;
+      let j = 0;
+      let edits = 0;
+      while (i < left.length && j < right.length) {
+        if (left[i] === right[j]) {
+          i++;
+          j++;
+          continue;
+        }
+        edits++;
+        if (edits > 1) return false;
+        if (left.length >= right.length) i++;
+        if (right.length >= left.length) j++;
+      }
+      return edits + Number(i < left.length || j < right.length) <= 1;
+    };
+
+    return items
+      .filter((item) => !item.trashed && !item.archived)
+      .filter((item) => collectionId === "all" || item.collectionId === collectionId || item.collections?.includes(collectionId))
+      .map((item) => {
+        const title = item.title.toLocaleLowerCase();
+        const evidence = [
+          title,
+          item.description.toLocaleLowerCase(),
+          item.personalNotes.toLocaleLowerCase(),
+          item.tags.join(" ").toLocaleLowerCase(),
+          item.topics.join(" ").toLocaleLowerCase(),
+          collectionNames.get(item.collectionId || "") || "",
+        ];
+        let score = 0;
+        const matchedFields: string[] = [];
+        for (const keyword of intent.cleanKeywords) {
+          const exactIndex = evidence.findIndex((value) => matchTokenInText(value, keyword));
+          if (exactIndex >= 0) {
+            score += exactIndex === 0 ? 3 : 2;
+            if (!matchedFields.includes(exactIndex === 0 ? "title" : "metadata")) matchedFields.push(exactIndex === 0 ? "title" : "metadata");
+            continue;
+          }
+          if (keyword.length >= 5 && evidence.some((value) => value.split(/[^\p{L}\p{N}]+/u).some((token) => isOneEditAway(keyword, token)))) {
+            score += 1;
+            if (!matchedFields.includes("fuzzy")) matchedFields.push("fuzzy");
+          }
+        }
+        return { item, score, matchedFields };
+      })
+      .filter((result) => result.score > 0)
+      .sort((a, b) => b.score - a.score || new Date(b.item.savedDate).getTime() - new Date(a.item.savedDate).getTime())
+      .slice(0, 3)
+      .map((result) => ({ ...result, matchedFields: [...result.matchedFields, "closest match"] }));
+  }
+
   static textMatchesQuery(sourceText: string, intent: ParsedQueryIntent): boolean {
     if (intent.cleanKeywords.length === 0) return true;
     const text = sourceText.toLocaleLowerCase();
@@ -146,9 +219,11 @@ export class SearchService {
       return [...(SYNONYMS[keyword] || []), ...(assistantSynonyms[keyword] || [])].some(matchTerm);
     };
     const keywordMatches = intent.cleanKeywords.map(matchesKeyword);
-    // Multi-word topics require every query concept to have evidence. A hit on "AI" alone
-    // must not make an unrelated game, meme, or creator handle an "AI agents" result.
-    return keywordMatches.length <= 1 ? keywordMatches.some(Boolean) : keywordMatches.every(Boolean);
+    // Keep short concept queries strict. Longer natural-language queries can omit a phrase.
+    const requiredMatches = keywordMatches.length <= 2
+      ? keywordMatches.length
+      : Math.ceil(keywordMatches.length * 0.6);
+    return keywordMatches.filter(Boolean).length >= requiredMatches;
   }
 
   /**

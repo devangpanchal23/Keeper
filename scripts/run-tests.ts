@@ -3286,8 +3286,9 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       assert(!scopedAnswer.answer.includes("Processing"), "Placeholder processing text is never presented as an answer");
 
       const noMatch = await AIService.queryAssistant("what is spiritual reels in my keeper project?", [commerce], [collectionA, collectionB]);
-      assertEqual(noMatch.referencedItems.length, 0, "No relevant topical match produces no citations");
-      assert(noMatch.answer.includes("couldn't find anything relevant"), "Assistant admits when the library has no relevant item");
+      assertEqual(noMatch.referencedItems.length, 1, "A weak topical match shows a closest item instead of a flat miss");
+      assert(noMatch.answer.includes("matching your platform or content-type filters"), "Assistant labels filter-based suggestions clearly");
+      assert(noMatch.confidence < 0.3, "Closest matches carry low confidence");
     });
 
     await test("AI assistant matches invoice making phrasing to a reel without accepting unrelated reels", async () => {
@@ -3307,6 +3308,92 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       assertEqual(answer.referencedItems.map((item) => item.id).join(","), invoiceReel.id, "Invoice and making match the saved reel while the reel format word is treated as a filter");
       assert(answer.answer.includes("How to make professional invoice"), "The answer uses the exact saved detail that matched");
       assert(answer.answer.includes("can't confirm the full invoice-making steps yet"), "Limited source access is stated instead of inventing full instructions");
+    });
+
+    await test("AI assistant Phase A 24-case search evaluation", async () => {
+      const collectionVlogs: Collection = { id: "col-vlogs", name: "Vlogs", color: "#000000", icon: "Folder", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      const collectionIdeas: Collection = { id: "col-ideas", name: "Ideas", color: "#000000", icon: "Folder", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      const makeItem = (id: string, title: string, platform: SavedItem["platform"], contentType: SavedItem["contentType"], description = "", extras: Partial<SavedItem> = {}): SavedItem => ({
+        id, title, url: `https://example.com/${id}`, thumbnail: "", platform, contentType, creator: { name: "Creator" },
+        description, savedDate: new Date().toISOString(), collectionId: collectionVlogs.id, collections: [collectionVlogs.id],
+        tags: [], favorite: false, archived: false, trashed: false, aiSummary: { quick: "", standard: "", detailed: "" },
+        keyPoints: [], topics: [], personalNotes: "", metadata: {}, ...extras,
+      });
+      const vlog = makeItem("sunny-vlog", "2no Partner Ki Lagi Class 😡 || Sunny Bhavsar Vlogs", "youtube", "video", "", {
+        isLimited: true, metadata: { aiProcessingStatus: "PENDING" },
+      });
+      const secondVlog = makeItem("weekend-vlog", "Weekend Vlog with family", "youtube", "video", "A family vlog from a weekend trip.");
+      const uiReel = makeItem("ui-reel", "UI design breakdown for mobile apps", "instagram", "reel", "A breakdown of interface design.");
+      const reactVideo = makeItem("react-video", "React performance optimization guide", "youtube", "video", "Profiling and speed improvements for React.");
+      const agentsVideo = makeItem("agents-video", "Building AI agents with LangGraph", "youtube", "video", "A tutorial about autonomous AI agents and tool use.");
+      const cookingItem = makeItem("cooking-item", "Cooking a quick high-protein dinner recipe", "youtube", "video", "A quick meal recipe.");
+      const paymentItem = makeItem("payment-item", "Payment gateways setup guide", "youtube", "video", "Compare payment gateway integrations.");
+      const recentItem = makeItem("recent-robotics", "Robotics notes from today", "website", "article", "New robotics notes.");
+      const editedItem = makeItem("edited-item", "Newly edited robotics notes", "website", "article", "Updated robotics notes.", { personalNotes: "robotics notes" });
+      const movedItem = makeItem("moved-vlog", "Vlog about moving apartments", "youtube", "video", "Moving vlog.", {
+        collectionId: collectionIdeas.id, collections: [collectionIdeas.id],
+      });
+      const deletedItem = makeItem("deleted-vlog", "Deleted Vlog", "youtube", "video", "", { trashed: true });
+      const completedItem = makeItem("completed-transcript", "Cooking tips", "youtube", "video", "", {
+        metadata: { aiProcessingStatus: "COMPLETED", transcript: "Transcript: how to make a quick dinner recipe." },
+      });
+      const bulkA = makeItem("bulk-a", "Bulk Import Family Vlog One", "youtube", "video");
+      const bulkB = makeItem("bulk-b", "Bulk Import Travel Vlog Two", "youtube", "video");
+      const unrelated = makeItem("unrelated", "Productivity notes for teams", "website", "article");
+      const items = [vlog, secondVlog, uiReel, reactVideo, agentsVideo, cookingItem, paymentItem, recentItem, editedItem, movedItem, deletedItem, completedItem, bulkA, bulkB, unrelated];
+      const cases: Array<{ name: string; query: string; ids?: string[]; scope?: string; mode?: "closest" | "recent" | "empty"; answerIncludes?: string }> = [
+        { name: "1 failing vague vlog query", query: "any kind of vlog video are existing in all collections", ids: [vlog.id], answerIncludes: "transcript pending" },
+        { name: "2 list all vlog videos", query: "show all vlog videos", ids: [vlog.id, secondVlog.id] },
+        { name: "3 plural title match", query: "vlogs", ids: [vlog.id, secondVlog.id] },
+        { name: "4 YouTube video metadata filter", query: "YouTube videos", ids: [vlog.id, secondVlog.id] },
+        { name: "5 Instagram reel metadata filter", query: "Instagram reels", ids: [uiReel.id] },
+        { name: "6 UI design topic", query: "any reels about UI design", ids: [uiReel.id] },
+        { name: "7 React performance topic", query: "React performance videos", ids: [reactVideo.id] },
+        { name: "8 Hinglish AI agents query", query: "AI agents par maine kya save kiya?", ids: [agentsVideo.id] },
+        { name: "9 Hinglish vlog listing", query: "mere saved vlog videos dikhao", ids: [vlog.id, secondVlog.id] },
+        { name: "10 recent cooking query", query: "recently saved cooking", ids: [cookingItem.id] },
+        { name: "11 payment gateways topic", query: "payment gateways ke baare mein", ids: [paymentItem.id] },
+        { name: "12 selected collection filter", query: "show all videos", scope: collectionIdeas.id, ids: [movedItem.id] },
+        { name: "13 empty library", query: "show videos", mode: "empty" },
+        { name: "14 no text overlap gets honest recent suggestions", query: "quantum astrophysics", mode: "recent" },
+        { name: "15 newly added item is searchable", query: "robotics notes", ids: [recentItem.id, editedItem.id] },
+        { name: "16 edited title and note are searchable", query: "edited robotics notes", ids: [editedItem.id] },
+        { name: "17 moved item follows its collection", query: "moving vlog", scope: collectionIdeas.id, ids: [movedItem.id] },
+        { name: "18 trashed item is not surfaced", query: "deleted vlog", ids: [vlog.id, secondVlog.id] },
+        { name: "19 Processing item matches title with pending label", query: "Sunny Bhavsar vlog", ids: [vlog.id], answerIncludes: "transcript pending" },
+        { name: "20 completed transcript is searchable", query: "quick dinner recipe", ids: [completedItem.id] },
+        { name: "21 bulk imported items are searchable", query: "bulk import vlog", ids: [bulkA.id, bulkB.id] },
+        { name: "22 search sees only supplied workspace items", query: "Sunny Bhavsar vlog", ids: [vlog.id] },
+        { name: "23 impossible collection scope returns empty", query: "show all videos", scope: "missing-collection", mode: "empty" },
+        { name: "24 typo gets fuzzy closest match", query: "vlogg", ids: [vlog.id], mode: "closest" },
+      ];
+
+      for (const entry of cases) {
+        await test(`Phase A case ${entry.name}`, async () => {
+          const scopedItems = entry.name.includes("empty library") ? [] : items;
+          const answer = await AIService.queryAssistant(entry.query, scopedItems, [collectionVlogs, collectionIdeas], entry.scope || "all");
+          if (entry.mode === "empty") {
+            assertEqual(answer.referencedItems.length, 0, "Empty data or impossible scope has no citations");
+          } else if (entry.mode === "closest") {
+            assert(answer.referencedItems.length > 0, "Weak queries show nearby saved items");
+            assert(answer.answer.includes("closest saved items"), "Weak matches are clearly labeled");
+            assert(answer.confidence < 0.3, "Weak matches have low confidence");
+            for (const expectedId of entry.ids || []) assert(answer.referencedItems.some((item) => item.id === expectedId), `Expected closest citation ${expectedId}`);
+          } else if (entry.mode === "recent") {
+            assert(answer.referencedItems.length > 0, "A no-overlap query gives a small fallback list");
+            assert(answer.answer.includes("recent items"), "No-overlap results are labeled as recent suggestions, not relevant hits");
+            assert(answer.confidence < 0.3, "Fallback suggestions have low confidence");
+          } else {
+            const actualIds = answer.referencedItems.map((item) => item.id);
+            for (const expectedId of entry.ids || []) assert(actualIds.includes(expectedId), `Expected citation ${expectedId}`);
+            if (entry.name.includes("selected collection") || entry.name.includes("moved item")) {
+              assert(actualIds.every((id) => id === movedItem.id), "Collection scope excludes other items");
+            }
+            if (entry.name.includes("trashed")) assert(!actualIds.includes(deletedItem.id), "Trashed content is excluded");
+          }
+          if (entry.answerIncludes) assert(answer.answer.toLowerCase().includes(entry.answerIncludes), `Answer includes ${entry.answerIncludes}`);
+        });
+      }
     });
 
     await test("AI agents retrieval rejects short-token and one-concept false positives", async () => {
