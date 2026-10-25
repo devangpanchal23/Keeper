@@ -3311,11 +3311,16 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
     });
 
     await test("AI assistant Phase A 24-case search evaluation", async () => {
-      const collectionVlogs: Collection = { id: "col-vlogs", name: "Vlogs", color: "#000000", icon: "Folder", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-      const collectionIdeas: Collection = { id: "col-ideas", name: "Ideas", color: "#000000", icon: "Folder", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      const baseNow = Date.now();
+      const dayMs = 24 * 60 * 60 * 1000;
+      const daysAgo = (days: number) => new Date(baseNow - days * dayMs).toISOString();
+      const defaultSavedDate = daysAgo(30);
+      const fixtureTimestamp = new Date(baseNow).toISOString();
+      const collectionVlogs: Collection = { id: "col-vlogs", name: "Vlogs", color: "#000000", icon: "Folder", createdAt: fixtureTimestamp, updatedAt: fixtureTimestamp };
+      const collectionIdeas: Collection = { id: "col-ideas", name: "Ideas", color: "#000000", icon: "Folder", createdAt: fixtureTimestamp, updatedAt: fixtureTimestamp };
       const makeItem = (id: string, title: string, platform: SavedItem["platform"], contentType: SavedItem["contentType"], description = "", extras: Partial<SavedItem> = {}): SavedItem => ({
         id, title, url: `https://example.com/${id}`, thumbnail: "", platform, contentType, creator: { name: "Creator" },
-        description, savedDate: new Date().toISOString(), collectionId: collectionVlogs.id, collections: [collectionVlogs.id],
+        description, savedDate: defaultSavedDate, collectionId: collectionVlogs.id, collections: [collectionVlogs.id],
         tags: [], favorite: false, archived: false, trashed: false, aiSummary: { quick: "", standard: "", detailed: "" },
         keyPoints: [], topics: [], personalNotes: "", metadata: {}, ...extras,
       });
@@ -3326,7 +3331,9 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       const uiReel = makeItem("ui-reel", "UI design breakdown for mobile apps", "instagram", "reel", "A breakdown of interface design.");
       const reactVideo = makeItem("react-video", "React performance optimization guide", "youtube", "video", "Profiling and speed improvements for React.");
       const agentsVideo = makeItem("agents-video", "Building AI agents with LangGraph", "youtube", "video", "A tutorial about autonomous AI agents and tool use.");
-      const cookingItem = makeItem("cooking-item", "Cooking a quick high-protein dinner recipe", "youtube", "video", "A quick meal recipe.");
+      const cookingItem = makeItem("cooking-item", "Cooking a quick high-protein dinner recipe", "youtube", "video", "A quick meal recipe.", {
+        savedDate: daysAgo(1),
+      });
       const paymentItem = makeItem("payment-item", "Payment gateways setup guide", "youtube", "video", "Compare payment gateway integrations.");
       const recentItem = makeItem("recent-robotics", "Robotics notes from today", "website", "article", "New robotics notes.");
       const editedItem = makeItem("edited-item", "Newly edited robotics notes", "website", "article", "Updated robotics notes.", { personalNotes: "robotics notes" });
@@ -3339,7 +3346,9 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       });
       const bulkA = makeItem("bulk-a", "Bulk Import Family Vlog One", "youtube", "video");
       const bulkB = makeItem("bulk-b", "Bulk Import Travel Vlog Two", "youtube", "video");
-      const unrelated = makeItem("unrelated", "Productivity notes for teams", "website", "article");
+      const unrelated = makeItem("unrelated", "Productivity notes for teams", "website", "article", "", {
+        savedDate: daysAgo(2),
+      });
       const items = [vlog, secondVlog, uiReel, reactVideo, agentsVideo, cookingItem, paymentItem, recentItem, editedItem, movedItem, deletedItem, completedItem, bulkA, bulkB, unrelated];
       const cases: Array<{ name: string; query: string; ids?: string[]; scope?: string; mode?: "closest" | "recent" | "empty"; answerIncludes?: string }> = [
         { name: "1 failing vague vlog query", query: "any kind of vlog video are existing in all collections", ids: [vlog.id], answerIncludes: "transcript pending" },
@@ -4180,7 +4189,17 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
 
         await ImportJobService.processJob(job.id);
 
-        assertEqual(job.successCount, 20, "All 20/20 items must be successfully imported");
+        assertEqual(
+          job.successCount,
+          20,
+          `All 20/20 items must be successfully imported. Job status: ${job.status}; failedCount: ${job.failedCount}; failed items: ${JSON.stringify(
+            job.items.filter((item) => item.status === "failed").map((item) => ({
+              id: item.id,
+              url: item.originalUrl,
+              error: item.error,
+            }))
+          )}`
+        );
         assertEqual(job.failedCount, 0, "There must be 0 failed imports");
 
         const saved = ContentService.getAll(testUser);
