@@ -89,6 +89,7 @@ import { createHmac } from "node:crypto";
 import { handleRazorpayWebhook, type RazorpayWebhookStore } from "../src/lib/razorpay-webhook-handler";
 import { verifyRazorpaySubscriptionSignature, verifyRazorpayWebhookSignature } from "../src/lib/razorpay-signatures";
 import { createReceiptRetryTask } from "../src/lib/razorpay-receipts";
+import { POST as checkoutPost } from "../src/app/api/billing/checkout/route";
 
 interface TestResult {
   name: string;
@@ -6252,17 +6253,18 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
     const webhookSignature = (raw: string) => createHmac("sha256", razorpaySecret).update(raw).digest("hex");
     const makeWebhookStore = (status = "authenticated") => {
       const calls: string[] = [];
+      const capturedPayments: Record<string, unknown>[] = [];
       let eventProcessed = false;
       const store: RazorpayWebhookStore = {
         async claimEvent() { calls.push("claim"); return eventProcessed ? "processed" : "claimed"; },
         async markEventProcessed() { calls.push("processed"); eventProcessed = true; },
         async findSubscription() { calls.push("find-subscription"); return { id: "local-sub-1", user_id: "user-1", plan: "pro", billing_cycle: "monthly", amount: 1000, currency: "INR", status }; },
         async updateSubscription(_id, values) { calls.push(`subscription:${String(values.status)}`); },
-        async upsertCapturedPayment() { calls.push("payment-upsert"); },
+        async upsertCapturedPayment(values) { calls.push("payment-upsert"); capturedPayments.push(values); },
         async recordPaymentFailure() { calls.push("payment-failure"); },
         async updateReceiptUrl() { calls.push("receipt-update"); },
       };
-      return { calls, store };
+      return { calls, capturedPayments, store };
     };
     const makeSignedWebhook = (payload: Record<string, unknown>, event = "subscription.activated", eventId = "evt-1") => {
       const raw = JSON.stringify({ event, payload });
@@ -6272,6 +6274,84 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         body: raw,
       });
     };
+
+    const checkoutNow = Date.parse("2026-10-25T10:00:00.000Z");
+    const checkoutRow = (overrides: Record<string, unknown> = {}) => ({
+      id: "local-sub-1",
+      status: "created",
+      current_period_end: null,
+      trial_ends_at: null,
+      cancel_at_cycle_end: false,
+      created_at: new Date(checkoutNow - 60 * 60 * 1000).toISOString(),
+      updated_at: null,
+      ...overrides,
+    });
+    const checkoutReason = (rows: ReturnType<typeof checkoutRow>[]) => checkoutPost.getCheckoutBlockDecisionForTests(rows, checkoutNow).reason;
+
+    await test("Checkout guard blocks a trial using trial_ends_at when current_period_end is missing", () => {
+      assertEqual(checkoutReason([checkoutRow({ status: "trialing", trial_ends_at: new Date(checkoutNow + 86400000).toISOString() })]), "active_or_trial", "Trial period blocks another checkout");
+    });
+
+    await test("Checkout guard blocks active paid subscriptions with a future period end", () => {
+      assertEqual(checkoutReason([checkoutRow({ status: "active", current_period_end: new Date(checkoutNow + 86400000).toISOString() })]), "active_or_trial", "Active paid period blocks another checkout");
+    });
+
+    await test("Checkout guard blocks active subscriptions with unknown expiry", () => {
+      const decision = checkoutPost.getCheckoutBlockDecisionForTests([checkoutRow({ status: "active" })], checkoutNow);
+      assertEqual(decision.reason, "active_or_trial", "Unknown-expiry active subscription blocks");
+      assertEqual(decision.unknownExpiryRows[0]?.status, "active", "Active row is returned for the allowed log fields");
+    });
+
+    await test("Checkout guard always blocks a pending subscription regardless of age", () => {
+      assertEqual(checkoutReason([checkoutRow({ status: "pending", created_at: new Date(checkoutNow - 40 * 86400000).toISOString() })]), "pending", "Old pending state still blocks");
+    });
+
+    await test("Checkout guard keeps created checkout blocking limited to the 30-minute window", () => {
+      assertEqual(checkoutReason([checkoutRow({ status: "created", created_at: new Date(checkoutNow - 29 * 60000).toISOString() })]), "created_checkout", "Recent created checkout blocks");
+      assertEqual(checkoutReason([checkoutRow({ status: "created", created_at: new Date(checkoutNow - 31 * 60000).toISOString() })]), null, "Older created checkout does not block");
+    });
+
+    await test("Checkout guard blocks canceled and cancelled subscriptions while cycle-end access remains", () => {
+      for (const status of ["cancelled", "canceled"]) {
+        assertEqual(checkoutReason([checkoutRow({ status, cancel_at_cycle_end: true, current_period_end: new Date(checkoutNow + 86400000).toISOString() })]), "cancelled_with_access", `${status} paid access blocks checkout`);
+      }
+    });
+
+    await test("Checkout guard blocks authenticated rows with future expiry as an active period", () => {
+      assertEqual(checkoutReason([checkoutRow({ status: "authenticated", current_period_end: new Date(checkoutNow + 86400000).toISOString() })]), "active_or_trial", "Authenticated plan with future expiry blocks");
+    });
+
+    await test("Checkout guard blocks authenticated null-expiry rows inside the 30-minute window", () => {
+      assertEqual(checkoutReason([checkoutRow({ status: "authenticated", updated_at: new Date(checkoutNow - 29 * 60000).toISOString() })]), "recent_authenticated", "Recent updated_at blocks unknown-expiry authorization");
+      assertEqual(checkoutReason([checkoutRow({ status: "authenticated", created_at: new Date(checkoutNow - 29 * 60000).toISOString() })]), "recent_authenticated", "Recent created_at blocks unknown-expiry authorization");
+    });
+
+    await test("Checkout guard allows authenticated null-expiry rows outside the 30-minute window", () => {
+      assertEqual(checkoutReason([checkoutRow({ status: "authenticated" })]), null, "Old unknown-expiry authorization does not block");
+    });
+
+    await test("Checkout guard blocks trialing rows with unknown expiry", () => {
+      const decision = checkoutPost.getCheckoutBlockDecisionForTests([checkoutRow({ status: "trialing" })], checkoutNow);
+      assertEqual(decision.reason, "active_or_trial", "Unknown-expiry trial blocks");
+      assertEqual(decision.unknownExpiryRows[0]?.id, "local-sub-1", "Unknown-expiry row is returned for a safe log");
+    });
+
+    await test("Checkout guard allows fully expired plans and old created rows", () => {
+      assertEqual(checkoutReason([
+        checkoutRow({ status: "active", current_period_end: new Date(checkoutNow - 86400000).toISOString() }),
+        checkoutRow({ id: "old-created", status: "created" }),
+      ]), null, "Expired active plan and stale checkout allow a new checkout");
+    });
+
+    await test("Checkout guard applies reason precedence across users with two blocking rows", () => {
+      const activeTrial = checkoutRow({ id: "trial", status: "trialing", trial_ends_at: new Date(checkoutNow + 86400000).toISOString() });
+      const pending = checkoutRow({ id: "pending", status: "pending" });
+      const cancelled = checkoutRow({ id: "cancelled", status: "cancelled", cancel_at_cycle_end: true, current_period_end: new Date(checkoutNow + 86400000).toISOString() });
+      const created = checkoutRow({ id: "created", status: "created", created_at: new Date(checkoutNow - 5 * 60000).toISOString() });
+      assertEqual(checkoutReason([pending, activeTrial]), "active_or_trial", "Active/trial takes precedence over pending");
+      assertEqual(checkoutReason([cancelled, pending]), "pending", "Pending takes precedence over cancelled with access");
+      assertEqual(checkoutReason([created, cancelled]), "cancelled_with_access", "Cancelled access takes precedence over recent created checkout");
+    });
 
     await test("Razorpay webhook accepts a valid raw-body signature", async () => {
       const { calls, store } = makeWebhookStore();
@@ -6424,6 +6504,45 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       assertEqual(response.status, 200, "Failed payment event is acknowledged after recording");
       assert(calls.includes("payment-failure"), "Failure is recorded");
       assert(!calls.some((call) => call.startsWith("subscription:")), "Failure never activates a subscription");
+    });
+
+    await test("subscription.charged records the payment and schedules receipt lookup", async () => {
+      const { calls, capturedPayments, store } = makeWebhookStore("active");
+      let scheduledReceiptTask: (() => Promise<void>) | null = null;
+      const response = await handleRazorpayWebhook(makeSignedWebhook({
+        subscription: { entity: { id: "sub-1", status: "active" } },
+        payment: { entity: { id: "pay-charged", amount: 30000, currency: "INR", invoice_id: "inv-1", created_at: 1792922400 } },
+      }, "subscription.charged", "evt-charged"), {
+        webhookSecret: razorpaySecret,
+        createStore: () => store,
+        scheduleAfterResponse: (work) => { scheduledReceiptTask = work; },
+        fetchInvoice: async () => ({ short_url: "https://receipt.invalid/inv-1" }),
+        logError: () => {},
+      });
+      assertEqual(response.status, 200, "Charged event is acknowledged");
+      assert(calls.includes("payment-upsert"), "Captured payment upsert runs");
+      assertEqual(capturedPayments[0]?.razorpay_payment_id, "pay-charged", "Payment ID is persisted");
+      assertEqual(capturedPayments[0]?.subscription_id, "local-sub-1", "Payment links to its local subscription");
+      assert(scheduledReceiptTask !== null, "Invoice receipt lookup is scheduled after acknowledgement");
+    });
+
+    await test("subscription.halted, subscription.cancelled and subscription.completed map to their states", async () => {
+      const cases = [
+        { event: "subscription.halted", expected: "halted" },
+        { event: "subscription.cancelled", expected: "cancelled" },
+        { event: "subscription.completed", expected: "completed" },
+      ];
+      for (const [index, item] of cases.entries()) {
+        const { calls, store } = makeWebhookStore("active");
+        const response = await handleRazorpayWebhook(makeSignedWebhook({
+          subscription: { entity: { id: "sub-1", status: item.expected } },
+        }, item.event, `evt-terminal-${index}`), {
+          webhookSecret: razorpaySecret, createStore: () => store, scheduleAfterResponse: () => {},
+          fetchInvoice: async () => ({}), logError: () => {},
+        });
+        assertEqual(response.status, 200, `${item.event} is acknowledged`);
+        assert(calls.includes(`subscription:${item.expected}`), `${item.event} stores ${item.expected}`);
+      }
     });
 
     await test("Receipt retry is capped at three and times out each invoice fetch", async () => {
