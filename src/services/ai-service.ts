@@ -474,15 +474,25 @@ export class AIService {
     let answer = "";
     if (generated?.answer && modelReferences.length) {
       answer = generated.answer;
+      const limitedSources = modelReferences.filter((item) => item.isLimited || item.contentStatus === "METADATA_ONLY" || item.contentStatus === "INSUFFICIENT_CONTENT");
+      if (limitedSources.length) {
+        answer += `\n\nFull source details are not available yet for: ${limitedSources.map((item) => item.title).join(", ")}. I can't verify further steps from the saved content.`;
+      }
     } else if (referencedItems.length === 1) {
       const item = referencedItems[0];
-      const summaryText = [item.aiSummary?.standard, item.aiSummary?.quick, item.description]
-        .find((value) => SearchService.isUsableGroundedText(value));
+      const sourceLines = SearchService.getGroundedSources(item);
+      const supportedLines = sourceLines.filter((line) => queryIntent.cleanKeywords.some((keyword) =>
+        SearchService.textMatchesQuery(line, { ...queryIntent, cleanKeywords: [keyword] })
+      ));
+      const sourceExcerpt = (supportedLines.length ? supportedLines : sourceLines).slice(0, 2).join("\n");
       answer = `I found a saved item that matches ${queryIntent.cleanKeywords.join(", ") || "your search"}:\n\n${item.title} (${item.platform.toUpperCase()}) [Source: ${item.title}].`;
-      if (summaryText) {
-        answer += `\n\n${summaryText.replace(/\*\*/g, "")} [Source: ${item.title}]`;
+      if (sourceExcerpt) {
+        answer += `\n\n“${sourceExcerpt}” [Source: ${item.title}]`;
       } else {
-        answer += " No readable summary is available yet, so I can't confirm more details from this saved item.";
+        answer += " No readable source text is available yet, so I can't confirm more details from this saved item.";
+      }
+      if (item.isLimited || item.contentStatus === "METADATA_ONLY" || item.contentStatus === "INSUFFICIENT_CONTENT") {
+        answer += " The saved source has limited verified content, so I can't confirm the full invoice-making steps yet.";
       }
       if (item.personalNotes) {
         answer += `\n\nYour saved note: “${item.personalNotes}” [Source: ${item.title}]`;
@@ -490,10 +500,12 @@ export class AIService {
     } else {
       answer = `I found ${referencedItems.length} saved resources that match ${queryIntent.cleanKeywords.join(", ") || "your search"}:\n\n`;
       referencedItems.forEach((item, index) => {
-        const summarySnippet = [item.aiSummary?.quick, item.aiSummary?.standard, item.description]
-          .find((value) => SearchService.isUsableGroundedText(value));
         answer += `${index + 1}. ${item.title} (${item.platform.toUpperCase()}) [Source: ${item.title}]\n`;
-        answer += summarySnippet ? `${summarySnippet.replace(/\*\*/g, "")} [Source: ${item.title}]\n\n` : `No readable summary is available for this item yet. [Source: ${item.title}]\n\n`;
+        const sourceLines = SearchService.getGroundedSources(item);
+        answer += sourceLines.length ? `“${sourceLines.slice(0, 2).join("\n")}” [Source: ${item.title}]\n\n` : `No readable source text is available for this item yet. [Source: ${item.title}]\n\n`;
+        if (item.isLimited || item.contentStatus === "METADATA_ONLY" || item.contentStatus === "INSUFFICIENT_CONTENT") {
+          answer += `Full source details are not available yet for ${item.title}.\n\n`;
+        }
       });
       const notesWithItems = referencedItems.filter((i) => !!i.personalNotes);
       if (notesWithItems.length > 0) {

@@ -51,25 +51,24 @@ const SYNONYMS: Record<string, string[]> = {
  */
 export function matchTokenInText(text: string, token: string): boolean {
   if (!text || !token) return false;
-  if (text.includes(token)) return true;
+  const candidates = [token];
+  if (token.endsWith("ing") && token.length > 5) {
+    const stem = token.slice(0, -3);
+    candidates.push(stem);
+    if (/(.)\1$/i.test(stem)) {
+      candidates.push(stem.slice(0, -1));
+    } else {
+      candidates.push(`${stem}e`);
+    }
+  }
+  if (candidates.some((candidate) => text.includes(candidate))) return true;
 
   // Plural -> Singular check
-  if (token.endsWith("ies") && token.length > 4) {
-    const stem = token.slice(0, -3) + "y";
-    if (text.includes(stem)) return true;
-  }
-  if (token.endsWith("es") && token.length > 4) {
-    const stem = token.slice(0, -2);
-    if (text.includes(stem)) return true;
-  }
-  if (token.endsWith("s") && token.length > 3) {
-    const stem = token.slice(0, -1);
-    if (text.includes(stem)) return true;
-  }
-
-  // Singular -> Plural check
-  if (!token.endsWith("s")) {
-    if (text.includes(token + "s") || text.includes(token + "es")) return true;
+  for (const candidate of candidates) {
+    if (candidate.endsWith("ies") && candidate.length > 4 && text.includes(candidate.slice(0, -3) + "y")) return true;
+    if (candidate.endsWith("es") && candidate.length > 4 && text.includes(candidate.slice(0, -2))) return true;
+    if (candidate.endsWith("s") && candidate.length > 3 && text.includes(candidate.slice(0, -1))) return true;
+    if (!candidate.endsWith("s") && (text.includes(candidate + "s") || text.includes(candidate + "es"))) return true;
   }
 
   return false;
@@ -79,7 +78,9 @@ export class SearchService {
   /** Removes conversational framing only for assistant requests, leaving general search behavior unchanged. */
   static cleanAssistantQuery(query: string): string {
     return query
-      .replace(/\b(?:keeper|project|stores?|collections?|something|anything|related|finding|searching|looking|im)\b/gi, " ")
+      .replace(/\b(?:in|from|across|within)\s+(?:(?:my|the)\s+)?keeper(?:\s+project)?\b/gi, " ")
+      .replace(/\b(?:in|from|across|within)\s+(?:my|the)\s+collections?\b/gi, " ")
+      .replace(/\b(?:something|anything|related|finding|searching|looking|im)\b/gi, " ")
       .replace(/\s+/g, " ")
       .trim();
   }
@@ -90,8 +91,8 @@ export class SearchService {
       && !/(\bprocessing\b|keeper is extracting|verified source content unavailable|did not generate ai analysis|could not complete grounded ai processing)/i.test(value.trim());
   }
 
-  /** Returns searchable source/analysis evidence with known pending placeholders removed. */
-  static getGroundedText(item: SavedItem): string {
+  /** Returns source-authored text only, excluding generated summaries, tags, and key points. */
+  static getGroundedSources(item: SavedItem): string[] {
     const transcript = typeof item.metadata?.transcript === "string"
       ? item.metadata.transcript
       : typeof item.metadata?.transcript?.text === "string"
@@ -108,12 +109,16 @@ export class SearchService {
       item.metadata?.caption,
       typeof item.provenance?.caption?.value === "string" ? item.provenance.caption.value : "",
       representation,
-      item.aiSummary?.standard,
-      item.aiSummary?.quick,
-      item.aiSummary?.detailed,
-      ...(item.keyPoints || []),
+      typeof item.provenance?.description?.value === "string" ? item.provenance.description.value : "",
     ];
-    return fields.filter((value): value is string => this.isUsableGroundedText(value)).join("\n").slice(0, 12_000);
+    return [...new Set(fields
+      .filter((value): value is string => this.isUsableGroundedText(value))
+      .map((value) => value.trim()))];
+  }
+
+  /** Returns searchable source text with known pending placeholders removed. */
+  static getGroundedText(item: SavedItem): string {
+    return this.getGroundedSources(item).join("\n").slice(0, 12_000);
   }
 
   /** Conservative local fallback: at least one topical word or known synonym must occur in evidence text. */

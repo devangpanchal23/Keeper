@@ -3270,24 +3270,43 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       const collectionB: Collection = { id: "collection-commerce", name: "Website Ideas", color: "#000000", icon: "Folder", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
       const item = (id: string, title: string, collectionId: string, summary: string): SavedItem => ({
         id, title, url: `https://example.com/${id}`, thumbnail: "", platform: "instagram", contentType: "reel",
-        creator: { name: "Creator" }, description: "", savedDate: new Date().toISOString(), collectionId,
+        creator: { name: "Creator" }, description: summary, savedDate: new Date().toISOString(), collectionId,
         collections: [collectionId], tags: [], favorite: false, archived: false, trashed: false,
         aiSummary: { quick: summary, standard: "Processing", detailed: "Processing" }, keyPoints: [], topics: [], personalNotes: "", metadata: {},
       });
       const spiritual = item("spiritual-item", "Hanuman devotional reel", collectionA.id, "A devotional reel about prayer and spiritual practice.");
       const commerce = item("commerce-item", "Website selling tutorial", collectionB.id, "A tutorial about selling products through an online store.");
       const all = [spiritual, commerce];
-      const intent = SearchService.parseQueryIntent(SearchService.cleanAssistantQuery("what is spiritual reels stores in my keeper project?"));
+      const intent = SearchService.parseQueryIntent(SearchService.cleanAssistantQuery("what is spiritual reels in my keeper project?"));
       assertEqual(intent.cleanKeywords.join(","), "spiritual", "Collection and workspace phrasing is removed from topical keywords");
 
-      const scopedAnswer = await AIService.queryAssistant("what is spiritual reels stores in my keeper project?", all, [collectionA, collectionB], collectionA.id);
+      const scopedAnswer = await AIService.queryAssistant("what is spiritual reels in my keeper project?", all, [collectionA, collectionB], collectionA.id);
       assertEqual(scopedAnswer.referencedItems.length, 1, "Collection scope limits assistant sources");
       assertEqual(scopedAnswer.referencedItems[0].id, spiritual.id, "Correct collection source is cited");
       assert(!scopedAnswer.answer.includes("Processing"), "Placeholder processing text is never presented as an answer");
 
-      const noMatch = await AIService.queryAssistant("what is spiritual reels stores in my keeper project?", [commerce], [collectionA, collectionB]);
+      const noMatch = await AIService.queryAssistant("what is spiritual reels in my keeper project?", [commerce], [collectionA, collectionB]);
       assertEqual(noMatch.referencedItems.length, 0, "No relevant topical match produces no citations");
       assert(noMatch.answer.includes("couldn't find anything relevant"), "Assistant admits when the library has no relevant item");
+    });
+
+    await test("AI assistant matches invoice making phrasing to a reel without accepting unrelated reels", async () => {
+      const base: SavedItem = {
+        id: "", title: "", url: "https://example.com", thumbnail: "", platform: "instagram", contentType: "reel",
+        creator: { name: "Creator" }, description: "", savedDate: new Date().toISOString(), tags: [], favorite: false, archived: false, trashed: false,
+        aiSummary: { quick: "", standard: "", detailed: "" }, keyPoints: [], topics: [], personalNotes: "", metadata: {},
+      };
+      const invoiceReel: SavedItem = {
+        ...base, id: "invoice-reel", title: "How to make professional invoice", description: "How to make professional invoice",
+        metadata: { caption: "How to make professional invoice" }, isLimited: true,
+      };
+      const unrelatedReel: SavedItem = {
+        ...base, id: "branding-reel", title: "How to make professional branding", description: "How to make professional branding",
+      };
+      const answer = await AIService.queryAssistant("any reel for invoice making", [invoiceReel, unrelatedReel]);
+      assertEqual(answer.referencedItems.map((item) => item.id).join(","), invoiceReel.id, "Invoice and making match the saved reel while the reel format word is treated as a filter");
+      assert(answer.answer.includes("How to make professional invoice"), "The answer uses the exact saved detail that matched");
+      assert(answer.answer.includes("can't confirm the full invoice-making steps yet"), "Limited source access is stated instead of inventing full instructions");
     });
 
     await test("AI agents retrieval rejects short-token and one-concept false positives", async () => {
@@ -3334,7 +3353,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       assertEqual(answer.referencedItems.length, 1, "Only direct source evidence is cited for gaming");
       assertEqual(answer.referencedItems[0].id, gaming.id, "NFS multiplayer reel ranks as the gaming result");
       assert(!answer.answer.includes("PHP"), "Unrelated programming reel is excluded from the answer");
-      assert(answer.answer.includes("No readable summary is available yet"), "Missing summary is stated honestly");
+      assert(answer.answer.includes("Finally we got NFS Most Wanted multiplayer available in browser"), "The answer cites the exact saved title instead of an unavailable generated summary");
 
       const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
       const previousFetch = globalThis.fetch;
@@ -3416,7 +3435,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       process.env.GEMINI_API_KEY = "test-key-never-sent";
       process.env.CONTENT_AI_MODEL = "test-model";
       globalThis.fetch = async () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({
-        answer: `Your saved reel is about NFS Most Wanted multiplayer in a browser [source:${sourceItem.id}]`,
+        answer: `Your saved reel made 1 million dollars and features a Ferrari [source:${sourceItem.id}]`,
         relevantItemIds: [sourceItem.id, "made-up-id"],
         evidence: [{ itemId: sourceItem.id, quote: "NFS Most Wanted multiplayer is available in browser." }],
         confidence: 0.91,
@@ -3426,7 +3445,10 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         assert(!!result, "Configured assistant model returns an answer");
         assertEqual(result?.relevantItemIds.join(","), sourceItem.id, "Unknown source IDs are discarded");
         assertEqual(result?.confidence, 0.91, "Validated model confidence is returned");
-        assert(result?.answer.includes(`[Source: ${sourceItem.title}]`), "Verified model source markers render as exact saved titles");
+        assert(result?.answer.includes(`[Source: ${sourceItem.title}]`), "Verified source excerpt renders with the exact saved title");
+        assert(result?.answer.includes("NFS Most Wanted multiplayer is available in browser."), "The assistant returns the exact quote validated against the saved source");
+        assert(!result?.answer.includes("1 million dollars") && !result?.answer.includes("Ferrari"), "Unsupported model-written claims are never shown to the user");
+        assert(!SearchService.getGroundedText(sourceItem).includes("A racing game can be played in a browser."), "Generated summaries are not treated as original source evidence");
       } finally {
         globalThis.fetch = previousFetch;
         if (previousProvider === undefined) delete process.env.CONTENT_AI_PROVIDER; else process.env.CONTENT_AI_PROVIDER = previousProvider;

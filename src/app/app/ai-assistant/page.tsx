@@ -120,6 +120,7 @@ export default function AIAssistantPage() {
   const handleNewChat = () => {
     if (loading) return;
     setActiveConversationId(null);
+    setAllowExternalSynthesis(false);
     setMessages([{ id: createMessageId("welcome"), sender: "assistant", content: "New conversation started. What would you like to find in your saved library?" }]);
     setHistoryError("");
   };
@@ -149,6 +150,7 @@ export default function AIAssistantPage() {
       setConversations(remaining);
       if (activeConversationId === conversationId) {
         setActiveConversationId(null);
+        setAllowExternalSynthesis(false);
         setMessages([{ id: "msg-welcome-new", sender: "assistant", content: "Start a new conversation about your saved library." }]);
       }
       setHistoryError("");
