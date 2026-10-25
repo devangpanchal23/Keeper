@@ -50,6 +50,9 @@ import { INITIAL_COLLECTIONS } from "../src/data/seed-data";
 import { CollectionService } from "../src/services/collection-service";
 import { StorageService } from "../src/services/storage-service";
 import { SearchService } from "../src/services/search-service";
+import { AIService } from "../src/services/ai-service";
+import { AssistantAnswerService } from "../src/services/assistant-answer-service";
+import { ConversationHistoryService } from "../src/services/ai-history/conversation-history-service";
 import { InstagramExportAdapter } from "../src/services/bulk-import/adapters/instagram-export-adapter";
 import { ZipArchiveReader } from "../src/services/bulk-import/adapters/zip-archive-reader";
 import {
@@ -3260,6 +3263,176 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       assertEqual(results.length, 1, "Found reel by spoken audio transcript phrase");
       assertEqual(results[0].item.id, spokenItem.id, "Correct item retrieved");
       assert(results[0].matchedFields.includes("transcript"), "Transcript field was matched in score");
+    });
+
+    await test("AI assistant scopes multi-collection retrieval and rejects unrelated reels", async () => {
+      const collectionA: Collection = { id: "collection-spiritual", name: "Spiritual Reels", color: "#000000", icon: "Folder", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      const collectionB: Collection = { id: "collection-commerce", name: "Website Ideas", color: "#000000", icon: "Folder", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      const item = (id: string, title: string, collectionId: string, summary: string): SavedItem => ({
+        id, title, url: `https://example.com/${id}`, thumbnail: "", platform: "instagram", contentType: "reel",
+        creator: { name: "Creator" }, description: "", savedDate: new Date().toISOString(), collectionId,
+        collections: [collectionId], tags: [], favorite: false, archived: false, trashed: false,
+        aiSummary: { quick: summary, standard: "Processing", detailed: "Processing" }, keyPoints: [], topics: [], personalNotes: "", metadata: {},
+      });
+      const spiritual = item("spiritual-item", "Hanuman devotional reel", collectionA.id, "A devotional reel about prayer and spiritual practice.");
+      const commerce = item("commerce-item", "Website selling tutorial", collectionB.id, "A tutorial about selling products through an online store.");
+      const all = [spiritual, commerce];
+      const intent = SearchService.parseQueryIntent(SearchService.cleanAssistantQuery("what is spiritual reels stores in my keeper project?"));
+      assertEqual(intent.cleanKeywords.join(","), "spiritual", "Collection and workspace phrasing is removed from topical keywords");
+
+      const scopedAnswer = await AIService.queryAssistant("what is spiritual reels stores in my keeper project?", all, [collectionA, collectionB], collectionA.id);
+      assertEqual(scopedAnswer.referencedItems.length, 1, "Collection scope limits assistant sources");
+      assertEqual(scopedAnswer.referencedItems[0].id, spiritual.id, "Correct collection source is cited");
+      assert(!scopedAnswer.answer.includes("Processing"), "Placeholder processing text is never presented as an answer");
+
+      const noMatch = await AIService.queryAssistant("what is spiritual reels stores in my keeper project?", [commerce], [collectionA, collectionB]);
+      assertEqual(noMatch.referencedItems.length, 0, "No relevant topical match produces no citations");
+      assert(noMatch.answer.includes("couldn't find anything relevant"), "Assistant admits when the library has no relevant item");
+    });
+
+    await test("AI agents retrieval rejects short-token and one-concept false positives", async () => {
+      const base: SavedItem = {
+        id: "", title: "", url: "https://example.com", thumbnail: "", platform: "instagram", contentType: "reel",
+        creator: { name: "Creator" }, description: "", savedDate: new Date().toISOString(), tags: [], favorite: false, archived: false, trashed: false,
+        aiSummary: { quick: "", standard: "", detailed: "" }, keyPoints: [], topics: [], personalNotes: "", metadata: {},
+      };
+      const nfs: SavedItem = {
+        ...base, id: "nfs", title: "NFS Most Wanted multiplayer in browser", description: "A racing game with multiplayer gameplay.",
+        tags: ["AI agents", "Gaming"], topics: ["AI agents", "Gaming"],
+      };
+      const meme: SavedItem = {
+        ...base, id: "meme", title: "Did we cook?", description: "Did we cook? #claudeai #aftereffects #animation #motiongraphics.",
+        creator: { name: "Creator" },
+      };
+      const modelOnly: SavedItem = {
+        ...base, id: "ai-only", title: "New AI image model", description: "A new AI image model creates illustrations.",
+      };
+      const realAgent: SavedItem = {
+        ...base, id: "agent", title: "Building AI agents with LangGraph", description: "A tutorial about autonomous AI agents and tool use.",
+      };
+      const answer = await AIService.queryAssistant("What did I save about AI agents?", [nfs, meme, modelOnly, realAgent]);
+      assertEqual(answer.referencedItems.map((item) => item.id).join(","), realAgent.id, "Only the saved source with evidence for both AI and agents is cited");
+      assert(!answer.answer.includes("NFS") && !answer.answer.includes("Did we cook"), "Gaming and meme sources are excluded from AI-agent answers");
+
+      const intent = SearchService.parseQueryIntent(SearchService.cleanAssistantQuery("AI agents"));
+      assertEqual(SearchService.textMatchesQuery("ClaudeAI #AfterEffects", intent), false, "AI embedded in a creator handle is not treated as standalone AI-agent evidence");
+    });
+
+    await test("AI assistant gaming relevance rejects PHP livestream and answers from source evidence", async () => {
+      const gaming = {
+        id: "nfs-reel", title: "Finally we got NFS Most Wanted multiplayer available in browser", url: "https://example.com/nfs", thumbnail: "",
+        platform: "instagram", contentType: "reel", creator: { name: "Creator" }, description: "Keeper is extracting verified source content.",
+        savedDate: new Date().toISOString(), tags: ["Gaming"], favorite: false, archived: false, trashed: false,
+        aiSummary: { quick: "Keeper is extracting verified source content.", standard: "Processing", detailed: "Processing" },
+        keyPoints: [], topics: ["Gaming"], personalNotes: "", metadata: {},
+      } as SavedItem;
+      const php = {
+        ...gaming, id: "php-reel", title: "Apparently Twitch doesn't use PHP, so tune in to my livestream", url: "https://example.com/php",
+        tags: ["Gaming", "PHP"], topics: ["Programming"],
+      } as SavedItem;
+      const answer = await AIService.queryAssistant("I'm finding something related gaming", [gaming, php]);
+      assertEqual(answer.referencedItems.length, 1, "Only direct source evidence is cited for gaming");
+      assertEqual(answer.referencedItems[0].id, gaming.id, "NFS multiplayer reel ranks as the gaming result");
+      assert(!answer.answer.includes("PHP"), "Unrelated programming reel is excluded from the answer");
+      assert(answer.answer.includes("No readable summary is available yet"), "Missing summary is stated honestly");
+
+      const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+      const previousFetch = globalThis.fetch;
+      let providerCalls = 0;
+      Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
+      globalThis.fetch = async () => { providerCalls += 1; return new Response("{}", { status: 200 }); };
+      try {
+        const followUp = await AIService.queryAssistant("Tell me more about it", [gaming, php], [], "all", ["user: I'm finding something related gaming", "assistant: I found your NFS reel"]);
+        assertEqual(followUp.referencedItems.length, 1, "A follow-up uses its prior user question to retrieve the saved source");
+        assertEqual(followUp.referencedItems[0].id, gaming.id, "Follow-up remains grounded in the matching saved item");
+        assertEqual(providerCalls, 0, "Conversation history is not forwarded to the configured model provider");
+      } finally {
+        globalThis.fetch = previousFetch;
+        if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow); else Reflect.deleteProperty(globalThis, "window");
+      }
+    });
+
+    await test("AI conversation history persists turns per local user and restores the selected scope", async () => {
+      const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+      const previousStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+      const values = new Map<string, string>();
+      const storage = {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => { values.set(key, value); },
+        removeItem: (key: string) => { values.delete(key); },
+      };
+      Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
+      try {
+        const conversation = await ConversationHistoryService.create("history-user-a", "collection-games");
+        await ConversationHistoryService.append("history-user-a", conversation.id, {
+          role: "user", content: "Find my saved games", status: "complete", metadata: { collectionId: "collection-games" },
+        });
+        await ConversationHistoryService.append("history-user-a", conversation.id, {
+          role: "assistant", content: "I found one saved game.", status: "complete", metadata: { referencedItemIds: ["saved-game"] },
+        });
+        const restored = await ConversationHistoryService.messages("history-user-a", conversation.id);
+        const otherUser = await ConversationHistoryService.list("history-user-b");
+        assertEqual(restored.length, 2, "Both sides of the conversation persist");
+        assertEqual(restored[1].metadata.referencedItemIds?.[0], "saved-game", "Source IDs persist with the answer");
+        assertEqual((await ConversationHistoryService.list("history-user-a"))[0].selectedCollectionId, "collection-games", "Collection scope persists on the conversation");
+        assertEqual(otherUser.length, 0, "Local history is isolated by user ID");
+        await ConversationHistoryService.remove("history-user-a", conversation.id);
+        assertEqual((await ConversationHistoryService.list("history-user-a")).length, 0, "Conversation deletion removes its saved history");
+      } finally {
+        if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow); else Reflect.deleteProperty(globalThis, "window");
+        if (previousStorage) Object.defineProperty(globalThis, "localStorage", previousStorage); else Reflect.deleteProperty(globalThis, "localStorage");
+      }
+    });
+
+    await test("Cloud AI history schema and API enforce workspace ownership", () => {
+      const migration = fs.readFileSync(path.join(process.cwd(), "supabase/migrations/202610240001_ai_conversation_history.sql"), "utf8");
+      const conversationRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/ai/conversations/[conversationId]/route.ts"), "utf8");
+      const messageRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/ai/conversations/[conversationId]/messages/route.ts"), "utf8");
+      const assistantRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/ai/assistant-answer/route.ts"), "utf8");
+      assert(migration.includes("workspace_id = auth.uid()") && migration.includes("enable row level security"), "Both history tables are protected by workspace RLS");
+      assert(conversationRoute.includes(`eq("workspace_id", user.id)`), "Conversation mutations are scoped to the authenticated account");
+      assert(messageRoute.includes(`eq("workspace_id", user.id)`) && messageRoute.includes("input.content.length > 12_000"), "Messages are checked against the authenticated workspace; limits are enforced by the API");
+      assert(assistantRoute.includes(`ASSISTANT_EXTERNAL_SYNTHESIS_ENABLED !== "true"`)
+        && assistantRoute.includes("input.allowExternalSynthesis !== true")
+        && assistantRoute.includes(`.eq("workspace_id", user.id).in("id", requestedMediaIds)`)
+        && assistantRoute.includes(`.eq("workspace_id", user.id).eq("id", input.collectionId)`)
+        && assistantRoute.includes("memberships.includes(input.collectionId)"), "External synthesis is policy-gated and candidate rows and selected collection memberships are checked against the authenticated workspace");
+    });
+
+    await test("Assistant model output accepts only known item IDs with exact source quotes", async () => {
+      const previousFetch = globalThis.fetch;
+      const previousProvider = process.env.CONTENT_AI_PROVIDER;
+      const previousKey = process.env.GEMINI_API_KEY;
+      const previousModel = process.env.CONTENT_AI_MODEL;
+      const sourceItem = {
+        id: "grounded-game", title: "NFS Most Wanted multiplayer in browser", url: "https://example.com/game", thumbnail: "",
+        platform: "instagram", contentType: "reel", creator: { name: "Creator" }, description: "NFS Most Wanted multiplayer is available in browser.",
+        savedDate: new Date().toISOString(), tags: ["Gaming"], favorite: false, archived: false, trashed: false,
+        aiSummary: { quick: "Multiplayer racing game in browser.", standard: "A racing game can be played in a browser.", detailed: "" },
+        keyPoints: [], topics: ["Gaming"], personalNotes: "", metadata: {},
+      } as SavedItem;
+      process.env.CONTENT_AI_PROVIDER = "gemini";
+      process.env.GEMINI_API_KEY = "test-key-never-sent";
+      process.env.CONTENT_AI_MODEL = "test-model";
+      globalThis.fetch = async () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({
+        answer: `Your saved reel is about NFS Most Wanted multiplayer in a browser [source:${sourceItem.id}]`,
+        relevantItemIds: [sourceItem.id, "made-up-id"],
+        evidence: [{ itemId: sourceItem.id, quote: "NFS Most Wanted multiplayer is available in browser." }],
+        confidence: 0.91,
+      }) }] } }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      try {
+        const result = await AssistantAnswerService.generate("What did I save about gaming?", [sourceItem]);
+        assert(!!result, "Configured assistant model returns an answer");
+        assertEqual(result?.relevantItemIds.join(","), sourceItem.id, "Unknown source IDs are discarded");
+        assertEqual(result?.confidence, 0.91, "Validated model confidence is returned");
+        assert(result?.answer.includes(`[Source: ${sourceItem.title}]`), "Verified model source markers render as exact saved titles");
+      } finally {
+        globalThis.fetch = previousFetch;
+        if (previousProvider === undefined) delete process.env.CONTENT_AI_PROVIDER; else process.env.CONTENT_AI_PROVIDER = previousProvider;
+        if (previousKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = previousKey;
+        if (previousModel === undefined) delete process.env.CONTENT_AI_MODEL; else process.env.CONTENT_AI_MODEL = previousModel;
+      }
     });
 
     // ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ import { ContentService } from "./content-service";
 import { ContentAnalysisService } from "./content-analysis-service";
 import { CollectionMatchingService } from "./collection-matching-service";
 import { ContentIntelligenceService } from "./content-intelligence";
+import type { GroundedAssistantResult } from "./assistant-answer-service";
 
 export interface AIAnalysisResult {
   summary: AISummary;
@@ -29,6 +30,7 @@ export interface AssistantAnswer {
   confidence: number;
   timestamp: string;
   suggestedFollowUps: string[];
+  providerNotice?: string;
 }
 
 export class AIService {
@@ -124,7 +126,7 @@ export class AIService {
   ): Promise<AIAnalysisResult> {
     const extracted: ExtractedContent = {
       contentId: null,
-      platform: platform as any,
+      platform: platform as ExtractedContent["platform"],
       contentType: "article",
       url: "",
       canonicalUrl: "",
@@ -370,21 +372,33 @@ export class AIService {
   static async queryAssistant(
     query: string,
     allItems: SavedItem[],
-    collections: Collection[] = []
+    collections: Collection[] = [],
+    collectionId = "all",
+    conversationContext: string[] = [],
+    allowExternalSynthesis = false
   ): Promise<AssistantAnswer> {
     await new Promise((resolve) => setTimeout(resolve, 350));
+    const followUp = /\b(this|that|it|them|one|second|first|these|those|more|else|same|above|former|latter)\b/i.test(query)
+      || query.trim().split(/\s+/).length <= 3;
+    const previousQuestion = [...conversationContext.slice(-8)].reverse()
+      .find((entry) => entry.startsWith("user: "))?.slice(6) || "";
+    const retrievalQuery = followUp && previousQuestion ? `${previousQuestion} ${query}`.slice(0, 900) : query;
 
     const activeItems = allItems.filter((i) => !i.trashed && !i.archived);
 
     // 1. Search library using SearchService
-    const searchResults = SearchService.search(
+    const assistantQuery = SearchService.cleanAssistantQuery(retrievalQuery);
+    const rankedResults = SearchService.search(
       activeItems,
       {
-        query,
+        query: assistantQuery,
+        collectionId,
         sortBy: "relevance",
       },
       collections
     );
+    const intent = SearchService.parseQueryIntent(assistantQuery);
+    const searchResults = rankedResults.filter((result) => SearchService.hasGroundedTopicMatch(result.item, intent));
 
     // 2. Strict Thresholding: if nothing matches, return clear honest response
     if (searchResults.length === 0) {
@@ -404,14 +418,40 @@ export class AIService {
       };
     }
 
-    // 3. Precision Filtering: Accuracy > Quantity
+    // 3. Ask the configured server-side model to judge ambiguous candidates. If model
+    //    access is unavailable, the local evidence match below keeps results conservative.
     const topScore = searchResults[0].score;
     const minScoreCutoff = Math.max(18, topScore * 0.45);
-    const highRelevance = searchResults
-      .filter((r) => r.score >= minScoreCutoff)
-      .slice(0, 4);
+    const queryIntent = intent;
+    const candidateResults = searchResults
+      .filter((r) => r.score >= Math.max(18, topScore * 0.25))
+      .slice(0, 8);
+    let generated: GroundedAssistantResult | null = null;
+    let providerNotice: string | undefined;
+    if (typeof window !== "undefined" && allowExternalSynthesis && !(followUp && previousQuestion)) {
+      try {
+        const response = await fetch("/api/ai/assistant-answer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          signal: AbortSignal.timeout(27_000),
+          body: JSON.stringify({ query, collectionId, allowExternalSynthesis: true, items: candidateResults.map((result) => ({ metadata: { serverMediaId: result.item.metadata?.serverMediaId } })) }),
+        });
+        if (response.ok) generated = await response.json() as GroundedAssistantResult;
+        else if (response.status === 403) providerNotice = "External AI was blocked by workspace policy. This answer uses local saved-source retrieval.";
+      } catch (error) {
+        console.warn("Grounded answer generation unavailable; using local saved-source matching.", error instanceof Error ? error.message : "request failed");
+      }
+    }
 
-    const referencedItems = highRelevance.map((r) => r.item);
+    const modelReferences = generated?.relevantItemIds
+      ?.map((id) => candidateResults.find((result) => result.item.id === id)?.item)
+      .filter((item): item is SavedItem => !!item) || [];
+    const localReferences = searchResults
+      .filter((result) => result.score >= minScoreCutoff && SearchService.hasGroundedTopicMatch(result.item, queryIntent))
+      .slice(0, 4)
+      .map((result) => result.item);
+    const referencedItems = generated ? modelReferences : localReferences;
 
     if (referencedItems.length === 0) {
       return {
@@ -426,31 +466,40 @@ export class AIService {
           "What have I saved about React?",
           "What did I save about AI agents?",
         ],
+        providerNotice,
       };
     }
 
-    // 4. Grounded AI Answer Generation purely from retrieved items
+    // 4. Prefer evidence-validated model prose, otherwise use saved source fields only.
     let answer = "";
-    if (referencedItems.length === 1) {
+    if (generated?.answer && modelReferences.length) {
+      answer = generated.answer;
+    } else if (referencedItems.length === 1) {
       const item = referencedItems[0];
-      const summaryText =
-        item.aiSummary?.standard || item.aiSummary?.quick || item.description;
-      answer = `Based on your library, here is the most relevant resource matching **"${query}"**:\n\n**${item.title}** by **${item.creator.name}** (${item.platform.toUpperCase()})\n\n${summaryText}`;
+      const summaryText = [item.aiSummary?.standard, item.aiSummary?.quick, item.description]
+        .find((value) => SearchService.isUsableGroundedText(value));
+      answer = `I found a saved item that matches ${queryIntent.cleanKeywords.join(", ") || "your search"}:\n\n${item.title} (${item.platform.toUpperCase()}) [Source: ${item.title}].`;
+      if (summaryText) {
+        answer += `\n\n${summaryText.replace(/\*\*/g, "")} [Source: ${item.title}]`;
+      } else {
+        answer += " No readable summary is available yet, so I can't confirm more details from this saved item.";
+      }
       if (item.personalNotes) {
-        answer += `\n\n📌 **Personal Note:** "${item.personalNotes}"`;
+        answer += `\n\nYour saved note: “${item.personalNotes}” [Source: ${item.title}]`;
       }
     } else {
-      answer = `I found **${referencedItems.length} relevant saved resources** in your library for **"${query}"**:\n\n`;
+      answer = `I found ${referencedItems.length} saved resources that match ${queryIntent.cleanKeywords.join(", ") || "your search"}:\n\n`;
       referencedItems.forEach((item, index) => {
-        const summarySnippet =
-          item.aiSummary?.quick || item.aiSummary?.standard || item.description;
-        answer += `${index + 1}. **${item.title}** (${item.creator.name} • ${item.platform.toUpperCase()})\n   ${summarySnippet}\n\n`;
+        const summarySnippet = [item.aiSummary?.quick, item.aiSummary?.standard, item.description]
+          .find((value) => SearchService.isUsableGroundedText(value));
+        answer += `${index + 1}. ${item.title} (${item.platform.toUpperCase()}) [Source: ${item.title}]\n`;
+        answer += summarySnippet ? `${summarySnippet.replace(/\*\*/g, "")} [Source: ${item.title}]\n\n` : `No readable summary is available for this item yet. [Source: ${item.title}]\n\n`;
       });
       const notesWithItems = referencedItems.filter((i) => !!i.personalNotes);
       if (notesWithItems.length > 0) {
-        answer += `📌 **Saved Notes:**\n`;
+        answer += "Your saved notes:\n";
         notesWithItems.forEach((i) => {
-          answer += `• *${i.creator.name}*: "${i.personalNotes}"\n`;
+          answer += `• ${i.creator.name}: "${i.personalNotes}"\n`;
         });
       }
     }
@@ -461,7 +510,7 @@ export class AIService {
       if (item.keyPoints && item.keyPoints.length > 0) {
         item.keyPoints.forEach((kp) => {
           if (!collectedInsights.includes(kp) && collectedInsights.length < 4) {
-            collectedInsights.push(kp);
+            collectedInsights.push(`${kp} [Source: ${item.title}]`);
           }
         });
       }
@@ -483,7 +532,7 @@ export class AIService {
       suggestedFollowUps.push("Which of these bookmarks are marked as favorites?");
     }
 
-    const confidence = Math.min(0.98, Math.max(0.7, topScore / 150));
+    const confidence = generated?.confidence ?? Math.min(0.78, Math.max(0.35, topScore / 150));
 
     return {
       id: `ai-ans-${Date.now()}`,
@@ -494,6 +543,7 @@ export class AIService {
       confidence: Number(confidence.toFixed(2)),
       timestamp: new Date().toISOString(),
       suggestedFollowUps,
+      providerNotice,
     };
   }
 }

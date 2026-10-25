@@ -71,12 +71,16 @@ Generates three distinct lengths suitable for different UI contexts:
 
 ---
 
-## Conversational AI Assistant (`AIService.query`)
+## Conversational AI Assistant (`AIService.queryAssistant`)
 
 Located in [`src/services/ai-service.ts`](file:///Volumes/T7/Devang/Code/Real_Project/Keeper/src/services/ai-service.ts#L120):
-- **Retrieval Augmented Generation (RAG)**: Takes the user's natural language question, searches the user's saved items using `SearchService`, and grounds the answer directly in the matched item summaries.
-- **Citations**: Returns `referencedItemIds` so the UI can render clickable preview chips linking directly to the cited sources.
+- **Retrieval and relevance**: Parses the user's question, searches saved items with `SearchService`, and requires topical evidence in saved source/analysis text for the no-provider fallback. Tags alone cannot qualify a candidate.
+- **Model synthesis**: Authenticated users can opt in per chat, and the workspace must also set `ASSISTANT_EXTERNAL_SYNTHESIS_ENABLED=true`. The server rechecks the selected collection, loads only source IDs owned by the authenticated workspace, and sends at most eight saved candidates plus the query to the configured Gemini or OpenAI-compatible provider. Returned IDs must belong to those candidates, and every citation must be an exact quote from saved source/analysis text that supports the query.
+- **Fallback**: If provider credentials are absent, the request fails, or output fails evidence validation, the assistant uses conservative local source matching and says when summaries are still processing.
+- **Citations**: Returns selected `SavedItem`s so the UI can render clickable cards linking to those saved sources.
 - **Insights & Follow-ups**: Extracts key takeaways and suggests relevant exploratory questions.
+- **Collection scope**: The assistant can restrict retrieval to one collection; primary and secondary memberships are both honored. Workspace words are excluded from topical matching, and `Processing` summary placeholders are not shown as answers.
+- **Configuration and privacy**: Model synthesis stays disabled unless both the user's explicit chat toggle and `ASSISTANT_EXTERNAL_SYNTHESIS_ENABLED=true` are present. Enabling it shares the query and selected saved-source fields with the configured provider. Set `CONTENT_AI_PROVIDER`, `CONTENT_AI_MODEL`, and `GEMINI_API_KEY` or `CONTENT_AI_API_KEY` server-side. Keep provider keys out of browser code.
 
 ---
 
@@ -129,3 +133,10 @@ Automatic collection requirements: prioritize user-approved/grounded tags over i
 `ContentIntelligenceService.generateTags` operates on normalized source text, deduplicates canonical names, excludes platform-only labels, and saves evidence snippets. `CollectionMatchingService` compares that content and its tags with workspace collection names/descriptions/profile terms. Candidates are stored for review; unrelated collections are not forced, and new collections require a user action. Search includes normalized content representation. The detail page exposes representation/provenance, tag evidence, collection candidates, user tag edits, and reprocessing.
 
 Confidence values from the tagger and collection matcher are deterministic overlap heuristics, not ML-calibrated probabilities. Do not present them as statistically calibrated. Platform adapters that cannot provide authorized source text or media must report partial/unavailable content rather than invent it. See `ai/AI_MEDIA_ARCHITECT.md` for schema, migration order, and operational limitations.
+
+
+## AI Assistant Conversation History
+
+Conversation history is app-owned and provider-independent. The client service stores demo/local sessions in per-user localStorage and sends Supabase-authenticated sessions to the owner-scoped `/api/ai/conversations` routes. `keeper_ai_conversations` and `keeper_ai_messages` use `workspace_id`, RLS, and authenticated user checks. Answers are replayed from persisted message content and source IDs; history loading does not regenerate answers.
+
+Follow-up retrieval may combine a short or referential question with the prior user question locally. Conversation history is not sent to the configured AI provider. That privacy boundary can limit model fluency for pronoun-only follow-ups. The migration is present at `supabase/migrations/202610240001_ai_conversation_history.sql`, but has not been applied to a database.

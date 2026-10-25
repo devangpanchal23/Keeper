@@ -1,5 +1,38 @@
 # Keeper — AI Development Changelog
 
+## 2026-10-25 — Permanent Fix for corrupted search-service.ts ("not a module" error)
+
+- **Problem:** IDE reported TypeScript compilation error `scripts/run-tests.ts:52: File '/Volumes/T7/Devang/Code/Real_Project/Keeper/src/services/search-service.ts' is not a module.`
+- **Root cause:** `src/services/search-service.ts` had been corrupted into 27,563 bytes of whitespace with 0 exports or code statements.
+- **Fix:** Restored `src/services/search-service.ts` verbatim from the exact, unminified `sourcesContent` preserved in the Next.js dev chunk source map (`.next/dev/static/chunks/src_1beavi3cppnr2._.js.map`). All interfaces (`ParsedQueryIntent`), helper functions (`matchTokenInText`), search methods (`cleanAssistantQuery`, `isUsableGroundedText`, `getGroundedText`, `hasGroundedTopicMatch`, `textMatchesQuery`, `parseQueryIntent`, `scoreItemAgainstIntent`, and dual-signature `search`), and constants (`STOP_WORDS`, `SYNONYMS`) were verified against all repository import sites and test specifications.
+- **Validation:** Clean module export structure restored; `scripts/run-tests.ts` import resolved; all TypeScript types and search signatures intact.
+
+
+## 2026-10-24 — Tenant-isolated retrieval, relevance checks, citations, and history
+
+- Query retrieval now rejects short-token collisions and requires all meaningful concepts to match saved evidence, reducing unrelated saves returned for topics such as AI agents or gaming.
+- Synthesis requests require an explicit per-chat user opt-in and a workspace admin flag. The authenticated endpoint reloads only media owned by the current user, checks selected collection ownership and each saved item's collection membership, and validates model citations against exact saved evidence.
+- Added persistent conversation history with per-user local storage for local/demo sessions and workspace-scoped cloud tables protected by RLS. Follow-up context stays local.
+- No external model data was sent. The admin flag is not enabled. The history database migration is present but was not applied.
+- Validation: TypeScript passed; 192/192 tests passed; targeted production-file lint passed with 0 warnings; full lint exited successfully with 238 warnings and 0 errors; webpack production build passed. Turbopack could not create a process in this local environment.
+- Limitations: retrieval uses weighted local text matching, not embeddings. Live Supabase and provider behavior remain unverified.
+
+## 2026-10-24 — AI assistant gaming relevance and grounded synthesis
+
+- **Problem:** A PHP livestream tagged Gaming appeared for a gaming query, while the response repeated the generic source-processing placeholder.
+- **Changes:** Assistant-only query cleanup removes conversational filler without changing general Search behavior. `SearchService` recognizes game-related evidence such as multiplayer for the assistant, filters processing placeholders, and exposes a conservative source-text topic check. `AIService` uses this check when model synthesis is unavailable, avoids raw Markdown markers, and describes incomplete saved summaries honestly. Added a server-side Gemini/OpenAI-compatible answer path at `/api/ai/assistant-answer`, protected by Supabase auth. It ranks up to eight candidates and accepts citations only when IDs are known and exact quotes occur in saved evidence and match the query topic. The browser keeps local evidence search as fallback.
+- **Tests:** Added screenshot-style gaming/PHP regression and structured model-output validation. Type-check passed; 189/189 tests passed; lint passed with 241 warnings; Webpack production build passed and includes the authenticated assistant endpoint.
+- **Configuration:** No local answer-generation key is set, so a live provider answer was not tested. Provider credentials must be configured server-side; production settings remain unverified.
+
+## 2026-10-24 — Collection-aware AI assistant retrieval and grounding
+
+- **Problem:** AI Assistant could cite loosely related saved reels, had no collection scope control, and could expose `Processing` as answer text.
+- **Root cause:** Workspace/collection words remained in the keyword set; the assistant UI did not pass a collection filter; answer formatting trusted placeholder summaries.
+- **Fix:** Added collection selection; reused SearchService's exact primary/secondary membership filter; excluded workspace phrasing from topical keywords; skipped `Processing` summaries and added an explicit unavailable-content message. No query-specific item or result is hardcoded.
+- **Files:** `src/app/app/ai-assistant/page.tsx`, `src/services/ai-service.ts`, `src/services/search-service.ts`, `scripts/run-tests.ts`, and AI status/handoff/pipeline docs.
+- **Validation:** Type-check passed; regression suite passed 187/187; lint passed with 241 warnings under the configured ceiling; Webpack production build passed and generated all 23 static pages.
+- **Limit:** Search is weighted local text matching rather than embeddings, and answer prose is assembled from saved item fields.
+
 Last updated: 2026-10-24 10:20 IST
 
 ## 2026-10-24 — GitHub Actions Next.js security audit fix
@@ -597,3 +630,12 @@ Meta exports alternate between legacy `string_map_data` and modern `string_list_
 - Added `ai/OBSERVABILITY.md` for Vercel dashboard configuration, cost/plan distinctions, env variable requirements, and verification steps.
 - Audit: `.env*` is ignored; `.env.local` key names include only public Supabase configuration and server-only Razorpay settings. Secret names are not exposed with `NEXT_PUBLIC_`.
 - Validation: `npm run type-check` passed; `npm test` passed 166/166; `npm run lint` returned 0 errors and 262 existing warnings; `npm run build -- --webpack` completed successfully. The default Turbopack build was blocked by local process/network restrictions. Online production dependency audit reports 0 vulnerabilities; full-tree audit reports 5 high `braces` advisories through ESLint dev dependencies. The suggested forced fix downgrades Next lint config to a breaking Next 14 release, so no forced downgrade was applied. Dashboard-level analytics enablement and live deployment checks are pending.
+
+
+## 2026-10-24 — Persistent AI conversation history
+
+- Added conversation and message persistence for the AI Assistant. Local/demo sessions use per-user browser storage; Supabase-authenticated sessions use new workspace-scoped Supabase tables protected by RLS.
+- Added history list, new chat, resume, delete, selected collection persistence, source ID/key insight metadata, and honest failed-turn status. History write failures do not block an AI answer.
+- Follow-up retrieval can use the previous user question locally. Prior conversation text is not forwarded to the configured external AI provider. A model-backed answer to pronoun-only follow-ups may therefore be less fluent.
+- Added the migration `202610240001_ai_conversation_history.sql`. It has not been applied to any Supabase project. Apply through the normal reviewed migration process before cloud history is available.
+- Validation: `npm run type-check -- --incremental false` passed; `npm test` passed (191 test cases, 0 failures); `npm run lint -- --max-warnings=262` passed (239 warnings, 0 errors); `npm run build -- --webpack` passed.

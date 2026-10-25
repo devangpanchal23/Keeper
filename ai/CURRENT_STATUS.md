@@ -1,5 +1,37 @@
 # Current Project Status
 
+## 2026-10-25 — Permanent Fix for corrupted search-service.ts ("not a module" error)
+
+- **Problem:** IDE reported `scripts/run-tests.ts:52: File '/Volumes/T7/Devang/Code/Real_Project/Keeper/src/services/search-service.ts' is not a module.`
+- **Root cause:** `src/services/search-service.ts` was filled with 27KB of empty whitespace bytes, leaving it with zero exports.
+- **Fix:** Restored `src/services/search-service.ts` completely from the verified local build sourcemap `sourcesContent` (`.next/dev/static/chunks/src_1beavi3cppnr2._.js.map`). All 714 lines containing `ParsedQueryIntent`, `STOP_WORDS`, `SYNONYMS`, `matchTokenInText`, and `SearchService` (with `cleanAssistantQuery`, `isUsableGroundedText`, `getGroundedText`, `hasGroundedTopicMatch`, `textMatchesQuery`, `parseQueryIntent`, `scoreItemAgainstIntent`, and `search`) are restored.
+- **Status:** **Resolved**. File is a valid TypeScript module with all required exports.
+
+
+## 2026-10-24 — Workspace-scoped assistant grounding and conversation history
+
+- Assistant relevance now requires evidence for every meaningful query concept in saved source or grounded analysis text. Short tokens use word boundaries, so `AI` inside creator handles cannot qualify unrelated saves. Assistant-only filtering keeps general Search behavior intact.
+- Authenticated cloud synthesis verifies the user, selected collection ownership, candidate media ownership, and each candidate's membership in that collection before use. Model output is accepted only with known saved-item IDs and exact evidence quotes. Without adequate saved evidence, the assistant says it cannot find a relevant save.
+- Conversation history persists locally per user or in workspace-owned Supabase tables with RLS. History does not go to an AI provider.
+- External synthesis remains **disabled by default**. It needs both a per-chat user opt-in and `ASSISTANT_EXTERNAL_SYNTHESIS_ENABLED=true`; enabling it shares the query and matching saved source fields with the configured provider. This environment flag was not enabled.
+- Validation: TypeScript passed; 192/192 tests passed; changed production AI/history files have 0 ESLint warnings; full lint has 238 warnings and 0 errors; `npm run build -- --webpack` passed. Default Turbopack build hit a local process permission error.
+- Pending: the conversation history migration is not applied. Live Supabase isolation and live provider output are unverified. Retrieval is weighted local text matching, not vector search.
+
+## 2026-10-24 — AI assistant gaming relevance and grounded synthesis
+
+- **Problem:** The assistant included a PHP livestream in gaming results and displayed “Keeper is extracting verified source content” as an answer.
+- **Fix:** Assistant-only query cleanup removes conversational filler without changing general Search behavior; gaming searches recognize source-text concepts such as multiplayer. Candidate items now need a topical match in saved title, description, transcript, caption, user note, or grounded analysis, so a tag alone cannot make an item relevant. Pending processing text is excluded from evidence and answers.
+- **Model support:** Added an authenticated server-side Gemini/OpenAI-compatible synthesis path. It receives at most eight matching saved items, may select only those IDs, and its citations must contain exact saved-source quotes that also support the query topic. Invalid/unavailable provider output falls back to the conservative local matcher.
+- **Validation:** Type-check passed; all 189 tests passed; lint passed with 241 warnings under the 262 ceiling; Webpack production build passed and includes `/api/ai/assistant-answer`.
+- **Configuration limit:** No Gemini/OpenAI answer-generation key is configured in this local `.env.local`, so live model output could not be exercised. Add the existing `GEMINI_API_KEY` or `CONTENT_AI_API_KEY` and model/provider settings to enable it. Local source-grounded fallback works without them.
+
+## 2026-10-24 — Collection-aware AI assistant retrieval and grounding
+
+- **Root cause:** Assistant retrieval used keyword scoring but the assistant page offered no collection scope. Workspace phrasing such as “in my Keeper project” remained topical text, allowing weak keyword collisions. Answer construction could also display saved `Processing` placeholders as summaries.
+- **Fix:** Added a collection selector and passed its ID into the existing exact collection filter, including secondary memberships. Removed workspace/collection wording from topical keywords. Responses skip `Processing` summaries and report when no readable summary or description exists.
+- **Validation:** Type-check passed; all 187 tests passed; lint passed with 241 warnings (under the configured 262 ceiling); `npm run build -- --webpack` passed and generated all 23 static pages.
+- **Limit:** Retrieval remains local weighted keyword search, not vector search. Answers are assembled from stored item fields.
+
 ## 2026-10-24 — Patch vulnerable Next.js dependency reported by GitHub Actions
 
 - **Root cause:** `package.json` and `package-lock.json` pinned `next` and `eslint-config-next` to `16.4.0`. GitHub's production dependency audit reported critical Next.js advisories affecting versions through `16.4.0` and failed both CI security audit and the deployment quality gate.
@@ -372,3 +404,12 @@ Last updated: 2026-10-24 12:45 IST
 - Validation: `npm run type-check` passes; lint passes with the existing 262-warning ceiling. The suite currently reports 135/166 passing (31 failures), including external AI-provider-dependent cases and collection/content-status regressions that still need diagnosis. Do not treat this change set as production-ready until these failures are resolved.
 - `npm audit` cannot reach registry.npmjs.org from this environment. The prior online audit showed production dependencies clean but the full audit still flags `braces@3.0.3` via ESLint's fast-glob/micromatch dev dependency chain; the current GitHub advisory has no patched release. Do not use `npm audit fix --force` to downgrade framework/lint packages.
 - `npm run build` is blocked here because Next cannot fetch Geist/Geist Mono from Google Fonts. Re-run on a network-enabled runner or self-host the fonts. `npm test` via the tsx CLI is blocked by sandbox IPC (`listen EPERM`); `node --import tsx scripts/run-tests.ts` executes the suite and reports the failures above.
+
+
+## 2026-10-24 — Persistent AI conversation history
+
+- Added conversation and message persistence for the AI Assistant. Local/demo sessions use per-user browser storage; Supabase-authenticated sessions use new workspace-scoped Supabase tables protected by RLS.
+- Added history list, new chat, resume, delete, selected collection persistence, source ID/key insight metadata, and honest failed-turn status. History write failures do not block an AI answer.
+- Follow-up retrieval can use the previous user question locally. Prior conversation text is not forwarded to the configured external AI provider. A model-backed answer to pronoun-only follow-ups may therefore be less fluent.
+- Added the migration `202610240001_ai_conversation_history.sql`. It has not been applied to any Supabase project. Apply through the normal reviewed migration process before cloud history is available.
+- Validation: `npm run type-check -- --incremental false` passed; `npm test` passed (191 test cases, 0 failures); `npm run lint -- --max-warnings=262` passed (239 warnings, 0 errors); `npm run build -- --webpack` passed.

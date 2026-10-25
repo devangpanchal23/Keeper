@@ -76,6 +76,76 @@ export function matchTokenInText(text: string, token: string): boolean {
 }
 
 export class SearchService {
+  /** Removes conversational framing only for assistant requests, leaving general search behavior unchanged. */
+  static cleanAssistantQuery(query: string): string {
+    return query
+      .replace(/\b(?:keeper|project|stores?|collections?|something|anything|related|finding|searching|looking|im)\b/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  static isUsableGroundedText(value: unknown): value is string {
+    return typeof value === "string"
+      && value.trim().length > 0
+      && !/(\bprocessing\b|keeper is extracting|verified source content unavailable|did not generate ai analysis|could not complete grounded ai processing)/i.test(value.trim());
+  }
+
+  /** Returns searchable source/analysis evidence with known pending placeholders removed. */
+  static getGroundedText(item: SavedItem): string {
+    const transcript = typeof item.metadata?.transcript === "string"
+      ? item.metadata.transcript
+      : typeof item.metadata?.transcript?.text === "string"
+        ? item.metadata.transcript.text
+        : typeof item.provenance?.transcript?.value === "string"
+          ? item.provenance.transcript.value
+          : "";
+    const representation = item.metadata?.contentRepresentation?.text;
+    const fields = [
+      item.title,
+      item.description,
+      item.personalNotes,
+      transcript,
+      item.metadata?.caption,
+      typeof item.provenance?.caption?.value === "string" ? item.provenance.caption.value : "",
+      representation,
+      item.aiSummary?.standard,
+      item.aiSummary?.quick,
+      item.aiSummary?.detailed,
+      ...(item.keyPoints || []),
+    ];
+    return fields.filter((value): value is string => this.isUsableGroundedText(value)).join("\n").slice(0, 12_000);
+  }
+
+  /** Conservative local fallback: at least one topical word or known synonym must occur in evidence text. */
+  static hasGroundedTopicMatch(item: SavedItem, intent: ParsedQueryIntent): boolean {
+    return this.textMatchesQuery(this.getGroundedText(item), intent);
+  }
+
+  static textMatchesQuery(sourceText: string, intent: ParsedQueryIntent): boolean {
+    if (intent.cleanKeywords.length === 0) return true;
+    const text = sourceText.toLocaleLowerCase();
+    const assistantSynonyms: Record<string, string[]> = {
+      gaming: ["game", "games", "gameplay", "multiplayer", "esports", "gamer", "video game"],
+      game: ["gaming", "games", "gameplay", "multiplayer", "esports", "gamer", "video game"],
+    };
+    const matchesKeyword = (keyword: string): boolean => {
+      const matchTerm = (term: string): boolean => {
+        const normalized = term.toLocaleLowerCase();
+        if (normalized.length <= 3) {
+          const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?:$|[^\\p{L}\\p{N}])`, "u").test(text);
+        }
+        return matchTokenInText(text, normalized);
+      };
+      if (matchTerm(keyword)) return true;
+      return [...(SYNONYMS[keyword] || []), ...(assistantSynonyms[keyword] || [])].some(matchTerm);
+    };
+    const keywordMatches = intent.cleanKeywords.map(matchesKeyword);
+    // Multi-word topics require every query concept to have evidence. A hit on "AI" alone
+    // must not make an unrelated game, meme, or creator handle an "AI agents" result.
+    return keywordMatches.length <= 1 ? keywordMatches.some(Boolean) : keywordMatches.every(Boolean);
+  }
+
   /**
    * Parses natural language queries into structured intent:
    * Extracts target platform, content type, recency/favorite modifiers, multi-word phrases,
