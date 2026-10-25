@@ -639,3 +639,13 @@ Meta exports alternate between legacy `string_map_data` and modern `string_list_
 - Follow-up retrieval can use the previous user question locally. Prior conversation text is not forwarded to the configured external AI provider. A model-backed answer to pronoun-only follow-ups may therefore be less fluent.
 - Added the migration `202610240001_ai_conversation_history.sql`. It has not been applied to any Supabase project. Apply through the normal reviewed migration process before cloud history is available.
 - Validation: `npm run type-check -- --incremental false` passed; `npm test` passed (191 test cases, 0 failures); `npm run lint -- --max-warnings=262` passed (239 warnings, 0 errors); `npm run build -- --webpack` passed.
+
+## 2026-10-25 — Improve assistant retrieval precision and source fidelity
+
+- Fixed the false no-match result for “any reel for invoice making.” The assistant now matches common `-ing` forms to their source word and uses reel wording as a content-type filter.
+- Narrowed workspace phrase cleanup so topical terms such as “stores” are preserved.
+- Reset external synthesis consent when a new chat starts or the active chat is deleted.
+- Removed display of model-authored factual prose and excluded generated summaries/tags/key points from source evidence. The app renders only exact saved-source excerpts validated against candidate text, with their saved titles.
+- When a matched save has limited or metadata-only content, the answer explicitly says the full steps cannot be verified yet.
+- Added regression coverage for invoice-reel matching and suppression of unsupported model claims.
+- Validation: `npm test` passed 193/193; TypeScript and Webpack production build passed; changed production files lint clean; full lint passed with 238 warnings under the 262-warning ceiling; design audit passed.

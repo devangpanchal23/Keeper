@@ -495,3 +495,11 @@ None active for P0. P1 thumbnail acquisition remains in a known, honest limited 
 - Validation: `npm run type-check -- --incremental false` passed; `npm test` passed (191 test cases, 0 failures); `npm run lint -- --max-warnings=262` passed (239 warnings, 0 errors); `npm run build -- --webpack` passed.
 
 - Next: apply the history migration only to the intended Supabase environment after confirming its project identity. Then verify cloud create/list/resume/delete with two authenticated accounts. Live Supabase behavior remains unverified.
+
+## 2026-10-25 — Assistant retrieval precision follow-up
+
+- Fixed `making` vs `make` matching and ensured `reel/reels` are treated as content-type intent, not required source words. Workspace phrasing cleanup preserves topical terms such as `stores`.
+- External AI consent resets when the user starts a new chat or deletes the active chat.
+- Model-generated prose, summaries, tags, and key points are not displayed as source facts. The configured provider can select relevant saved items and return exact source quotes; the app validates each quote and renders it verbatim with the saved title.
+- Limited or metadata-only saved items receive an explicit note that the full steps cannot be verified from the available source.
+- Regression coverage includes the invoice reel query and rejects unsupported model prose. Checks pass: 193/193 tests, TypeScript, Webpack production build, design audit, and focused production-file lint. Full lint passes under the existing ceiling with 238 repository warnings. Live provider and Supabase behavior remain unverified.

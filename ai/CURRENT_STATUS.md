@@ -413,3 +413,12 @@ Last updated: 2026-10-24 12:45 IST
 - Follow-up retrieval can use the previous user question locally. Prior conversation text is not forwarded to the configured external AI provider. A model-backed answer to pronoun-only follow-ups may therefore be less fluent.
 - Added the migration `202610240001_ai_conversation_history.sql`. It has not been applied to any Supabase project. Apply through the normal reviewed migration process before cloud history is available.
 - Validation: `npm run type-check -- --incremental false` passed; `npm test` passed (191 test cases, 0 failures); `npm run lint -- --max-warnings=262` passed (239 warnings, 0 errors); `npm run build -- --webpack` passed.
+
+## 2026-10-25 — Assistant invoice query matching and exact-source answers
+
+- Fixed assistant matching for queries such as “any reel for invoice making”: content-type words remain structured filters, and common `-ing` forms such as `making` match their source forms such as `make`.
+- Workspace phrasing cleanup no longer removes topical words such as `stores`.
+- Starting a new chat or deleting the active chat clears external AI consent, so consent does not carry into a different chat.
+- Assistant source evidence excludes generated summaries, tags, and key points. Answers display exact excerpts from saved source fields; model-written claims are not shown as factual answer text.
+- When a matching save is marked limited or metadata-only, the assistant says it cannot verify the full steps yet.
+- Validation: `npm test` passed 193/193; TypeScript passed with `--incremental false`; `npm run build -- --webpack` passed; changed production files passed ESLint with zero warnings; full lint passed under the 262-warning ceiling (238 warnings); design audit passed.

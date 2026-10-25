@@ -3270,24 +3270,130 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       const collectionB: Collection = { id: "collection-commerce", name: "Website Ideas", color: "#000000", icon: "Folder", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
       const item = (id: string, title: string, collectionId: string, summary: string): SavedItem => ({
         id, title, url: `https://example.com/${id}`, thumbnail: "", platform: "instagram", contentType: "reel",
-        creator: { name: "Creator" }, description: "", savedDate: new Date().toISOString(), collectionId,
+        creator: { name: "Creator" }, description: summary, savedDate: new Date().toISOString(), collectionId,
         collections: [collectionId], tags: [], favorite: false, archived: false, trashed: false,
         aiSummary: { quick: summary, standard: "Processing", detailed: "Processing" }, keyPoints: [], topics: [], personalNotes: "", metadata: {},
       });
       const spiritual = item("spiritual-item", "Hanuman devotional reel", collectionA.id, "A devotional reel about prayer and spiritual practice.");
       const commerce = item("commerce-item", "Website selling tutorial", collectionB.id, "A tutorial about selling products through an online store.");
       const all = [spiritual, commerce];
-      const intent = SearchService.parseQueryIntent(SearchService.cleanAssistantQuery("what is spiritual reels stores in my keeper project?"));
+      const intent = SearchService.parseQueryIntent(SearchService.cleanAssistantQuery("what is spiritual reels in my keeper project?"));
       assertEqual(intent.cleanKeywords.join(","), "spiritual", "Collection and workspace phrasing is removed from topical keywords");
 
-      const scopedAnswer = await AIService.queryAssistant("what is spiritual reels stores in my keeper project?", all, [collectionA, collectionB], collectionA.id);
+      const scopedAnswer = await AIService.queryAssistant("what is spiritual reels in my keeper project?", all, [collectionA, collectionB], collectionA.id);
       assertEqual(scopedAnswer.referencedItems.length, 1, "Collection scope limits assistant sources");
       assertEqual(scopedAnswer.referencedItems[0].id, spiritual.id, "Correct collection source is cited");
       assert(!scopedAnswer.answer.includes("Processing"), "Placeholder processing text is never presented as an answer");
 
-      const noMatch = await AIService.queryAssistant("what is spiritual reels stores in my keeper project?", [commerce], [collectionA, collectionB]);
-      assertEqual(noMatch.referencedItems.length, 0, "No relevant topical match produces no citations");
-      assert(noMatch.answer.includes("couldn't find anything relevant"), "Assistant admits when the library has no relevant item");
+      const noMatch = await AIService.queryAssistant("what is spiritual reels in my keeper project?", [commerce], [collectionA, collectionB]);
+      assertEqual(noMatch.referencedItems.length, 1, "A weak topical match shows a closest item instead of a flat miss");
+      assert(noMatch.answer.includes("matching your platform or content-type filters"), "Assistant labels filter-based suggestions clearly");
+      assert(noMatch.confidence < 0.3, "Closest matches carry low confidence");
+    });
+
+    await test("AI assistant matches invoice making phrasing to a reel without accepting unrelated reels", async () => {
+      const base: SavedItem = {
+        id: "", title: "", url: "https://example.com", thumbnail: "", platform: "instagram", contentType: "reel",
+        creator: { name: "Creator" }, description: "", savedDate: new Date().toISOString(), tags: [], favorite: false, archived: false, trashed: false,
+        aiSummary: { quick: "", standard: "", detailed: "" }, keyPoints: [], topics: [], personalNotes: "", metadata: {},
+      };
+      const invoiceReel: SavedItem = {
+        ...base, id: "invoice-reel", title: "How to make professional invoice", description: "How to make professional invoice",
+        metadata: { caption: "How to make professional invoice" }, isLimited: true,
+      };
+      const unrelatedReel: SavedItem = {
+        ...base, id: "branding-reel", title: "How to make professional branding", description: "How to make professional branding",
+      };
+      const answer = await AIService.queryAssistant("any reel for invoice making", [invoiceReel, unrelatedReel]);
+      assertEqual(answer.referencedItems.map((item) => item.id).join(","), invoiceReel.id, "Invoice and making match the saved reel while the reel format word is treated as a filter");
+      assert(answer.answer.includes("How to make professional invoice"), "The answer uses the exact saved detail that matched");
+      assert(answer.answer.includes("can't confirm the full invoice-making steps yet"), "Limited source access is stated instead of inventing full instructions");
+    });
+
+    await test("AI assistant Phase A 24-case search evaluation", async () => {
+      const collectionVlogs: Collection = { id: "col-vlogs", name: "Vlogs", color: "#000000", icon: "Folder", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      const collectionIdeas: Collection = { id: "col-ideas", name: "Ideas", color: "#000000", icon: "Folder", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      const makeItem = (id: string, title: string, platform: SavedItem["platform"], contentType: SavedItem["contentType"], description = "", extras: Partial<SavedItem> = {}): SavedItem => ({
+        id, title, url: `https://example.com/${id}`, thumbnail: "", platform, contentType, creator: { name: "Creator" },
+        description, savedDate: new Date().toISOString(), collectionId: collectionVlogs.id, collections: [collectionVlogs.id],
+        tags: [], favorite: false, archived: false, trashed: false, aiSummary: { quick: "", standard: "", detailed: "" },
+        keyPoints: [], topics: [], personalNotes: "", metadata: {}, ...extras,
+      });
+      const vlog = makeItem("sunny-vlog", "2no Partner Ki Lagi Class 😡 || Sunny Bhavsar Vlogs", "youtube", "video", "", {
+        isLimited: true, metadata: { aiProcessingStatus: "PENDING" },
+      });
+      const secondVlog = makeItem("weekend-vlog", "Weekend Vlog with family", "youtube", "video", "A family vlog from a weekend trip.");
+      const uiReel = makeItem("ui-reel", "UI design breakdown for mobile apps", "instagram", "reel", "A breakdown of interface design.");
+      const reactVideo = makeItem("react-video", "React performance optimization guide", "youtube", "video", "Profiling and speed improvements for React.");
+      const agentsVideo = makeItem("agents-video", "Building AI agents with LangGraph", "youtube", "video", "A tutorial about autonomous AI agents and tool use.");
+      const cookingItem = makeItem("cooking-item", "Cooking a quick high-protein dinner recipe", "youtube", "video", "A quick meal recipe.");
+      const paymentItem = makeItem("payment-item", "Payment gateways setup guide", "youtube", "video", "Compare payment gateway integrations.");
+      const recentItem = makeItem("recent-robotics", "Robotics notes from today", "website", "article", "New robotics notes.");
+      const editedItem = makeItem("edited-item", "Newly edited robotics notes", "website", "article", "Updated robotics notes.", { personalNotes: "robotics notes" });
+      const movedItem = makeItem("moved-vlog", "Vlog about moving apartments", "youtube", "video", "Moving vlog.", {
+        collectionId: collectionIdeas.id, collections: [collectionIdeas.id],
+      });
+      const deletedItem = makeItem("deleted-vlog", "Deleted Vlog", "youtube", "video", "", { trashed: true });
+      const completedItem = makeItem("completed-transcript", "Cooking tips", "youtube", "video", "", {
+        metadata: { aiProcessingStatus: "COMPLETED", transcript: "Transcript: how to make a quick dinner recipe." },
+      });
+      const bulkA = makeItem("bulk-a", "Bulk Import Family Vlog One", "youtube", "video");
+      const bulkB = makeItem("bulk-b", "Bulk Import Travel Vlog Two", "youtube", "video");
+      const unrelated = makeItem("unrelated", "Productivity notes for teams", "website", "article");
+      const items = [vlog, secondVlog, uiReel, reactVideo, agentsVideo, cookingItem, paymentItem, recentItem, editedItem, movedItem, deletedItem, completedItem, bulkA, bulkB, unrelated];
+      const cases: Array<{ name: string; query: string; ids?: string[]; scope?: string; mode?: "closest" | "recent" | "empty"; answerIncludes?: string }> = [
+        { name: "1 failing vague vlog query", query: "any kind of vlog video are existing in all collections", ids: [vlog.id], answerIncludes: "transcript pending" },
+        { name: "2 list all vlog videos", query: "show all vlog videos", ids: [vlog.id, secondVlog.id] },
+        { name: "3 plural title match", query: "vlogs", ids: [vlog.id, secondVlog.id] },
+        { name: "4 YouTube video metadata filter", query: "YouTube videos", ids: [vlog.id, secondVlog.id] },
+        { name: "5 Instagram reel metadata filter", query: "Instagram reels", ids: [uiReel.id] },
+        { name: "6 UI design topic", query: "any reels about UI design", ids: [uiReel.id] },
+        { name: "7 React performance topic", query: "React performance videos", ids: [reactVideo.id] },
+        { name: "8 Hinglish AI agents query", query: "AI agents par maine kya save kiya?", ids: [agentsVideo.id] },
+        { name: "9 Hinglish vlog listing", query: "mere saved vlog videos dikhao", ids: [vlog.id, secondVlog.id] },
+        { name: "10 recent cooking query", query: "recently saved cooking", ids: [cookingItem.id] },
+        { name: "11 payment gateways topic", query: "payment gateways ke baare mein", ids: [paymentItem.id] },
+        { name: "12 selected collection filter", query: "show all videos", scope: collectionIdeas.id, ids: [movedItem.id] },
+        { name: "13 empty library", query: "show videos", mode: "empty" },
+        { name: "14 no text overlap gets honest recent suggestions", query: "quantum astrophysics", mode: "recent" },
+        { name: "15 newly added item is searchable", query: "robotics notes", ids: [recentItem.id, editedItem.id] },
+        { name: "16 edited title and note are searchable", query: "edited robotics notes", ids: [editedItem.id] },
+        { name: "17 moved item follows its collection", query: "moving vlog", scope: collectionIdeas.id, ids: [movedItem.id] },
+        { name: "18 trashed item is not surfaced", query: "deleted vlog", ids: [vlog.id, secondVlog.id] },
+        { name: "19 Processing item matches title with pending label", query: "Sunny Bhavsar vlog", ids: [vlog.id], answerIncludes: "transcript pending" },
+        { name: "20 completed transcript is searchable", query: "quick dinner recipe", ids: [completedItem.id] },
+        { name: "21 bulk imported items are searchable", query: "bulk import vlog", ids: [bulkA.id, bulkB.id] },
+        { name: "22 search sees only supplied workspace items", query: "Sunny Bhavsar vlog", ids: [vlog.id] },
+        { name: "23 impossible collection scope returns empty", query: "show all videos", scope: "missing-collection", mode: "empty" },
+        { name: "24 typo gets fuzzy closest match", query: "vlogg", ids: [vlog.id], mode: "closest" },
+      ];
+
+      for (const entry of cases) {
+        await test(`Phase A case ${entry.name}`, async () => {
+          const scopedItems = entry.name.includes("empty library") ? [] : items;
+          const answer = await AIService.queryAssistant(entry.query, scopedItems, [collectionVlogs, collectionIdeas], entry.scope || "all");
+          if (entry.mode === "empty") {
+            assertEqual(answer.referencedItems.length, 0, "Empty data or impossible scope has no citations");
+          } else if (entry.mode === "closest") {
+            assert(answer.referencedItems.length > 0, "Weak queries show nearby saved items");
+            assert(answer.answer.includes("closest saved items"), "Weak matches are clearly labeled");
+            assert(answer.confidence < 0.3, "Weak matches have low confidence");
+            for (const expectedId of entry.ids || []) assert(answer.referencedItems.some((item) => item.id === expectedId), `Expected closest citation ${expectedId}`);
+          } else if (entry.mode === "recent") {
+            assert(answer.referencedItems.length > 0, "A no-overlap query gives a small fallback list");
+            assert(answer.answer.includes("recent items"), "No-overlap results are labeled as recent suggestions, not relevant hits");
+            assert(answer.confidence < 0.3, "Fallback suggestions have low confidence");
+          } else {
+            const actualIds = answer.referencedItems.map((item) => item.id);
+            for (const expectedId of entry.ids || []) assert(actualIds.includes(expectedId), `Expected citation ${expectedId}`);
+            if (entry.name.includes("selected collection") || entry.name.includes("moved item")) {
+              assert(actualIds.every((id) => id === movedItem.id), "Collection scope excludes other items");
+            }
+            if (entry.name.includes("trashed")) assert(!actualIds.includes(deletedItem.id), "Trashed content is excluded");
+          }
+          if (entry.answerIncludes) assert(answer.answer.toLowerCase().includes(entry.answerIncludes), `Answer includes ${entry.answerIncludes}`);
+        });
+      }
     });
 
     await test("AI agents retrieval rejects short-token and one-concept false positives", async () => {
@@ -3334,7 +3440,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       assertEqual(answer.referencedItems.length, 1, "Only direct source evidence is cited for gaming");
       assertEqual(answer.referencedItems[0].id, gaming.id, "NFS multiplayer reel ranks as the gaming result");
       assert(!answer.answer.includes("PHP"), "Unrelated programming reel is excluded from the answer");
-      assert(answer.answer.includes("No readable summary is available yet"), "Missing summary is stated honestly");
+      assert(answer.answer.includes("Finally we got NFS Most Wanted multiplayer available in browser"), "The answer cites the exact saved title instead of an unavailable generated summary");
 
       const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
       const previousFetch = globalThis.fetch;
@@ -3416,7 +3522,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       process.env.GEMINI_API_KEY = "test-key-never-sent";
       process.env.CONTENT_AI_MODEL = "test-model";
       globalThis.fetch = async () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({
-        answer: `Your saved reel is about NFS Most Wanted multiplayer in a browser [source:${sourceItem.id}]`,
+        answer: `Your saved reel made 1 million dollars and features a Ferrari [source:${sourceItem.id}]`,
         relevantItemIds: [sourceItem.id, "made-up-id"],
         evidence: [{ itemId: sourceItem.id, quote: "NFS Most Wanted multiplayer is available in browser." }],
         confidence: 0.91,
@@ -3426,7 +3532,10 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         assert(!!result, "Configured assistant model returns an answer");
         assertEqual(result?.relevantItemIds.join(","), sourceItem.id, "Unknown source IDs are discarded");
         assertEqual(result?.confidence, 0.91, "Validated model confidence is returned");
-        assert(result?.answer.includes(`[Source: ${sourceItem.title}]`), "Verified model source markers render as exact saved titles");
+        assert(result?.answer.includes(`[Source: ${sourceItem.title}]`), "Verified source excerpt renders with the exact saved title");
+        assert(result?.answer.includes("NFS Most Wanted multiplayer is available in browser."), "The assistant returns the exact quote validated against the saved source");
+        assert(!result?.answer.includes("1 million dollars") && !result?.answer.includes("Ferrari"), "Unsupported model-written claims are never shown to the user");
+        assert(!SearchService.getGroundedText(sourceItem).includes("A racing game can be played in a browser."), "Generated summaries are not treated as original source evidence");
       } finally {
         globalThis.fetch = previousFetch;
         if (previousProvider === undefined) delete process.env.CONTENT_AI_PROVIDER; else process.env.CONTENT_AI_PROVIDER = previousProvider;
