@@ -1,14 +1,83 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { isKeeperBillingCycle, isKeeperPlanId, KEEPER_BILLING_PLANS } from "@/lib/billing-plans";
-import { getAuthenticatedSupabaseUser } from "@/lib/supabase/auth";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { getRazorpayClient, getRazorpayKeyId } from "@/lib/razorpay";
 import { logServerError } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+type CheckoutSubscription = {
+  id: string;
+  status: string;
+  current_period_end: string | null;
+  trial_ends_at: string | null;
+  cancel_at_cycle_end: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type CheckoutBlockReason = "active_or_trial" | "pending" | "cancelled_with_access" | "created_checkout" | "recent_authenticated";
+
+function getCheckoutBlockDecision(
+  subscriptions: CheckoutSubscription[],
+  now = Date.now(),
+): { reason: CheckoutBlockReason | null; unknownExpiryRows: Array<Pick<CheckoutSubscription, "id" | "status">> } {
+  const expiryTime = (subscription: CheckoutSubscription): number | null => {
+    const value = subscription.current_period_end || subscription.trial_ends_at;
+    if (!value) return null;
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) ? timestamp : null;
+  };
+  const withinWindow = (values: Array<string | null>): boolean =>
+    values.some((value) => {
+      if (value === null) return false;
+      const timestamp = Date.parse(value);
+      return Number.isFinite(timestamp) && timestamp >= now - 30 * 60 * 1000 && timestamp <= now;
+    });
+
+  const unknownExpiryRows = subscriptions
+    .filter((subscription) => ["active", "trialing"].includes(subscription.status) && expiryTime(subscription) === null)
+    .map(({ id, status }) => ({ id, status }));
+
+  const activeOrTrial = subscriptions.some((subscription) => {
+    const expiry = expiryTime(subscription);
+    if (["active", "trialing"].includes(subscription.status)) return expiry === null || expiry > now;
+    return subscription.status === "authenticated" && expiry !== null && expiry > now;
+  });
+  if (activeOrTrial) return { reason: "active_or_trial", unknownExpiryRows };
+  if (subscriptions.some((subscription) => subscription.status === "pending")) {
+    return { reason: "pending", unknownExpiryRows };
+  }
+  if (subscriptions.some((subscription) => {
+    const expiry = expiryTime(subscription);
+    return ["cancelled", "canceled"].includes(subscription.status)
+      && subscription.cancel_at_cycle_end
+      && expiry !== null
+      && expiry > now;
+  })) {
+    return { reason: "cancelled_with_access", unknownExpiryRows };
+  }
+  if (subscriptions.some((subscription) => subscription.status === "created" && withinWindow([subscription.created_at]))) {
+    return { reason: "created_checkout", unknownExpiryRows };
+  }
+  if (subscriptions.some((subscription) =>
+    subscription.status === "authenticated" && expiryTime(subscription) === null
+      && withinWindow([subscription.updated_at, subscription.created_at]))) {
+    return { reason: "recent_authenticated", unknownExpiryRows };
+  }
+  return { reason: null, unknownExpiryRows };
+}
+
+const checkoutBlockMessages: Record<CheckoutBlockReason, string> = {
+  active_or_trial: "You already have an active plan or trial. Cancel its renewal before starting another.",
+  pending: "A subscription is pending. Complete or resolve it before starting another checkout.",
+  cancelled_with_access: "Your cancelled plan still has paid access. Wait until that period ends before starting another plan.",
+  created_checkout: "A plan checkout is already in progress. Complete it or try again later.",
+  recent_authenticated: "Your subscription authorization is still being processed. Please wait before starting another checkout.",
+};
+
 export async function POST(request: NextRequest) {
+  const { getAuthenticatedSupabaseUser } = await import("@/lib/supabase/auth");
   let user: Awaited<ReturnType<typeof getAuthenticatedSupabaseUser>>;
   try { user = await getAuthenticatedSupabaseUser(); }
   catch { return NextResponse.json({ error: "Billing is not configured yet. Complete the Supabase server setup first." }, { status: 503 }); }
@@ -23,14 +92,27 @@ export async function POST(request: NextRequest) {
   const { plan, billingCycle } = payload;
   const price = KEEPER_BILLING_PLANS[plan][billingCycle];
   try {
+    const [{ createSupabaseAdminClient }, { getRazorpayClient, getRazorpayKeyId }] = await Promise.all([
+      import("@/lib/supabase/admin"),
+      import("@/lib/razorpay"),
+    ]);
     const razorpay = getRazorpayClient();
     const admin = createSupabaseAdminClient();
-    const { data: activePlan, error: lookupError } = await admin.from("billing_subscriptions").select("id").eq("user_id", user.id).in("status", ["trialing", "authenticated", "active"]).gt("current_period_end", new Date().toISOString()).limit(1).maybeSingle();
+    const { data: subscriptions, error: lookupError } = await admin.from("billing_subscriptions")
+      .select("id,status,current_period_end,trial_ends_at,cancel_at_cycle_end,created_at,updated_at")
+      .eq("user_id", user.id)
+      .in("status", ["active", "trialing", "authenticated", "pending", "cancelled", "canceled", "created"])
+      .order("created_at", { ascending: false });
     if (lookupError) throw new Error("Could not check your current plan.");
-    if (activePlan) return NextResponse.json({ error: "You already have an active plan. Cancel its renewal before starting another." }, { status: 409 });
-    const { data: pendingPlan, error: pendingError } = await admin.from("billing_subscriptions").select("id").eq("user_id", user.id).eq("status", "created").gt("created_at", new Date(Date.now() - 30 * 60 * 1000).toISOString()).limit(1).maybeSingle();
-    if (pendingError) throw new Error("Could not check for an existing checkout.");
-    if (pendingPlan) return NextResponse.json({ error: "A plan checkout is already in progress. Complete it or try again in 30 minutes." }, { status: 409 });
+    const decision = getCheckoutBlockDecision((subscriptions || []) as CheckoutSubscription[]);
+    for (const row of decision.unknownExpiryRows) {
+      console.warn("Billing checkout blocked for subscription with unknown expiry.", {
+        userId: user.id,
+        rowId: row.id,
+        status: row.status,
+      });
+    }
+    if (decision.reason) return NextResponse.json({ error: checkoutBlockMessages[decision.reason] }, { status: 409 });
     const period = billingCycle === "yearly" ? "yearly" : "monthly";
     const planKey = `${plan}_${billingCycle}`;
     const { data: cachedPlan, error: planLookupError } = await admin.from("billing_plan_catalog").select("razorpay_plan_id,amount").eq("plan_key", planKey).maybeSingle();
@@ -76,4 +158,8 @@ export async function POST(request: NextRequest) {
     logServerError({ operation: "billing.checkout.create", route: "/api/billing/checkout" }, error);
     return NextResponse.json({ error: "Secure checkout could not be started. Please try again." }, { status: 502 });
   }
+}
+
+export namespace POST {
+  export const getCheckoutBlockDecisionForTests = getCheckoutBlockDecision;
 }

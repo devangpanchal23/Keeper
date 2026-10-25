@@ -1,9 +1,9 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedSupabaseUser } from "@/lib/supabase/auth";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { getRazorpayClient } from "@/lib/razorpay";
 import { logServerError } from "@/lib/monitoring";
+import { verifyRazorpaySubscriptionSignature } from "@/lib/razorpay-signatures";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -25,9 +25,7 @@ export async function POST(request: NextRequest) {
 
   const secret = process.env.RAZORPAY_KEY_SECRET;
   if (!secret) return NextResponse.json({ error: "Payments are not configured." }, { status: 503 });
-  const expected = createHmac("sha256", secret).update(`${paymentId}|${subId}`).digest();
-  const provided = Buffer.from(signature, "hex");
-  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+  if (!verifyRazorpaySubscriptionSignature(paymentId, subId, signature, secret)) {
     return NextResponse.json({ error: "Razorpay signature could not be verified." }, { status: 400 });
   }
 
