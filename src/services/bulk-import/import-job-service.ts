@@ -444,12 +444,7 @@ export class ImportJobService {
       throw new Error(`Job ${jobId} not found.`);
     }
 
-    // Check quota limits before starting job
-    const initialLimits = StorageService.getImportLimits(job.userId);
-    if (initialLimits.remaining <= 0) {
-      throw new Error("Import limit reached: 0 remaining imports. Upgrade or reset your limits to continue.");
-    }
-
+    // Open-Source Edition: Unlimited imports for all users, no quota roadblocks
     job.status = "processing";
     job.startedAt = job.startedAt || new Date().toISOString();
     cancellationTokens.set(jobId, false);
@@ -516,28 +511,6 @@ export class ImportJobService {
         // Stage 1: PROCESSING / EXTRACTING
         item.status = "extracting";
         this.notifyProgress(job);
-
-        // Check remaining import limits quota before ingesting item
-        const currentLimits = StorageService.getImportLimits(job.userId);
-        if (typeof window === "undefined" && currentLimits.remaining <= 0) {
-          item.status = "failed";
-          item.retryCount = (item.retryCount || 0) + 1;
-          item.error = {
-            code: "ERR_IMPORT_LIMIT_EXCEEDED",
-            provider: item.platform,
-            stage: "enrichment",
-            message: "Import limit reached (0 remaining). Quota exhausted.",
-            category: "rate_limit",
-            isRetryable: false,
-            userActionRequired: true,
-            suggestedAction: "Reset or upgrade your import quota to import more items.",
-          };
-          item.processedAt = new Date().toISOString();
-          job.failedCount++;
-          job.processedItems++;
-          this.notifyProgress(job);
-          continue;
-        }
 
         try {
           // Browser imports go through the authenticated server boundary, where

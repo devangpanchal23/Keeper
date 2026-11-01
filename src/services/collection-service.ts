@@ -34,7 +34,7 @@ export class CollectionService {
       name: trimmedName,
       color: collection.color || "#6366f1",
       icon: collection.icon || "Folder",
-      id: `col-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: `col-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

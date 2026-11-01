@@ -7041,7 +7041,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
             const idx = trimmed.indexOf("=");
             if (idx !== -1) {
               const k = trimmed.slice(0, idx).trim();
-              const v = trimmed.slice(idx + 1).trim();
+              const v = trimmed.slice(idx + 1).trim().replace(/^["']|["']$/g, "");
               if (k === "NEXT_PUBLIC_SUPABASE_URL") supabaseUrl = v;
               if (k === "SUPABASE_SERVICE_ROLE_KEY") serviceKey = v;
             }
@@ -7049,7 +7049,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         }
       }
 
-      if (supabaseUrl && serviceKey) {
+      if (supabaseUrl && serviceKey && supabaseUrl.startsWith("http")) {
         const { createClient } = await import("@supabase/supabase-js");
         const admin = createClient(supabaseUrl, serviceKey, {
           auth: { persistSession: false, autoRefreshToken: false },
@@ -7488,6 +7488,143 @@ Comment ***GitHub*** and I'll send you the complete guide to make it look clean,
       });
       assert(res.savedItem.title.includes("De8uW1PTam9"), "Title retains informative shortcode rather than generic 'Saved source'");
       assertEqual(res.savedItem.contentType, "reel", "Correctly identifies as a reel");
+    });
+
+    console.log("\n--- Section 26: Open-Source Bulk Import Unlimited Scale & Quota Resilience Tests ---");
+
+    const defaultTestImportOptions = {
+      targetCollectionId: undefined,
+      autoOrganize: true,
+      skipDuplicates: true,
+      duplicateStrategy: "skip" as const,
+      aiEnrichmentMode: "fast_metadata" as const,
+      defaultTags: ["OpenSourceTest"],
+      concurrencyLimit: 2,
+    };
+
+    await test("Open-Source Bulk Import: Job starts and processes successfully even when legacy remaining quota was 0", async () => {
+      const quotaUser = "user-zero-quota-test";
+      // Force user's legacy limits to 0 remaining
+      StorageService.setImportLimits({ total: 30, used: 30 }, quotaUser);
+      const preLimits = StorageService.getImportLimits(quotaUser);
+      assertEqual(preLimits.used, 30, "Legacy used is 30");
+
+      const candidates = [
+        {
+          originalUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+          title: "Rick Astley - Never Gonna Give You Up",
+          platform: "youtube" as const,
+        },
+      ];
+
+      const analyzed = ImportJobService.analyzeCandidates(candidates, [], "youtube").candidateItems;
+      const job = ImportJobService.createJob({
+        userId: quotaUser,
+        platform: "youtube",
+        sourceName: "YouTube",
+        sourceType: "export_file",
+        items: analyzed,
+        options: defaultTestImportOptions,
+      });
+
+      // In open-source edition, starting this job must not throw quota exhausted error
+      const report = await ImportJobService.startJob(job.id);
+      assertEqual(report.jobId, job.id, "Report maps to job ID");
+      assertEqual(report.summary.imported, 1, "Item processed successfully without quota block");
+      assert(report.summary.failed === 0, "No items failed due to artificial quotas");
+    });
+
+    await test("Open-Source Bulk Import: Scalability test handles 1,000 items efficiently without quadratic slowdown", () => {
+      // YouTube IDs must be exactly 11 characters
+      const largeCandidates = Array.from({ length: 1000 }, (_, i) => ({
+        originalUrl: `https://www.youtube.com/watch?v=vid${i.toString().padStart(8, "0")}`,
+        title: `Scale Video ${i}`,
+        platform: "youtube" as const,
+      }));
+
+      const startTime = performance.now();
+      const analysis = ImportJobService.analyzeCandidates(largeCandidates, [], "youtube");
+      const elapsed = performance.now() - startTime;
+
+      assertEqual(analysis.total, 1000, "1000 items analyzed");
+      assertEqual(analysis.ready, 1000, "All unique items ready");
+      assertEqual(analysis.batchDuplicates, 0, "Zero batch duplicates");
+      assert(elapsed < 1000, `1000-item candidate analysis is sub-second (took ${Math.round(elapsed)}ms)`);
+    });
+
+    await test("Open-Source Bulk Import: Internal batch duplicates at scale are accurately deduplicated", () => {
+      // 500 unique URLs + 500 duplicate occurrences (11-char IDs)
+      const candidates = [];
+      for (let i = 0; i < 500; i++) {
+        const url = `https://www.youtube.com/watch?v=dup${i.toString().padStart(8, "0")}`;
+        candidates.push({ originalUrl: url, title: `Video ${i} (First)`, platform: "youtube" as const });
+        candidates.push({ originalUrl: url, title: `Video ${i} (Duplicate)`, platform: "youtube" as const });
+      }
+
+      assertEqual(candidates.length, 1000, "Total batch size is 1000");
+      const analysis = ImportJobService.analyzeCandidates(candidates, [], "youtube");
+      assertEqual(analysis.total, 1000, "Total items analyzed is 1000");
+      assertEqual(analysis.ready, 500, "500 unique items ready");
+      assertEqual(analysis.batchDuplicates, 500, "500 duplicate occurrences caught");
+    });
+
+    await test("Open-Source Bulk Import: Concurrent jobs from different users remain completely isolated", async () => {
+      const userAlpha = "user-alpha-concurrent";
+      const userBeta = "user-beta-concurrent";
+
+      const candAlpha = ImportJobService.analyzeCandidates([
+        { originalUrl: "https://www.youtube.com/watch?v=alpha000001", title: "Alpha Video", platform: "youtube" as const },
+      ], [], "youtube").candidateItems;
+
+      const candBeta = ImportJobService.analyzeCandidates([
+        { originalUrl: "https://www.youtube.com/watch?v=beta0000001", title: "Beta Video", platform: "youtube" as const },
+      ], [], "youtube").candidateItems;
+
+      const jobAlpha = ImportJobService.createJob({
+        userId: userAlpha,
+        platform: "youtube",
+        sourceName: "YouTube",
+        sourceType: "export_file",
+        items: candAlpha,
+        options: defaultTestImportOptions,
+      });
+      const jobBeta = ImportJobService.createJob({
+        userId: userBeta,
+        platform: "youtube",
+        sourceName: "YouTube",
+        sourceType: "export_file",
+        items: candBeta,
+        options: defaultTestImportOptions,
+      });
+
+      // Run concurrently
+      const [reportAlpha, reportBeta] = await Promise.all([
+        ImportJobService.startJob(jobAlpha.id),
+        ImportJobService.startJob(jobBeta.id),
+      ]);
+
+      assertEqual(reportAlpha.userId, userAlpha, "Alpha report belongs to userAlpha");
+      assertEqual(reportBeta.userId, userBeta, "Beta report belongs to userBeta");
+      assertEqual(reportAlpha.summary.imported, 1, "Alpha job completed successfully");
+      assertEqual(reportBeta.summary.imported, 1, "Beta job completed successfully");
+
+      const alphaReports = ImportJobService.getReports(userAlpha);
+      const betaReports = ImportJobService.getReports(userBeta);
+      assert(alphaReports.some((r) => r.jobId === jobAlpha.id), "Alpha report retrieved for userAlpha");
+      assert(!alphaReports.some((r) => r.jobId === jobBeta.id), "Beta report NOT leaked to userAlpha");
+      assert(betaReports.some((r) => r.jobId === jobBeta.id), "Beta report retrieved for userBeta");
+      assert(!betaReports.some((r) => r.jobId === jobAlpha.id), "Alpha report NOT leaked to userBeta");
+    });
+
+    await test("Open-Source Bulk Import: deductImportLimit accurately records usage without hitting ceiling", () => {
+      const testUser = "user-accounting-test";
+      StorageService.setImportLimits({ total: 30, used: 25 }, testUser);
+
+      // Deduct 10 items (more than remaining 5)
+      const res = StorageService.deductImportLimit(10, testUser);
+      assert(res.success, "Deduction succeeds in open-source edition");
+      assertEqual(res.limits.used, 35, "Used correctly incremented to 35");
+      assert(res.limits.remaining > 0, "Remaining capacity dynamically preserved for open-source users");
     });
 
     // Summary

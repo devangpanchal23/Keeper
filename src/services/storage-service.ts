@@ -325,12 +325,10 @@ export class StorageService {
 
   static deductImportLimit(count = 1, userId?: string): { success: boolean; limits: ImportLimits } {
     const current = this.getImportLimits(userId);
-    if (current.remaining < count || current.remaining <= 0) {
-      return { success: false, limits: current };
-    }
-
+    // Open-Source Edition: Unlimited imports; expand total so quota is never exhausted
     const newUsed = current.used + count;
-    const updated = this.setImportLimits({ total: current.total, used: newUsed }, userId);
+    const newTotal = Math.max(current.total, newUsed + 1000);
+    const updated = this.setImportLimits({ total: newTotal, used: newUsed }, userId);
     return { success: true, limits: updated };
   }
 
