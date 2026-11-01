@@ -1,5 +1,4 @@
 import { AuthSession, User, UserRecord } from "@/types";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
 
 const STORAGE_KEYS = {
@@ -178,7 +177,10 @@ export class AuthService {
       const raw = localStorage.getItem(STORAGE_KEYS.SESSION);
       if (!raw) return null;
       const session: AuthSession = JSON.parse(raw);
-      if (!session.token || !session.userId) return null;
+      if (!session.token || !session.userId || !Number.isFinite(Date.parse(session.expiresAt)) || Date.parse(session.expiresAt) <= Date.now()) {
+        this.clearSession();
+        return null;
+      }
       return session;
     } catch {
       return null;
@@ -233,19 +235,24 @@ export class AuthService {
   }
 
   static async getCurrentUserAsync(): Promise<User | null> {
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) return this.getCurrentUser();
     try {
-      const client = createSupabaseBrowserClient();
-      const { data, error } = await client.auth.getSession();
-      if (error) throw error;
-      if (data.session?.user) {
-        return this.cacheSupabaseUser(data.session.user, data.session.access_token, data.session.expires_at).user;
+      const response = await fetch("/api/auth/session", { cache: "no-store" });
+      if (!response.ok) {
+        this.clearSession();
+        return null;
       }
+      const { user } = await response.json() as { user: SupabaseUser | null };
+      if (!user) {
+        this.clearSession();
+        return null;
+      }
+      return this.cacheSupabaseUser(user).user;
     } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes("Supabase is not configured")) {
-        console.warn("Supabase session could not be restored:", error);
-      }
+      console.warn("Could not restore the authenticated Keeper session.", error);
+      this.clearSession();
+      return null;
     }
-    return this.getCurrentUser();
   }
 
   /**
@@ -276,21 +283,18 @@ export class AuthService {
       throw new Error("Password must be at least 6 characters long.");
     }
 
-    let client: ReturnType<typeof createSupabaseBrowserClient>;
-    try { client = createSupabaseBrowserClient(); }
-    catch (err) {
-      if (err instanceof Error && err.message.includes("Supabase is not configured")) return this.signupLocalPrototype(cleanName, cleanEmail, password);
-      throw err;
-    }
-    const { data: result, error } = await client.auth.signUp({
-      email: cleanEmail,
-      password,
-      options: { data: { full_name: cleanName, name: cleanName }, emailRedirectTo: `${window.location.origin}/auth/callback?next=%2Fapp` },
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) return this.signupLocalPrototype(cleanName, cleanEmail, password);
+    const response = await fetch("/api/auth/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: cleanName, email: cleanEmail, password }),
     });
-    if (error) throw new Error(error.message);
-    if (!result.user) throw new Error("Keeper could not create your account. Please try again.");
-    if (!result.session) throw new Error("CONFIRMATION_REQUIRED: Account created. Check your email to confirm your address, then sign in to continue.");
-    return this.cacheSupabaseUser(result.user, result.session.access_token, result.session.expires_at);
+    const result = await response.json() as { user?: SupabaseUser; error?: string; confirmationRequired?: boolean };
+    if (response.status === 202 && result.confirmationRequired) {
+      throw new Error("CONFIRMATION_REQUIRED: Account created. Check your email to confirm your address, then sign in to continue.");
+    }
+    if (!response.ok || !result.user) throw new Error(result.error || "Keeper could not create your account. Please try again.");
+    return this.cacheSupabaseUser(result.user);
   }
 
   /**
@@ -313,24 +317,17 @@ export class AuthService {
       throw new Error("Please enter your password.");
     }
 
-    if (cleanEmail === "devang@recall.ai" && (password === "demo1234" || password === "••••••••••••")) {
-      const demoRecord = this.findUserByEmail(cleanEmail);
-      if (demoRecord) {
-        const token = `tok_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-        this.setSession({ token, userId: demoRecord.id, email: demoRecord.email, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() });
-        return { user: sanitizeUser(demoRecord), token };
-      }
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+      return this.loginLocalPrototype(cleanEmail, password);
     }
-    let client: ReturnType<typeof createSupabaseBrowserClient>;
-    try { client = createSupabaseBrowserClient(); }
-    catch (err) {
-      if (err instanceof Error && err.message.includes("Supabase is not configured")) return this.loginLocalPrototype(cleanEmail, password);
-      throw err;
-    }
-    const { data: result, error } = await client.auth.signInWithPassword({ email: cleanEmail, password });
-    if (error) throw new Error(error.message);
-    if (!result.user || !result.session) throw new Error("Keeper could not verify this account. Please try again.");
-    return this.cacheSupabaseUser(result.user, result.session.access_token, result.session.expires_at);
+    const response = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: cleanEmail, password }),
+    });
+    const result = await response.json() as { user?: SupabaseUser; error?: string };
+    if (!response.ok || !result.user) throw new Error(result.error || "Keeper could not verify this account. Please try again.");
+    return this.cacheSupabaseUser(result.user);
   }
 
   private static async signupLocalPrototype(name: string, email: string, password: string): Promise<{ user: User; token: string }> {
@@ -363,7 +360,7 @@ export class AuthService {
     return { user: sanitizeUser(record), token };
   }
 
-  private static cacheSupabaseUser(authUser: SupabaseUser, accessToken: string, expiresAt?: number): { user: User; token: string } {
+  private static cacheSupabaseUser(authUser: SupabaseUser): { user: User; token: string } {
     const now = new Date().toISOString();
     const name = String(authUser.user_metadata?.full_name || authUser.user_metadata?.name || authUser.email?.split("@")[0] || "Keeper user");
     const existing = this.findUserById(authUser.id);
@@ -384,13 +381,13 @@ export class AuthService {
     const users = this.getUsers().filter((user) => user.id !== authUser.id);
     this.saveUsers([...users, record]);
     const session: AuthSession = {
-      token: accessToken,
+      token: "supabase-server-session",
       userId: authUser.id,
       email: record.email,
-      expiresAt: new Date((expiresAt || Math.floor(Date.now() / 1000 + 3600)) * 1000).toISOString(),
+      expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
     };
     this.setSession(session);
-    return { user: sanitizeUser(record), token: accessToken };
+    return { user: sanitizeUser(record), token: session.token };
   }
 
   /**
@@ -398,11 +395,14 @@ export class AuthService {
    */
   static async logout(): Promise<void> {
     try {
-      await createSupabaseBrowserClient().auth.signOut();
-    } catch (err) {
-      if (!(err instanceof Error) || !err.message.includes("Supabase is not configured")) throw err;
+      if (process.env.NEXT_PUBLIC_SUPABASE_URL) {
+        const response = await fetch("/api/auth/logout", { method: "POST" });
+        if (!response.ok) throw new Error("Keeper could not invalidate the current session.");
+      }
+    } finally {
+      this.clearSession();
+      if (this.isClient()) localStorage.setItem("keeper_auth_logout_signal_v1", String(Date.now()));
     }
-    this.clearSession();
   }
 
   /**
@@ -465,15 +465,18 @@ export class AuthService {
 
     const isSupabaseAccount = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId);
     if (isSupabaseAccount) {
-      const { data, error } = await createSupabaseBrowserClient().auth.updateUser({
-        ...(updates.email !== undefined ? { email: updatedEmail } : {}),
-        data: { full_name: updatedName, name: updatedName },
+      const response = await fetch("/api/auth/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...(updates.email !== undefined ? { email: updatedEmail } : {}), name: updatedName }),
       });
-      if (error) throw new Error(error.message);
-      if (updates.email !== undefined && data.user.new_email) {
-        throw new Error(`Confirm the email change using the link sent to ${data.user.new_email}.`);
+      const result = await response.json() as { user?: SupabaseUser; newEmailPending?: boolean; error?: string };
+      if (!response.ok || !result.user) throw new Error(result.error || "Profile update failed.");
+      if (updates.email !== undefined && result.newEmailPending) {
+        throw new Error(`Confirm the email change using the link sent to ${result.user.new_email || updatedEmail}.`);
       }
-      updatedEmail = data.user.email || updatedEmail;
+      updatedEmail = result.user.email || updatedEmail;
+      updatedName = String(result.user.user_metadata?.full_name || result.user.user_metadata?.name || updatedName);
     }
 
     const updatedRecord: UserRecord = {
@@ -545,11 +548,13 @@ export class AuthService {
       if (!data.newPassword || data.newPassword.length < 6) {
         throw new Error("New password must be at least 6 characters long.");
       }
-      const client = createSupabaseBrowserClient();
-      const { error: signInError } = await client.auth.signInWithPassword({ email: user.email, password: data.currentPassword });
-      if (signInError) throw new Error("Incorrect current password.");
-      const { error: updateError } = await client.auth.updateUser({ password: data.newPassword });
-      if (updateError) throw new Error(updateError.message);
+      const response = await fetch("/api/auth/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || "Password update failed.");
       return;
     }
     const currentMatches = await verifyPassword(data.currentPassword, user.passwordHash);

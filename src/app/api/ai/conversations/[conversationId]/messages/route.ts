@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createBackendServerClient } from "@/lib/database/backend-client";
 
 export const dynamic = "force-dynamic";
 type Context = { params: Promise<{ conversationId: string }> };
 
 async function ownedConversation(conversationId: string) {
-  const client = await createSupabaseServerClient();
+  const client = await createBackendServerClient();
   const { data: { user }, error: authError } = await client.auth.getUser();
   if (authError || !user) return { client, user: null, conversation: null };
   const { data: conversation, error } = await client.from("keeper_ai_conversations")

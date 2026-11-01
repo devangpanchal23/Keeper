@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createBackendServerClient } from "@/lib/database/backend-client";
 import { logServerError } from "@/lib/monitoring";
 import { ContentService } from "@/services/content-service";
 import { IngestionService } from "@/services/ingestion-service";
@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export async function GET(_request: NextRequest, context: { params: Promise<{ id: string }> }) {
   let supabase;
   try {
-    supabase = await createSupabaseServerClient();
+    supabase = await createBackendServerClient();
   } catch {
     return NextResponse.json({ error: "Workspace media is not configured." }, { status: 503 });
   }
@@ -30,7 +30,7 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
 export async function POST(_request: NextRequest, context: { params: Promise<{ id: string }> }) {
   let supabase;
   try {
-    supabase = await createSupabaseServerClient();
+    supabase = await createBackendServerClient();
   } catch {
     return NextResponse.json({ error: "Workspace AI processing is not configured." }, { status: 503 });
   }

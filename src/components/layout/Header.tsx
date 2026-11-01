@@ -265,8 +265,11 @@ export const Header: React.FC<HeaderProps> = ({ onMobileMenuToggle }) => {
                   <button
                     onClick={async () => {
                       setProfileOpen(false);
-                      await logout();
-                      router.push("/sign-in");
+                      try {
+                        await logout();
+                      } finally {
+                        router.replace("/sign-in");
+                      }
                     }}
                     className="w-full text-left px-3 py-2 rounded-xl text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors font-medium"
                   >

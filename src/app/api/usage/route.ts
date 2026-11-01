@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createBackendServerClient } from "@/lib/database/backend-client";
 import { FREE_PLAN, KEEPER_BILLING_PLANS } from "@/lib/billing-plans";
 
 export const dynamic = "force-dynamic";
@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   let supabase;
   try {
-    supabase = await createSupabaseServerClient();
+    supabase = await createBackendServerClient();
   } catch {
     return NextResponse.json({ error: "Usage storage is not configured." }, { status: 503 });
   }
@@ -21,7 +21,7 @@ export async function GET() {
   const subscription = subscriptions?.find((entry) => {
     const end = entry.current_period_end || entry.trial_ends_at;
     const isEntitledStatus = ["active", "trialing", "authenticated"].includes(entry.status)
-      || (["cancelled", "canceled"].includes(entry.status) && entry.cancel_at_cycle_end);
+      || (["cancelled", "canceled"].includes(entry.status) && (entry.cancel_at_cycle_end || Boolean(entry.trial_ends_at)));
     return isEntitledStatus && end && Date.parse(end) > now.getTime();
   });
 

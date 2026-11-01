@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { createBackendAdminClient } from "@/lib/database/backend-client";
 import { logServerError } from "@/lib/monitoring";
 import { Collection, SavedItem } from "@/types";
 import type { GroundedContentAnalysis } from "@/services/content-analysis-service";
@@ -56,7 +56,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   let admin;
   try {
-    admin = createSupabaseAdminClient();
+    admin = createBackendAdminClient();
   } catch {
     return NextResponse.json({ error: "Supabase worker storage is not configured." }, { status: 503 });
   }

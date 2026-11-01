@@ -42,8 +42,8 @@ export class CollectionService {
     return newCollection;
   }
 
-  static update(id: string, updates: Partial<Omit<Collection, "id" | "createdAt">>): Collection | null {
-    const collections = this.getAll();
+  static update(id: string, updates: Partial<Omit<Collection, "id" | "createdAt">>, userId?: string): Collection | null {
+    const collections = this.getAll(userId);
     const index = collections.findIndex((c) => c.id === id);
     if (index === -1) return null;
 
@@ -53,19 +53,19 @@ export class CollectionService {
       updatedAt: new Date().toISOString(),
     };
     collections[index] = updated;
-    StorageService.saveCollections(collections);
+    StorageService.saveCollections(collections, userId);
     return updated;
   }
 
-  static delete(id: string): boolean {
-    const collections = this.getAll();
+  static delete(id: string, userId?: string): boolean {
+    const collections = this.getAll(userId);
     const filtered = collections.filter((c) => c.id !== id);
     if (filtered.length === collections.length) return false;
 
-    StorageService.saveCollections(filtered);
+    StorageService.saveCollections(filtered, userId);
 
     // Also remove collectionId from any items pointing to this collection
-    const items = StorageService.getItems();
+    const items = StorageService.getItems(userId);
     const updatedItems = items.map((item) => {
       if (item.collectionId === id) {
         return { ...item, collectionId: undefined };
@@ -78,7 +78,7 @@ export class CollectionService {
       }
       return item;
     });
-    StorageService.saveItems(updatedItems);
+    StorageService.saveItems(updatedItems, userId);
     return true;
   }
 

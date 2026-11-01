@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { ContentType, Platform, SavedItem } from "@/types";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createBackendServerClient } from "@/lib/database/backend-client";
 import { AssistantAnswerService } from "@/services/assistant-answer-service";
 
 export const dynamic = "force-dynamic";
@@ -83,7 +83,7 @@ function sanitizeItem(value: unknown): SavedItem | null {
 export async function POST(request: NextRequest) {
   let supabase;
   try {
-    supabase = await createSupabaseServerClient();
+    supabase = await createBackendServerClient();
   } catch {
     return NextResponse.json({ error: "Assistant model access is unavailable." }, { status: 503 });
   }

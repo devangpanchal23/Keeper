@@ -5,7 +5,7 @@ import Link from "next/link";
 import { ArrowRight, Check, Clock3, CreditCard, ExternalLink, Loader2, ReceiptText, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import { useRecall } from "@/context/RecallContext";
 import { KEEPER_BILLING_PLANS, type KeeperBillingCycle, type KeeperPlanId } from "@/lib/billing-plans";
-import { startKeeperSubscription } from "@/lib/subscription-checkout";
+import { prepareRazorpayCheckout, startKeeperSubscription } from "@/lib/subscription-checkout";
 
 type BillingSubscription = {
   id: string;
@@ -67,6 +67,7 @@ export function BillingSection() {
   }, [syncBillingTier]);
 
   useEffect(() => {
+    void prepareRazorpayCheckout().catch((error: unknown) => console.warn("Razorpay preload failed; checkout will retry on demand.", error));
     let current = true;
     void fetchBilling().then((result) => {
       if (!current) return;
@@ -97,15 +98,23 @@ export function BillingSection() {
   };
 
   const cancel = async (subscription: BillingSubscription) => {
-    if (!window.confirm("Cancel renewal for this plan? Your access will continue through the current paid period.")) return;
+    const isTrial = ["trialing", "authenticated"].includes(subscription.status);
+    const confirmation = isTrial
+      ? "Cancel this plan? Your trial access will continue until it ends, and no subscription charge will be made."
+      : "Cancel renewal for this plan? Your access will continue through the current paid period.";
+    if (!window.confirm(confirmation)) return;
     setWorking(`cancel-${subscription.id}`);
     setMessage(null);
     try {
       const response = await fetch("/api/billing/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subscriptionId: subscription.id }) });
-      const result = await response.json() as { error?: string };
+      const result = await response.json() as { error?: string; access_ends_at?: string | null };
       if (!response.ok) throw new Error(result.error || "Cancellation could not be completed.");
-      setMessage({ text: "Renewal cancelled. Your plan remains active until the current period ends." });
-      addToast("Renewal cancelled", "You’ll keep plan access through the end of the billing period.", "success");
+      const endDate = result.access_ends_at ? date(result.access_ends_at) : null;
+      const cancellationMessage = isTrial
+        ? `Your trial is cancelled. No subscription charge will be made${endDate ? `, and trial access continues until ${endDate}` : ""}.`
+        : `Renewal cancelled. Your plan remains active until ${endDate || "the current period ends"}.`;
+      setMessage({ text: cancellationMessage });
+      addToast(isTrial ? "Trial cancelled" : "Renewal cancelled", isTrial ? "No subscription charge will be made." : "You’ll keep plan access through the end of the billing period.", "success");
       await load();
     } catch (error) {
       setMessage({ text: error instanceof Error ? error.message : "Cancellation could not be completed.", error: true });
@@ -133,7 +142,7 @@ export function BillingSection() {
           <div className="keeper-current-plan-top">
             <div className="keeper-current-plan-icon"><ShieldCheck size={18} /></div>
             <div><span className="keeper-current-label">CURRENT PLAN</span><h3>{active ? `${planTitle(active.plan)}${active.status === "trialing" ? " trial" : ""}` : "Free"}</h3></div>
-            <span className={`keeper-plan-status ${active ? "is-active" : "is-free"}`}>{active ? active.cancel_at_cycle_end ? "CANCELS AT PERIOD END" : active.status.toUpperCase() : "ACTIVE"}</span>
+            <span className={`keeper-plan-status ${active ? "is-active" : "is-free"}`}>{active ? active.cancel_at_cycle_end ? "CANCELS AT PERIOD END" : active.status === "cancelled" && active.trial_ends_at ? "TRIAL CANCELLED" : active.status.toUpperCase() : "ACTIVE"}</span>
           </div>
           {active ? <>
             <p className="keeper-current-price">{money(active.amount, active.currency)} <span>/ {active.billing_cycle === "monthly" ? "month" : "year"}</span></p>
@@ -145,7 +154,7 @@ export function BillingSection() {
             <div className="keeper-subscription-ref"><span>Subscription reference</span><code>{active.razorpay_subscription_id}</code></div>
             {active.status === "trialing" && <p className="keeper-trial-note"><Clock3 size={14} /> 7-day trial · First charge {date(active.trial_ends_at)} · Cancel anytime before renewal</p>}
             <div className="keeper-current-actions">
-              {!active.cancel_at_cycle_end && <button type="button" className="keeper-cancel-plan" disabled={working === `cancel-${active.id}`} onClick={() => void cancel(active)}>{working === `cancel-${active.id}` ? <Loader2 size={15} className="animate-spin" /> : null} Cancel plan</button>}
+              {!active.cancel_at_cycle_end && !["cancelled", "canceled"].includes(active.status) && <button type="button" className="keeper-cancel-plan" disabled={working === `cancel-${active.id}`} onClick={() => void cancel(active)}>{working === `cancel-${active.id}` ? <Loader2 size={15} className="animate-spin" /> : null} Cancel plan</button>}
               <a href="https://razorpay.com" target="_blank" rel="noreferrer" className="keeper-razorpay-note">Payments securely handled by Razorpay <ExternalLink size={13} /></a>
             </div>
           </> : <div className="keeper-free-plan-copy"><p>You’re using Keeper Free. Choose Basic or Pro below to unlock a larger save allowance and expanded import features.</p><span>No active paid plan or upcoming charge.</span></div>}
@@ -161,7 +170,7 @@ export function BillingSection() {
           {plans.map((plan) => {
             const planInfo = KEEPER_BILLING_PLANS[plan][cycle];
             const isCurrent = active?.plan === plan && active.billing_cycle === cycle && !active.cancel_at_cycle_end;
-            const hasActivePlan = Boolean(active && ["trialing", "authenticated", "active"].includes(active.status));
+            const hasActivePlan = Boolean(active);
             return <article key={plan} className={`keeper-billing-plan${plan === "pro" ? " featured" : ""}`}>
               <div className="keeper-billing-plan-title"><span>{planTitle(plan)}</span>{plan === "pro" && <b>MOST POPULAR</b>}</div>
               <p className="keeper-billing-plan-price">{money(planInfo.amount, "INR")}<span> / {cycle === "monthly" ? "month" : "year"}</span></p>

@@ -1,6 +1,7 @@
-import { SavedItem } from "@/types";
+import { Collection, SavedItem } from "@/types";
 import { MetadataNormalizer } from "./normalizer/metadata-normalizer";
 import { StorageService } from "./storage-service";
+import { ContentService } from "./content-service";
 
 export interface MigrationRepairReport {
   scannedCount: number;
@@ -274,4 +275,133 @@ export class MigrationService {
 
     return report;
   }
+
+  /**
+   * Safely and idempotently discovers and migrates local-only legacy storage data
+   * (unnamespaced v1 storage, anonymous workspace saves, or un-synced items)
+   * into the authenticated user's workspace, preventing duplicate records.
+   */
+  public static migrateLegacyData(userId: string): {
+    migratedItemsCount: number;
+    migratedCollectionsCount: number;
+    itemsToSync: SavedItem[];
+    collectionsToSync: Collection[];
+  } {
+    if (!userId) {
+      return {
+        migratedItemsCount: 0,
+        migratedCollectionsCount: 0,
+        itemsToSync: [],
+        collectionsToSync: [],
+      };
+    }
+
+    const storage = StorageService.getStorage();
+    let migratedItemsCount = 0;
+    let migratedCollectionsCount = 0;
+
+    // 1. Gather existing user items & collections
+    const userItems = StorageService.getItems(userId);
+    const userCollections = StorageService.getCollections(userId);
+
+    const existingUrlMap = new Map<string, number>();
+    userItems.forEach((item, idx) => {
+      if (item.url) existingUrlMap.set(item.url.trim().toLowerCase(), idx);
+    });
+
+    const existingColMap = new Map<string, number>();
+    userCollections.forEach((c, idx) => {
+      existingColMap.set(c.id, idx);
+      existingColMap.set(c.name.trim().toLowerCase(), idx);
+    });
+
+    // 2. Scan for legacy item stores
+    const legacyItemKeys = ["recall_saved_items_v1", "recall_items_user_anonymous"];
+    const candidateItems: SavedItem[] = [];
+
+    for (const key of legacyItemKeys) {
+      try {
+        const raw = storage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            candidateItems.push(...parsed);
+          }
+        }
+      } catch {}
+    }
+
+    // Merge candidate items into userItems
+    for (const candidate of candidateItems) {
+      if (!candidate || !candidate.url) continue;
+      const cleanUrl = candidate.url.trim().toLowerCase();
+      const existingIdx = existingUrlMap.get(cleanUrl);
+
+      if (existingIdx !== undefined) {
+        // Merge updates safely
+        userItems[existingIdx] = ContentService.safeMerge(userItems[existingIdx], candidate);
+      } else {
+        // Add new item
+        userItems.push(candidate);
+        existingUrlMap.set(cleanUrl, userItems.length - 1);
+        migratedItemsCount++;
+      }
+    }
+
+    // 3. Scan for legacy collection stores
+    const legacyColKeys = ["recall_collections_v1", "recall_collections_user_anonymous"];
+    const candidateCollections: Collection[] = [];
+
+    for (const key of legacyColKeys) {
+      try {
+        const raw = storage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            candidateCollections.push(...parsed);
+          }
+        }
+      } catch {}
+    }
+
+    for (const col of candidateCollections) {
+      if (!col || !col.id || !col.name) continue;
+      const cleanName = col.name.trim().toLowerCase();
+      if (!existingColMap.has(col.id) && !existingColMap.has(cleanName)) {
+        userCollections.push(col);
+        existingColMap.set(col.id, userCollections.length - 1);
+        existingColMap.set(cleanName, userCollections.length - 1);
+        migratedCollectionsCount++;
+      }
+    }
+
+    // 4. Save merged collections and items to user's isolated local store
+    if (migratedItemsCount > 0 || candidateItems.length > 0) {
+      StorageService.saveItems(userItems, userId);
+    }
+    if (migratedCollectionsCount > 0) {
+      StorageService.saveCollections(userCollections, userId);
+    }
+
+    // 5. Clean up old legacy keys to avoid re-triggering migration
+    for (const key of legacyItemKeys) {
+      try { storage.removeItem(key); } catch {}
+    }
+    for (const key of legacyColKeys) {
+      try { storage.removeItem(key); } catch {}
+    }
+
+    // 6. Find all items that need syncing to the server (e.g. missing serverMediaId)
+    const itemsToSync = userItems.filter(
+      (item) => !item.metadata?.serverMediaId || !item.metadata?.aiProcessingStatus
+    );
+
+    return {
+      migratedItemsCount,
+      migratedCollectionsCount,
+      itemsToSync,
+      collectionsToSync: userCollections,
+    };
+  }
 }
+

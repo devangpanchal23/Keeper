@@ -2,6 +2,8 @@ type MonitoringContext = {
   operation: string;
   route?: string;
   requestId?: string;
+  stage?: string;
+  providerCode?: string;
 };
 
 /** Emit structured server logs without serializing request data or error messages. */
@@ -18,6 +20,8 @@ export function logServerError(
       operation: context.operation,
       route: context.route,
       requestId: context.requestId,
+      stage: context.stage,
+      providerCode: context.providerCode,
       errorType,
       timestamp: new Date().toISOString(),
     }),

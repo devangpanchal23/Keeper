@@ -1,5 +1,13 @@
 # AI Development Handoff
 
+## 2026-10-31 — Authentication implementation follow-up
+
+- Supabase auth now runs through same-origin server endpoints; no provider token is returned to the browser. Provider cookies and a signed seven-day expiry marker are HttpOnly, SameSite=Lax, Secure in production. Proxy enforces expiry across protected pages and APIs. Active tabs poll session status and receive cross-tab logout signals.
+- `AUTH_SESSION_SECRET` is required (at least 32 characters). A local-only value was generated in ignored `.env.local`; configure a unique random value in each deployed environment. Never copy the local value or expose it.
+- Signup enters `/app` if Supabase returns a session. With email confirmation enabled, Supabase returns no session and Keeper asks the user to confirm. Disable confirmation in the intended project for immediate signup; project identity/settings remain unverified.
+- The collection-item DELETE API now derives user identity from Supabase rather than request JSON.
+- Verification: 251/251 automated tests; focused production-file ESLint and `git diff --check` passed. Full lint/type-check/build remain blocked by pre-existing uncommitted database adapter defects (`postgres-store.ts:135` prefer-const; missing `lt` in Mongo/Postgres). Live Supabase/browser tests remain unverified.
+
 ## 2026-10-25 — Corrupted search-service.ts permanent fix
 
 - Fixed the IDE compilation error where `scripts/run-tests.ts:52` reported that `src/services/search-service.ts` was not a module.
@@ -503,3 +511,28 @@ None active for P0. P1 thumbnail acquisition remains in a known, honest limited 
 - Model-generated prose, summaries, tags, and key points are not displayed as source facts. The configured provider can select relevant saved items and return exact source quotes; the app validates each quote and renders it verbatim with the saved title.
 - Limited or metadata-only saved items receive an explicit note that the full steps cannot be verified from the available source.
 - Regression coverage includes the invoice reel query and rejects unsupported model prose. Checks pass: 193/193 tests, TypeScript, Webpack production build, design audit, and focused production-file lint. Full lint passes under the existing ceiling with 238 repository warnings. Live provider and Supabase behavior remain unverified.
+## 2026-10-26 — Razorpay checkout diagnostics and test-mode safeguards
+
+- Added `src/lib/razorpay-config.ts` to default Razorpay to test mode and reject live keys unless both live mode and the explicit live-payment switch are enabled.
+- Updated `.env.example` with `RAZORPAY_MODE=test` and `ALLOW_REAL_RAZORPAY_PAYMENTS=false`. Do not add keys to source control or use live credentials for validation.
+- Added an ignore exception so `.env.example` can be included in version control while `.env.local` remains ignored; the example encryption key is blank.
+- Checkout API now reports safe stage-specific failures and a request reference. Logs include the stage and allowlisted provider code, not raw SDK errors or payment/customer data.
+- Aligned displayed prices/credits and server enforcement through `KEEPER_BILLING_PLANS`; corrected Pro to finite 500 monthly / 6,000 yearly credits and Basic to 300 / 3,600.
+- Updated recurring billing text and added tests for plan values, safe diagnostic codes, and test/live key gating.
+- Follow-up from browser 503: local `.env.local` lacks `SUPABASE_SERVICE_ROLE_KEY`; this is the exact blocking config. Set it from the correct Supabase test project's server-side API keys, restart Next dev, and retry. Do not send the secret through chat or commit it. The code now names missing server variables in the 503 response.
+- Validation: 250/250 tests passed; TypeScript and production Webpack build passed; changed production files lint clean; full lint passed with 239 repo warnings and 0 errors. Live provider/database behavior remains unverified; no production migration or external payment was attempted.
+
+## 2026-10-31 — Razorpay trial/cancellation follow-up
+
+- Checkout dismissal now calls the authenticated cancellation endpoint, which immediately cancels the Razorpay subscription and marks the user-owned local row canceled. Trial cancellation retains access until its scheduled seven-calendar-day end without renewal; paid-plan cancellation retains the paid period.
+- Razorpay is preloaded on authenticated landing/profile billing surfaces and checkout script/provider creation run concurrently. Failed payment events keep the Razorpay modal open to permit retries.
+- Webhook activation cannot undo canceled state. Postgres/Mongo `.lt()` now matches the shared query interface.
+- Delayed payment verification is status-conditional and checks state after writing, preventing a canceled subscription from being reactivated by a late browser callback.
+- `npm test`: 253/253 passed. `npm run type-check`: passed. Full lint: 0 errors / 238 warnings. Turbopack build failed in child-process startup/bind even with escalated execution; `npm run build -- --webpack` passed. No live transaction executed.
+- Next: verify canceled checkout, trial authorization, trial cancellation, seven-day renewal and paid cancellation using the correct Razorpay test account and database credentials. Local `.env.local` is missing `SUPABASE_SERVICE_ROLE_KEY`, so the provider/database lifecycle cannot be exercised here. Do not enable live charges for test runs.
+
+## 2026-10-31 — Resolve retry-blocking stale checkouts
+
+- The billing screenshot's “checkout already in progress” error came from a `created` DB row surviving popup dismissal. Checkout now fetches those Razorpay subscriptions before applying the guard, immediately cancels provider state still `created`, persists terminal states, and only then permits a new subscription. Authorized remote state is synced to avoid duplicate plans.
+- Updated the policy so `created` never silently ages out; provider reconciliation is the required cleanup. Missing provider IDs are retired locally because they cannot charge.
+- Validation: TypeScript passed, tests 253/253, production Webpack build passed, focused lint 0 errors. Live Razorpay/Supabase behavior remains unverified because server billing credentials are absent.

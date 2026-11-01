@@ -1,15 +1,26 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { AUTH_SESSION_COOKIE, AUTH_SESSION_DURATION_SECONDS, authSessionCookieOptions, isAuthSessionMarkerValid } from "@/lib/supabase/auth-session";
 
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  // Keep local development and builds usable when Supabase has not been configured.
-  if (!url || !key) return response;
+  if (!url || !key) {
+    const protectedPath = request.nextUrl.pathname === "/app"
+      || request.nextUrl.pathname.startsWith("/app/")
+      || request.nextUrl.pathname === "/dashboard"
+      || request.nextUrl.pathname.startsWith("/item/")
+      || request.nextUrl.pathname.startsWith("/api/");
+    if (process.env.NODE_ENV === "production" && protectedPath) {
+      return NextResponse.json({ error: "Authentication service is not configured." }, { status: 503, headers: { "Cache-Control": "private, no-store" } });
+    }
+    return response;
+  }
 
   const supabase = createServerClient(url, key, {
+    cookieOptions: { maxAge: AUTH_SESSION_DURATION_SECONDS, ...authSessionCookieOptions },
     cookies: {
       getAll() {
         return request.cookies.getAll();
@@ -24,9 +35,56 @@ export async function proxy(request: NextRequest) {
     },
   });
 
-  // Refresh the token when needed. Route handlers and server components still
-  // perform authorization with the authenticated user; proxy is not an auth gate.
-  await supabase.auth.getClaims();
+  // Supabase's auth provider owns the session and refresh-token validation.
+  // This proxy check is an early navigation guard; API handlers still authorize
+  // independently before reading or changing workspace data.
+  const { data: { user } } = await supabase.auth.getUser();
+  const pathname = request.nextUrl.pathname;
+  const protectedPage = pathname === "/app" || pathname.startsWith("/app/") || pathname === "/dashboard" || pathname.startsWith("/item/");
+  const authPage = pathname === "/sign-in" || pathname === "/sign-up";
+  const publicApi = new Set([
+    "/api/auth/login", "/api/auth/signup", "/api/auth/logout",
+    "/api/health", "/api/webhooks/razorpay", "/api/ai/worker", "/api/bulk-import/capabilities",
+  ]);
+  const protectedApi = pathname.startsWith("/api/") && !publicApi.has(pathname);
+  const marker = request.cookies.get(AUTH_SESSION_COOKIE)?.value;
+  const markerValid = await isAuthSessionMarkerValid(marker);
+  const localPrototypeSession = process.env.NODE_ENV !== "production"
+    && (request.cookies.get("recall_session_token")?.value.startsWith("tok_") ?? false);
+
+  if ((protectedPage && (!user || !markerValid) && !localPrototypeSession) || (protectedApi && (!user || !markerValid))) {
+    if (protectedApi) {
+      const expiredResponse = NextResponse.json({ error: "Your session has expired. Please sign in again." }, { status: 401, headers: { "Cache-Control": "private, no-store" } });
+      if (user || marker) await supabase.auth.signOut({ scope: "local" });
+      expiredResponse.cookies.set(AUTH_SESSION_COOKIE, "", { ...authSessionCookieOptions, maxAge: 0, expires: new Date(0) });
+      response.cookies.getAll().forEach((cookie) => expiredResponse.cookies.set(cookie));
+      return expiredResponse;
+    }
+    const destination = new URL("/sign-in", request.url);
+    destination.searchParams.set("next", `${pathname}${request.nextUrl.search}`);
+    if (user || marker || request.cookies.getAll().some(({ name }) => name.startsWith("sb-") && name.endsWith("-auth-token"))) {
+      destination.searchParams.set("error", "session-expired");
+      await supabase.auth.signOut({ scope: "local" });
+    }
+    const redirectResponse = NextResponse.redirect(destination);
+    redirectResponse.headers.set("Cache-Control", "private, no-store, max-age=0");
+    redirectResponse.cookies.set(AUTH_SESSION_COOKIE, "", { ...authSessionCookieOptions, maxAge: 0, expires: new Date(0) });
+    response.cookies.getAll().forEach((cookie) => redirectResponse.cookies.set(cookie));
+    return redirectResponse;
+  }
+
+  if (authPage && user && !markerValid) {
+    await supabase.auth.signOut({ scope: "local" });
+    const responseAfterSignOut = NextResponse.next({ request });
+    response.cookies.getAll().forEach((cookie) => responseAfterSignOut.cookies.set(cookie));
+    responseAfterSignOut.cookies.set(AUTH_SESSION_COOKIE, "", { ...authSessionCookieOptions, maxAge: 0, expires: new Date(0) });
+    return responseAfterSignOut;
+  }
+
+  if (authPage && (user && markerValid || localPrototypeSession)) {
+    return NextResponse.redirect(new URL("/app", request.url));
+  }
+  if (protectedPage || protectedApi) response.headers.set("Cache-Control", "private, no-store, max-age=0");
   return response;
 }
 

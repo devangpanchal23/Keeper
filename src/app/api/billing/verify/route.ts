@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedSupabaseUser } from "@/lib/supabase/auth";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { createBackendAdminClient } from "@/lib/database/backend-client";
 import { getRazorpayClient } from "@/lib/razorpay";
 import { logServerError } from "@/lib/monitoring";
 import { verifyRazorpaySubscriptionSignature } from "@/lib/razorpay-signatures";
@@ -30,9 +30,10 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const admin = createSupabaseAdminClient();
+    const admin = createBackendAdminClient();
     const { data: record, error } = await admin.from("billing_subscriptions").select("*").eq("razorpay_subscription_id", subId).eq("user_id", user.id).maybeSingle();
     if (error || !record) return NextResponse.json({ error: "This subscription is not linked to your account." }, { status: 404 });
+    if (["cancelled", "canceled"].includes(String(record.status))) return NextResponse.json({ error: "This subscription was canceled and cannot be reactivated." }, { status: 409 });
     const razorpay = getRazorpayClient();
     const payment = await razorpay.payments.fetch(paymentId);
     if (payment.subscription_id !== subId || !["authorized", "captured"].includes(payment.status)) {
@@ -48,8 +49,12 @@ export async function POST(request: NextRequest) {
       current_period_end: subscription.current_end ? new Date(subscription.current_end * 1000).toISOString() : record.trial_ends_at,
       next_payment_at: subscription.charge_at ? new Date(subscription.charge_at * 1000).toISOString() : record.trial_ends_at,
       updated_at: new Date().toISOString(),
-    }).eq("id", record.id);
+    }).eq("id", record.id).eq("user_id", user.id).in("status", ["created", "authenticated", "trialing", "active"]);
     if (updateError) throw new Error("The confirmed subscription could not be saved.");
+    const { data: savedRecord, error: saveCheckError } = await admin.from("billing_subscriptions").select("status").eq("id", record.id).eq("user_id", user.id).maybeSingle();
+    if (saveCheckError || !savedRecord || ["cancelled", "canceled"].includes(String(savedRecord.status))) {
+      return NextResponse.json({ error: "This subscription was canceled and cannot be reactivated." }, { status: 409 });
+    }
     return NextResponse.json({ success: true, trial_ends_at: record.trial_ends_at }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     logServerError({ operation: "billing.subscription.verify", route: "/api/billing/verify" }, error);

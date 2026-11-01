@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -25,7 +25,8 @@ import {
 import { useRecall } from "@/context/RecallContext";
 import { AddContentModal } from "@/components/modals/AddContentModal";
 import { getPlanLabel } from "@/lib/user-plan";
-import { startKeeperSubscription } from "@/lib/subscription-checkout";
+import { prepareRazorpayCheckout, startKeeperSubscription } from "@/lib/subscription-checkout";
+import { KEEPER_BILLING_PLANS } from "@/lib/billing-plans";
 
 type DemoSave = {
   title: string;
@@ -430,15 +431,19 @@ function PricingSection() {
   const [checkoutMessage, setCheckoutMessage] = useState<{ text: string; error: boolean } | null>(null);
   const { user, isAuthenticated, addToast, syncBillingTier } = useRecall();
   const isYearly = billingCycle === "yearly";
+  const formatPrice = (amount: number) => new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  }).format(amount / 100);
   const plans = [
     {
       name: "Basic",
-      monthlyPrice: "₹300",
-      yearlyPrice: "₹3,500",
-      monthlyCredits: "300 save credits each month",
-      yearlyCredits: "3,600 save credits for the year",
-      monthlyCreditCount: 300,
-      yearlyCreditCount: 3600,
+      id: "basic" as const,
+      monthlyPrice: KEEPER_BILLING_PLANS.basic.monthly.amount,
+      yearlyPrice: KEEPER_BILLING_PLANS.basic.yearly.amount,
+      monthlyCredits: `${KEEPER_BILLING_PLANS.basic.monthly.credits.toLocaleString("en-IN")} save credits each month`,
+      yearlyCredits: `${KEEPER_BILLING_PLANS.basic.yearly.credits.toLocaleString("en-IN")} save credits for the year`,
       saving: "₹100",
       featured: false,
       benefits: [
@@ -450,12 +455,11 @@ function PricingSection() {
     },
     {
       name: "Pro",
-      monthlyPrice: "₹500",
-      yearlyPrice: "₹5,500",
-      monthlyCredits: "500 save credits each month",
-      yearlyCredits: "6,000 save credits for the year",
-      monthlyCreditCount: 500,
-      yearlyCreditCount: 6000,
+      id: "pro" as const,
+      monthlyPrice: KEEPER_BILLING_PLANS.pro.monthly.amount,
+      yearlyPrice: KEEPER_BILLING_PLANS.pro.yearly.amount,
+      monthlyCredits: `${KEEPER_BILLING_PLANS.pro.monthly.credits.toLocaleString("en-IN")} save credits each month`,
+      yearlyCredits: `${KEEPER_BILLING_PLANS.pro.yearly.credits.toLocaleString("en-IN")} save credits for the year`,
       saving: "₹500",
       featured: true,
       benefits: [
@@ -512,12 +516,12 @@ function PricingSection() {
         {plans.map((plan) => <article key={plan.name} className={`keeper-plan-card${plan.featured ? " keeper-plan-card-featured" : ""}`}>
           <div className="keeper-plan-topline"><span>KEEPER {plan.name.toUpperCase()}</span><span className="keeper-plan-save">{isYearly ? `SAVE ${plan.saving}` : "FLEXIBLE"}</span></div>
           <h3>{plan.name}</h3>
-          <p className="keeper-plan-price"><strong>{isYearly ? plan.yearlyPrice : plan.monthlyPrice}</strong><span>/ {isYearly ? "year" : "month"}</span></p>
-          <p className="keeper-plan-billing">{isYearly ? <>Then {plan.yearlyPrice} every year · Save {plan.saving} vs monthly</> : <>Then {plan.monthlyPrice} every month</>}</p>
+          <p className="keeper-plan-price"><strong>{formatPrice(isYearly ? plan.yearlyPrice : plan.monthlyPrice)}</strong><span>/ {isYearly ? "year" : "month"}</span></p>
+          <p className="keeper-plan-billing">{isYearly ? <>Then {formatPrice(plan.yearlyPrice)} every year · Save {plan.saving} vs monthly</> : <>Then {formatPrice(plan.monthlyPrice)} every month</>}</p>
           <p className="keeper-plan-credit-allocation">{isYearly ? plan.yearlyCredits : plan.monthlyCredits}</p>
           {isAuthenticated ? (
-            <button type="button" disabled={checkoutBusy !== null} onClick={() => void startCheckout(plan.name.toLowerCase() as "basic" | "pro")} className={`keeper-button keeper-plan-cta${plan.featured ? " keeper-button-gold" : " keeper-button-dark"}`}>
-              {checkoutBusy === `${plan.name.toLowerCase()}-${billingCycle}` ? "Opening secure checkout…" : "Start 7-day trial"}<ArrowRight size={15} />
+            <button type="button" disabled={checkoutBusy !== null} onClick={() => void startCheckout(plan.id)} className={`keeper-button keeper-plan-cta${plan.featured ? " keeper-button-gold" : " keeper-button-dark"}`}>
+              {checkoutBusy === `${plan.id}-${billingCycle}` ? "Opening secure checkout…" : "Start 7-day trial"}<ArrowRight size={15} />
             </button>
           ) : (
             <Link href={`/sign-in?next=${encodeURIComponent("/#pricing")}`} className={`keeper-button keeper-plan-cta${plan.featured ? " keeper-button-gold" : " keeper-button-dark"}`}>Sign in to continue <ArrowRight size={15} /></Link>
@@ -527,7 +531,7 @@ function PricingSection() {
       </div>
       {checkoutMessage && <p role={checkoutMessage.error ? "alert" : "status"} className="keeper-pricing-status">{checkoutMessage.text}</p>}
       <p className="keeper-pricing-credit-note">A credit is used only when Keeper successfully saves an item. Duplicate or unsupported entries in an import don’t use credits.</p>
-      <p className="keeper-pricing-status">Payments are one-time and collected immediately. No free trial, recurring renewal, or automatic charge is active.</p>
+      <p className="keeper-pricing-status">Razorpay manages your recurring subscription. Your first charge is scheduled after the 7-day trial, then renews each billing cycle until you cancel.</p>
     </section>
   );
 }
@@ -558,6 +562,10 @@ function KeeperFooter() {
 
 export function KeeperLanding() {
   const { openAddContent, isAuthenticated, authLoading } = useRecall();
+  useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
+    void prepareRazorpayCheckout().catch((error: unknown) => console.warn("Razorpay preload failed; checkout will retry on demand.", error));
+  }, [authLoading, isAuthenticated]);
 
   return (
     <div id="top" className="keeper-site">

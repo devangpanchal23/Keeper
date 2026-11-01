@@ -5,12 +5,12 @@ export const FREE_PLAN = { amount: 0, credits: 30, cycleDays: 7 } as const;
 
 export const KEEPER_BILLING_PLANS = {
   basic: {
-    monthly: { amount: 30_000, credits: 220 },
-    yearly: { amount: 350_000, credits: 2_640 },
+    monthly: { amount: 30_000, credits: 300 },
+    yearly: { amount: 350_000, credits: 3_600 },
   },
   pro: {
-    monthly: { amount: 50_000, credits: -1 },
-    yearly: { amount: 550_000, credits: -1 },
+    monthly: { amount: 50_000, credits: 500 },
+    yearly: { amount: 550_000, credits: 6_000 },
   },
 } as const satisfies Record<KeeperPlanId, Record<KeeperBillingCycle, { amount: number; credits: number }>>;
 

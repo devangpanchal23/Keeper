@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRecall } from "@/context/RecallContext";
@@ -20,6 +20,14 @@ export default function SignInPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSessionExpired(new URLSearchParams(window.location.search).get("error") === "session-expired");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -103,6 +111,11 @@ export default function SignInPage() {
           </div>
 
           {/* Error Alert */}
+          {sessionExpired && !error && (
+            <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 text-xs" role="status">
+              Your session has expired. Please sign in again.
+            </div>
+          )}
           {error && (
             <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-start gap-2.5 animate-in fade-in">
               <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />

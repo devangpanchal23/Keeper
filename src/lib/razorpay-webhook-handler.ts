@@ -136,11 +136,15 @@ export async function handleRazorpayWebhook(
     } else if (subscription?.id) {
       const record = await store.findSubscription(subscription.id);
       if (record) {
-        const protectedStatuses = new Set(["active", "cancelled", "completed", "halted"]);
+        const protectedStatuses = new Set(["active", "cancelled", "canceled", "completed", "halted"]);
         const isProtectedAuthentication =
           eventType === "subscription.authenticated" && protectedStatuses.has(record.status);
+        const isStaleActivationAfterCancel =
+          ["cancelled", "canceled"].includes(record.status)
+          && eventType !== "subscription.cancelled"
+          && ["subscription.authenticated", "subscription.activated", "subscription.charged"].includes(eventType);
 
-        if (!isProtectedAuthentication) {
+        if (!isProtectedAuthentication && !isStaleActivationAfterCancel) {
           const nextStatus = eventType === "subscription.authenticated" ? "authenticated"
             : eventType === "subscription.cancelled" ? "cancelled"
             : eventType === "subscription.completed" ? "completed"

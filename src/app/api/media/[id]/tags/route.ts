@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createBackendServerClient } from "@/lib/database/backend-client";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +10,7 @@ function cleanTags(value: unknown): string[] | null {
 
 export async function PATCH(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   let supabase;
-  try { supabase = await createSupabaseServerClient(); }
+  try { supabase = await createBackendServerClient(); }
   catch { return NextResponse.json({ error: "Workspace media storage is not configured." }, { status: 503 }); }
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Sign in to update tags." }, { status: 401 });

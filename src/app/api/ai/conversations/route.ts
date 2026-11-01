@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createBackendServerClient } from "@/lib/database/backend-client";
 
 export const dynamic = "force-dynamic";
 
 async function authenticatedClient() {
-  const client = await createSupabaseServerClient();
+  const client = await createBackendServerClient();
   const { data: { user }, error } = await client.auth.getUser();
   return { client, user: error ? null : user };
 }

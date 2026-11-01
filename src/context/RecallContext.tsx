@@ -15,6 +15,11 @@ export interface RecallContextType {
   isAuthenticated: boolean;
   authLoading: boolean;
 
+  // Sync State
+  syncStatus: "idle" | "syncing" | "synced" | "offline" | "error";
+  lastSyncTime: string | null;
+  syncWorkspace: () => Promise<void>;
+
   // Import Limits State & Quota
   importLimits: ImportLimits;
   deductImportLimits: (count?: number) => boolean;
@@ -42,7 +47,7 @@ export interface RecallContextType {
   // Auth Actions
   login: (credentials: { email: string; password: string }) => Promise<void>;
   signup: (data: { name: string; email: string; password: string }) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   updatePlan: (tier: "basic" | "pro") => Promise<void>;
   syncBillingTier: (tier: "free" | "basic" | "pro") => void;
   updateProfile: (updates: { name?: string; email?: string; avatar?: string }) => Promise<void>;
@@ -112,6 +117,10 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
 
+  // Synchronization State
+  const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "synced" | "offline" | "error">("idle");
+  const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
+
   // Workspace items and collections
   const [items, setItems] = useState<SavedItem[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -174,9 +183,134 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const currentUserId = user?.id;
+
+  /**
+   * Central cross-device synchronization engine:
+   * 1. Safely merges legacy local-only data into user's account without duplicates.
+   * 2. Synchronizes collections bidirectionally with server single-source-of-truth.
+   * 3. Synchronizes media items bidirectionally with server single-source-of-truth.
+   * 4. Updates device cache for fast offline resilience.
+   */
+  const syncWorkspace = useCallback(async (targetUserId?: string): Promise<void> => {
+    const activeId = targetUserId || user?.id || StorageService.getActiveUserId();
+    if (!activeId || activeId === "anonymous") return;
+
+    setSyncStatus("syncing");
+
+    try {
+      // 1. Repair any corrupted entity records safely and idempotently
+      MigrationService.repairUserData(activeId);
+
+      // 2. Discover and safely merge local-only legacy data into this user account
+      const migration = MigrationService.migrateLegacyData(activeId);
+
+      // 3. Synchronize collections with server
+      let currentCollections = StorageService.getCollections(activeId);
+      try {
+        if (migration.collectionsToSync.length > 0) {
+          await fetch("/api/collections/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ collections: migration.collectionsToSync }),
+          });
+        }
+
+        const colRes = await fetch("/api/collections/sync", { cache: "no-store" });
+        if (colRes.ok) {
+          const colData = await colRes.json() as {
+            collections?: Array<{
+              id: string;
+              name: string;
+              description?: string | null;
+              profile?: Record<string, unknown>;
+              updated_at?: string;
+            }>;
+          };
+          if (Array.isArray(colData.collections)) {
+            const serverCols: Collection[] = colData.collections.map((entry) => {
+              const profile = entry.profile || {};
+              return {
+                id: entry.id,
+                name: entry.name,
+                description: entry.description || "",
+                color: typeof profile.color === "string" ? profile.color : "#d9ad32",
+                icon: typeof profile.icon === "string" ? profile.icon : "Folder",
+                createdAt: entry.updated_at || new Date().toISOString(),
+                updatedAt: entry.updated_at || new Date().toISOString(),
+                ...(profile.isSystem === true ? { isSystem: true } : {}),
+              };
+            });
+            currentCollections = serverCols;
+            StorageService.saveCollections(serverCols, activeId);
+            setCollections(serverCols);
+          }
+        }
+      } catch (colErr) {
+        console.warn("Could not synchronize collections with server; using local collections:", colErr);
+      }
+
+      // 4. Synchronize media items with server
+      let currentItems = StorageService.getItems(activeId);
+      try {
+        if (migration.itemsToSync.length > 0) {
+          const syncRes = await fetch("/api/media/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ localItems: migration.itemsToSync }),
+          });
+          if (syncRes.ok) {
+            const syncPayload = await syncRes.json() as { items?: SavedItem[] };
+            if (Array.isArray(syncPayload.items)) {
+              currentItems = syncPayload.items;
+              StorageService.saveItems(currentItems, activeId);
+              setItems(currentItems);
+            }
+          }
+        } else {
+          const mediaRes = await fetch("/api/media", { cache: "no-store" });
+          if (mediaRes.ok) {
+            const mediaPayload = await mediaRes.json() as { items?: SavedItem[] };
+            if (Array.isArray(mediaPayload.items)) {
+              const localByUrl = new Map(currentItems.map((item) => [item.url.toLowerCase().trim(), item]));
+              const serverItems = mediaPayload.items.map((serverItem) => {
+                const key = serverItem.url.toLowerCase().trim();
+                const localItem = localByUrl.get(key);
+                if (localItem) localByUrl.delete(key);
+                return localItem ? ContentService.safeMerge(localItem, serverItem) : serverItem;
+              });
+
+              // Any remaining local items missing from server: upload them asynchronously
+              const unSyncedLocal = [...localByUrl.values()];
+              if (unSyncedLocal.length > 0) {
+                void fetch("/api/media", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ items: unSyncedLocal }),
+                });
+              }
+
+              currentItems = [...serverItems, ...unSyncedLocal];
+              StorageService.saveItems(currentItems, activeId);
+              setItems(currentItems);
+            }
+          }
+        }
+        setSyncStatus("synced");
+        setLastSyncTime(new Date().toISOString());
+      } catch (mediaErr) {
+        console.warn("Could not synchronize media with server; using local storage:", mediaErr);
+        setSyncStatus("offline");
+      }
+    } catch (err) {
+      console.warn("Workspace synchronization failed; keeping local data available.", err);
+      setSyncStatus("error");
+    }
+  }, [user?.id]);
+
   useEffect(() => {
-    if (!isAuthenticated || !user) return;
-    const userId = user.id;
+    if (!isAuthenticated || !currentUserId) return;
+    const userId = currentUserId;
     const syncUsage = () => {
       void fetch("/api/usage", { cache: "no-store" }).then(async (response) => {
         if (!response.ok) return;
@@ -195,12 +329,11 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
       window.clearInterval(timer);
       window.removeEventListener("focus", syncUsage);
     };
-  }, [isAuthenticated, user?.id]);
+  }, [isAuthenticated, currentUserId]);
 
-  const activeUserId = user?.id;
   useEffect(() => {
-    if (!activeUserId || activeUserId.startsWith("user-demo")) return;
-    const refresh = () => { void refreshPlanFromBilling(activeUserId); };
+    if (!currentUserId || currentUserId.startsWith("user-demo")) return;
+    const refresh = () => { void refreshPlanFromBilling(currentUserId); };
     refresh();
     const timer = window.setInterval(refresh, 5 * 60 * 1000);
     window.addEventListener("focus", refresh);
@@ -208,7 +341,7 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
       window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
     };
-  }, [activeUserId, refreshPlanFromBilling]);
+  }, [currentUserId, refreshPlanFromBilling]);
 
   // Listen to OS system color scheme changes when theme is "system"
   useEffect(() => {
@@ -239,107 +372,177 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     };
   }, [user?.id]);
 
+  // Automatic network reconnection synchronization
+  useEffect(() => {
+    if (typeof window === "undefined" || !isAuthenticated || !currentUserId) return;
+    const handleOnline = () => {
+      void syncWorkspace(currentUserId);
+    };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [isAuthenticated, currentUserId, syncWorkspace]);
+
+  // Automatic focus re-sync (debounced to avoid unnecessary network traffic)
+  useEffect(() => {
+    if (typeof window === "undefined" || !isAuthenticated || !currentUserId || currentUserId.startsWith("user-demo")) return;
+    let lastFocusSync = Date.now();
+    const handleFocusSync = () => {
+      if (Date.now() - lastFocusSync >= 30_000) {
+        lastFocusSync = Date.now();
+        void syncWorkspace(currentUserId);
+      }
+    };
+    window.addEventListener("focus", handleFocusSync);
+    return () => window.removeEventListener("focus", handleFocusSync);
+  }, [isAuthenticated, currentUserId, syncWorkspace]);
+
   // Load user from active session on initial mount
   useEffect(() => {
     void (async () => {
       try {
-      const activeUser = await AuthService.getCurrentUserAsync();
-      if (activeUser) {
-        setUser(activeUser);
-        setIsAuthenticated(true);
-        // Automatically check and repair any corrupted HTML entity records safely and idempotently
-        MigrationService.repairUserData(activeUser.id);
-        const userItems = StorageService.getItems(activeUser.id);
-        const userCollections = StorageService.getCollections(activeUser.id);
-        const userSearches = StorageService.getRecentSearches(activeUser.id);
-        const storedLimits = StorageService.getImportLimits(activeUser.id);
-        const userLimits = activeUser.tier === "free" && storedLimits.total === 10
-          ? StorageService.setImportLimits({ total: 30, used: storedLimits.used }, activeUser.id)
-          : storedLimits;
-        let hydratedItems = userItems;
-        try {
-          const mediaResponse = await fetch("/api/media", { cache: "no-store" });
-          if (mediaResponse.ok) {
-            const payload = await mediaResponse.json() as { items?: SavedItem[] };
-            const localByUrl = new Map(userItems.map((item) => [item.url, item]));
-            const serverItems = (payload.items || []).map((serverItem) => {
-              const localItem = localByUrl.get(serverItem.url);
-              if (localItem) localByUrl.delete(serverItem.url);
-              return localItem ? ContentService.safeMerge(localItem, serverItem) : serverItem;
-            });
-            hydratedItems = [...serverItems, ...localByUrl.values()];
-            StorageService.saveItems(hydratedItems, activeUser.id);
-          }
-        } catch (error) {
-          console.warn("Could not hydrate durable workspace media; keeping the local library available.", error);
-        }
-        setItems(hydratedItems);
-        setCollections(userCollections);
-        setRecentSearches(userSearches);
-        setImportLimits(userLimits);
+        const activeUser = await AuthService.getCurrentUserAsync();
+        if (activeUser) {
+          setUser(activeUser);
+          setIsAuthenticated(true);
 
-        const savedTheme = activeUser.settings?.theme || "dark";
-        setThemeState(savedTheme);
-        applyThemeClass(savedTheme);
-      } else {
-        setUser(null);
-        setIsAuthenticated(false);
-        setItems([]);
-        setCollections([]);
-        setImportLimits({ total: 30, used: 0, remaining: 30 });
-        applyThemeClass("dark");
-      }
+          const userSearches = StorageService.getRecentSearches(activeUser.id);
+          const storedLimits = StorageService.getImportLimits(activeUser.id);
+          const userLimits = activeUser.tier === "free" && storedLimits.total === 10
+            ? StorageService.setImportLimits({ total: 30, used: storedLimits.used }, activeUser.id)
+            : storedLimits;
+
+          setRecentSearches(userSearches);
+          setImportLimits(userLimits);
+
+          const savedTheme = activeUser.settings?.theme || "dark";
+          setThemeState(savedTheme);
+          applyThemeClass(savedTheme);
+
+          // Perform full authoritative workspace sync
+          await syncWorkspace(activeUser.id);
+        } else {
+          setUser(null);
+          setIsAuthenticated(false);
+          setItems([]);
+          setCollections([]);
+          setImportLimits({ total: 30, used: 0, remaining: 30 });
+          applyThemeClass("dark");
+        }
       } finally {
         setAuthLoading(false);
       }
     })();
+  }, [syncWorkspace]);
+
+  useEffect(() => {
+    const clearCrossTabSession = () => {
+      AuthService.clearSession();
+      setUser(null);
+      setIsAuthenticated(false);
+      setItems([]);
+      setCollections([]);
+      setImportLimits({ total: 30, used: 0, remaining: 30 });
+      window.location.replace("/sign-in");
+    };
+    const handleCrossTabLogout = (event: StorageEvent) => {
+      if (event.key === "keeper_auth_logout_signal_v1" && event.newValue) {
+        clearCrossTabSession();
+      }
+    };
+    window.addEventListener("storage", handleCrossTabLogout);
+    return () => window.removeEventListener("storage", handleCrossTabLogout);
   }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated || !currentUserId || currentUserId.startsWith("user-demo")) return;
+    let checking = false;
+    const verifyServerSession = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const response = await fetch("/api/auth/session", { cache: "no-store" });
+        if (response.status === 401) {
+          AuthService.clearSession();
+          setUser(null);
+          setIsAuthenticated(false);
+          setItems([]);
+          setCollections([]);
+          setImportLimits({ total: 30, used: 0, remaining: 30 });
+          window.location.replace("/sign-in?error=session-expired");
+        }
+      } catch (error) {
+        console.warn("Could not verify the active Keeper session.", error);
+      } finally {
+        checking = false;
+      }
+    };
+    const timer = window.setInterval(() => { void verifyServerSession(); }, 60 * 1000);
+    window.addEventListener("focus", verifyServerSession);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", verifyServerSession);
+    };
+  }, [isAuthenticated, currentUserId]);
 
   // ---------------------------------------------------------------------------
   // Authentication Actions
   // ---------------------------------------------------------------------------
 
   const login = async (credentials: { email: string; password: string }) => {
-    const { user: authedUser } = await AuthService.login(credentials);
-    setUser(authedUser);
-    setIsAuthenticated(true);
+    setAuthLoading(true);
+    try {
+      const { user: authedUser } = await AuthService.login(credentials);
+      setUser(authedUser);
+      setIsAuthenticated(true);
 
-    const userItems = StorageService.getItems(authedUser.id);
-    const userCollections = StorageService.getCollections(authedUser.id);
-    const userSearches = StorageService.getRecentSearches(authedUser.id);
-    const userLimits = StorageService.getImportLimits(authedUser.id);
-    setItems(userItems);
-    setCollections(userCollections);
-    setRecentSearches(userSearches);
-    setImportLimits(userLimits);
+      // Immediately clear previous state to prevent any cross-account data leak
+      setItems([]);
+      setCollections([]);
 
-    const savedTheme = authedUser.settings?.theme || "dark";
-    setThemeState(savedTheme);
-    applyThemeClass(savedTheme);
+      const userSearches = StorageService.getRecentSearches(authedUser.id);
+      const userLimits = StorageService.getImportLimits(authedUser.id);
+      setRecentSearches(userSearches);
+      setImportLimits(userLimits);
+
+      const savedTheme = authedUser.settings?.theme || "dark";
+      setThemeState(savedTheme);
+      applyThemeClass(savedTheme);
+
+      // Immediately sync with the server single source of truth
+      await syncWorkspace(authedUser.id);
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   const signup = async (data: { name: string; email: string; password: string }) => {
-    const { user: newUser } = await AuthService.signup(data);
-    setUser(newUser);
-    setIsAuthenticated(true);
+    setAuthLoading(true);
+    try {
+      const { user: newUser } = await AuthService.signup(data);
+      setUser(newUser);
+      setIsAuthenticated(true);
 
-    // Brand new accounts start with isolated storage
-    const userItems = StorageService.getItems(newUser.id);
-    const userCollections = StorageService.getCollections(newUser.id);
-    const userLimits = StorageService.getImportLimits(newUser.id);
-    setItems(userItems);
-    setCollections(userCollections);
-    setRecentSearches([]);
-    setImportLimits(userLimits);
+      // Clear previous in-memory state
+      setItems([]);
+      setCollections([]);
+      setRecentSearches([]);
 
-    const savedTheme = newUser.settings?.theme || "dark";
-    setThemeState(savedTheme);
-    applyThemeClass(savedTheme);
-    addToast(
-      "Account created successfully",
-      `Welcome to Keeper, ${newUser.name}. Your workspace is ready to use.`,
-      "success",
-    );
+      // Migrate any local data and sync workspace
+      await syncWorkspace(newUser.id);
+      const userLimits = StorageService.getImportLimits(newUser.id);
+      setImportLimits(userLimits);
+
+      const savedTheme = newUser.settings?.theme || "dark";
+      setThemeState(savedTheme);
+      applyThemeClass(savedTheme);
+      addToast(
+        "Account created successfully",
+        `Welcome to Keeper, ${newUser.name}. Your workspace is ready to use.`,
+        "success",
+      );
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   const demoLogin = async () => {
@@ -347,12 +550,17 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
-    await AuthService.logout();
-    setUser(null);
-    setIsAuthenticated(false);
-    setItems([]);
-    setCollections([]);
-    setImportLimits({ total: 30, used: 0, remaining: 30 });
+    try {
+      await AuthService.logout();
+    } finally {
+      setUser(null);
+      setIsAuthenticated(false);
+      setItems([]);
+      setCollections([]);
+      setRecentSearches([]);
+      setSyncStatus("idle");
+      setImportLimits({ total: 30, used: 0, remaining: 30 });
+    }
   };
 
   const updateProfile = async (updates: { name?: string; email?: string; avatar?: string }) => {
@@ -495,7 +703,8 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
 
   // Content actions
   const addItem = (itemData: Omit<SavedItem, "id" | "savedDate"> & { id?: string; savedDate?: string }): SavedItem => {
-    const currentLimits = StorageService.getImportLimits(user?.id);
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    const currentLimits = StorageService.getImportLimits(activeUserId);
     if (currentLimits.remaining <= 0) {
       addToast(
         "Import limit reached",
@@ -505,10 +714,37 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
       throw new Error("Import limit reached: 0 remaining imports.");
     }
 
-    const created = ContentService.addItem(itemData);
-    setItems(ContentService.getAll());
-    const deductResult = StorageService.deductImportLimit(1, user?.id);
+    const created = ContentService.addItem(itemData, activeUserId);
+    setItems(ContentService.getAll(activeUserId));
+    const deductResult = StorageService.deductImportLimit(1, activeUserId);
     setImportLimits(deductResult.limits);
+
+    // Asynchronously synchronize created item to the server
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+      void fetch("/api/media", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item: created }),
+      }).then(async (res) => {
+        if (res.ok) {
+          const payload = await res.json() as { items?: SavedItem[] };
+          const serverItem = payload.items?.[0];
+          if (serverItem?.metadata?.serverMediaId) {
+            ContentService.updateItem(created.id, {
+              metadata: {
+                ...created.metadata,
+                serverMediaId: serverItem.metadata.serverMediaId,
+                aiProcessingStatus: serverItem.metadata.aiProcessingStatus || "PENDING",
+              },
+            }, activeUserId);
+            setItems(ContentService.getAll(activeUserId));
+          }
+        }
+      }).catch((err) => {
+        console.warn("Could not immediately sync item to server:", err);
+      });
+    }
+
     addToast(
       "Item saved to Recall",
       `"${created.title}" is now analyzed and indexed. (${deductResult.limits.remaining} imports remaining)`,
@@ -518,83 +754,181 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
   };
 
   const updateItem = (id: string, updates: Partial<SavedItem>) => {
+    const activeUserId = user?.id || StorageService.getActiveUserId();
     const previousItem = items.find((item) => item.id === id);
-    ContentService.updateItem(id, updates);
-    setItems(ContentService.getAll());
-    const serverMediaId = previousItem?.metadata?.serverMediaId;
-    if (typeof serverMediaId === "string" && Object.prototype.hasOwnProperty.call(updates, "collectionId") && updates.collectionId !== previousItem?.collectionId) {
-      void fetch(`/api/media/${encodeURIComponent(serverMediaId)}/collection`, {
+    ContentService.updateItem(id, updates, activeUserId);
+    setItems(ContentService.getAll(activeUserId));
+
+    // Asynchronously synchronize update to server
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+      const serverTargetId = previousItem?.metadata?.serverMediaId || id;
+      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ collectionId: updates.collectionId ?? null }),
-      }).then(async (response) => {
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({})) as { error?: string };
-          addToast("AI learning update failed", body.error || "Your local move is saved, but this correction could not be synchronized.", "warning");
-        }
+        body: JSON.stringify({ updates }),
       }).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : "Network error.";
-        addToast("AI learning update failed", message, "warning");
+        console.warn("Could not sync item update to server:", error);
       });
+
+      if (Object.prototype.hasOwnProperty.call(updates, "collectionId") && updates.collectionId !== previousItem?.collectionId && previousItem?.metadata?.serverMediaId) {
+        void fetch(`/api/media/${encodeURIComponent(previousItem.metadata.serverMediaId)}/collection`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ collectionId: updates.collectionId ?? null }),
+        }).catch((err) => {
+          console.warn("Could not sync AI organization correction:", err);
+        });
+      }
     }
+
     addToast("Updated successfully", undefined, "info");
   };
 
   const toggleFavorite = (id: string) => {
-    const isFav = ContentService.toggleFavorite(id);
-    setItems(ContentService.getAll());
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    const isFav = ContentService.toggleFavorite(id, activeUserId);
+    setItems(ContentService.getAll(activeUserId));
+
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+      const targetItem = items.find((i) => i.id === id);
+      const serverTargetId = targetItem?.metadata?.serverMediaId || id;
+      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates: { favorite: isFav } }),
+      }).catch((err) => console.warn("Could not sync favorite to server:", err));
+    }
+
     addToast(isFav ? "Added to Favorites" : "Removed from Favorites", undefined, "info");
   };
 
   const archiveItem = (id: string) => {
-    ContentService.archiveItem(id);
-    setItems(ContentService.getAll());
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    ContentService.archiveItem(id, activeUserId);
+    setItems(ContentService.getAll(activeUserId));
+
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+      const targetItem = items.find((i) => i.id === id);
+      const serverTargetId = targetItem?.metadata?.serverMediaId || id;
+      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates: { archived: true, trashed: false } }),
+      }).catch((err) => console.warn("Could not sync archive state to server:", err));
+    }
+
     addToast("Archived item", "Item moved to your archive.", "info");
   };
 
   const unarchiveItem = (id: string) => {
-    ContentService.unarchiveItem(id);
-    setItems(ContentService.getAll());
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    ContentService.unarchiveItem(id, activeUserId);
+    setItems(ContentService.getAll(activeUserId));
+
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+      const targetItem = items.find((i) => i.id === id);
+      const serverTargetId = targetItem?.metadata?.serverMediaId || id;
+      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates: { archived: false } }),
+      }).catch((err) => console.warn("Could not sync unarchive state to server:", err));
+    }
+
     addToast("Restored from archive", "Item is back in your active library.", "success");
   };
 
   const trashItem = (id: string) => {
-    ContentService.trashItem(id);
-    setItems(ContentService.getAll());
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    ContentService.trashItem(id, activeUserId);
+    setItems(ContentService.getAll(activeUserId));
+
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+      const targetItem = items.find((i) => i.id === id);
+      const serverTargetId = targetItem?.metadata?.serverMediaId || id;
+      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates: { trashed: true } }),
+      }).catch((err) => console.warn("Could not sync trash state to server:", err));
+    }
+
     addToast("Moved to Trash", "Item can be restored from Trash.", "warning");
   };
 
   const restoreItem = (id: string) => {
-    ContentService.restoreItem(id);
-    setItems(ContentService.getAll());
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    ContentService.restoreItem(id, activeUserId);
+    setItems(ContentService.getAll(activeUserId));
+
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+      const targetItem = items.find((i) => i.id === id);
+      const serverTargetId = targetItem?.metadata?.serverMediaId || id;
+      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates: { trashed: false } }),
+      }).catch((err) => console.warn("Could not sync restore state to server:", err));
+    }
+
     addToast("Restored item", "Item returned to your library.", "success");
   };
 
   const permanentDeleteItem = (id: string) => {
-    ContentService.permanentDelete(id);
-    setItems(ContentService.getAll());
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    const targetItem = items.find((i) => i.id === id);
+    ContentService.permanentDelete(id, activeUserId);
+    setItems(ContentService.getAll(activeUserId));
+
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+      const serverTargetId = targetItem?.metadata?.serverMediaId || id;
+      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+        method: "DELETE",
+      }).catch((err) => console.warn("Could not sync permanent deletion to server:", err));
+    }
+
     addToast("Permanently deleted", "Item removed forever.", "warning");
   };
 
   const emptyTrash = () => {
-    const count = ContentService.emptyTrash();
-    setItems(ContentService.getAll());
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    const count = ContentService.emptyTrash(activeUserId);
+    setItems(ContentService.getAll(activeUserId));
+
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+      void fetch("/api/media?trashed=true", {
+        method: "DELETE",
+      }).catch((err) => console.warn("Could not sync empty trash to server:", err));
+    }
+
     addToast("Trash emptied", `Permanently removed ${count} items.`, "info");
   };
 
   const recordView = (id: string) => {
-    ContentService.recordView(id);
-    setItems(ContentService.getAll());
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    ContentService.recordView(id, activeUserId);
+    setItems(ContentService.getAll(activeUserId));
   };
 
   const reprocessItem = async (id: string): Promise<SavedItem | null> => {
+    const activeUserId = user?.id || StorageService.getActiveUserId();
     const item = items.find((i) => i.id === id);
     if (!item) return null;
     try {
       addToast("Reprocessing content...", `Fetching verified metadata for "${item.title.slice(0, 24)}..."`, "info");
       const updated = await AIService.reprocessItem(item, collections);
-      ContentService.updateItem(id, updated);
-      setItems(ContentService.getAll());
+      ContentService.updateItem(id, updated, activeUserId);
+      setItems(ContentService.getAll(activeUserId));
+
+      if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+        const serverTargetId = item.metadata?.serverMediaId || id;
+        void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ updates: updated }),
+        }).catch((err) => console.warn("Could not sync reprocessed item to server:", err));
+      }
+
       addToast("Content Reprocessed", `Updated metadata & grounded AI summary for "${updated.title}".`, "success");
       return updated;
     } catch (err) {
@@ -605,11 +939,21 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
   };
 
   const reprocessAllItems = async (): Promise<number> => {
+    const activeUserId = user?.id || StorageService.getActiveUserId();
     addToast("Reprocessing All Saves", "Auditing and re-analyzing all bookmarks against verified source metadata...", "info");
     try {
       const updatedAll = await AIService.reprocessAllItems(items, collections);
-      StorageService.saveItems(updatedAll, user?.id);
+      StorageService.saveItems(updatedAll, activeUserId);
       setItems(updatedAll);
+
+      if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+        void fetch("/api/media", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: updatedAll }),
+        }).catch((err) => console.warn("Could not sync reprocessed batch to server:", err));
+      }
+
       addToast("Reprocess Complete", `Successfully verified and reprocessed ${updatedAll.length} items.`, "success");
       return updatedAll.length;
     } catch (err) {
@@ -621,39 +965,56 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
 
   // Collection actions
   const createCollection = (colData: Omit<Collection, "id" | "createdAt" | "updatedAt">): Collection => {
-    const newCol = CollectionService.create(colData);
-    setCollections(CollectionService.getAll());
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    const newCol = CollectionService.create(colData, activeUserId);
+    setCollections(CollectionService.getAll(activeUserId));
+
+    // Asynchronously synchronize created collection to server
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+      void fetch("/api/collections/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: newCol.id,
+          name: newCol.name,
+          description: newCol.description,
+          color: newCol.color,
+          icon: newCol.icon,
+          isSystem: newCol.isSystem,
+        }),
+      }).catch((err) => {
+        console.warn("Could not sync collection creation to server:", err);
+      });
+    }
+
     addToast("Collection created", `Collection "${newCol.name}" is ready.`, "success");
     return newCol;
   };
 
   const refreshWorkspaceCollections = async () => {
-    if (!user?.id) return;
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    if (!activeUserId || activeUserId === "anonymous") return;
     try {
       const response = await fetch("/api/collections/sync", { cache: "no-store" });
       if (!response.ok) return;
       const payload = await response.json() as { collections?: Array<{ id: string; name: string; description?: string | null; profile?: Record<string, unknown>; updated_at?: string }> };
-      const local = StorageService.getCollections(user.id);
-      const localById = new Map(local.map((collection) => [collection.id, collection]));
-      const serverCollections = (payload.collections || []).map((entry) => {
-        const existing = localById.get(entry.id);
-        if (existing) return existing;
-        const profile = entry.profile || {};
-        return {
-          id: entry.id,
-          name: entry.name,
-          description: entry.description || "",
-          color: typeof profile.color === "string" ? profile.color : "#d9ad32",
-          icon: typeof profile.icon === "string" ? profile.icon : "Folder",
-          createdAt: entry.updated_at || new Date().toISOString(),
-          updatedAt: entry.updated_at || new Date().toISOString(),
-          ...(profile.isSystem === true ? { isSystem: true } : {}),
-        } as Collection;
-      });
-      const serverIds = new Set(serverCollections.map((collection) => collection.id));
-      const merged = [...serverCollections, ...local.filter((collection) => !serverIds.has(collection.id))];
-      StorageService.saveCollections(merged, user.id);
-      setCollections(merged);
+      if (Array.isArray(payload.collections)) {
+        const serverCollections = payload.collections.map((entry) => {
+          const profile = entry.profile || {};
+          return {
+            id: entry.id,
+            name: entry.name,
+            description: entry.description || "",
+            color: typeof profile.color === "string" ? profile.color : "#d9ad32",
+            icon: typeof profile.icon === "string" ? profile.icon : "Folder",
+            createdAt: entry.updated_at || new Date().toISOString(),
+            updatedAt: entry.updated_at || new Date().toISOString(),
+            ...(profile.isSystem === true ? { isSystem: true } : {}),
+          } as Collection;
+        });
+        StorageService.saveCollections(serverCollections, activeUserId);
+        setCollections(serverCollections);
+      }
     } catch (error) {
       console.warn("Workspace collection refresh failed; keeping local collections.", error);
     }
@@ -667,15 +1028,44 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
   }, [user?.id]);
 
   const updateCollection = (id: string, updates: Partial<Omit<Collection, "id" | "createdAt">>) => {
-    CollectionService.update(id, updates);
-    setCollections(CollectionService.getAll());
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    const updated = CollectionService.update(id, updates, activeUserId);
+    setCollections(CollectionService.getAll(activeUserId));
+
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo") && updated) {
+      void fetch("/api/collections/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: updated.id,
+          name: updated.name,
+          description: updated.description,
+          color: updated.color,
+          icon: updated.icon,
+          isSystem: updated.isSystem,
+        }),
+      }).catch((err) => {
+        console.warn("Could not sync collection update to server:", err);
+      });
+    }
+
     addToast("Collection updated", undefined, "info");
   };
 
   const deleteCollection = (id: string) => {
-    CollectionService.delete(id);
-    setCollections(CollectionService.getAll());
-    setItems(ContentService.getAll());
+    const activeUserId = user?.id || StorageService.getActiveUserId();
+    CollectionService.delete(id, activeUserId);
+    setCollections(CollectionService.getAll(activeUserId));
+    setItems(ContentService.getAll(activeUserId));
+
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+      void fetch(`/api/collections/sync?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }).catch((err) => {
+        console.warn("Could not sync collection deletion to server:", err);
+      });
+    }
+
     addToast("Collection deleted", "Items have been unlinked.", "warning");
   };
 
@@ -692,6 +1082,17 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
       selectAll,
     });
     setItems(ContentService.getAll(activeUserId));
+
+    if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
+      void fetch(`/api/collections/${encodeURIComponent(collectionId)}/items`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemIds, selectAll }),
+      }).catch((err) => {
+        console.warn("Could not sync collection items delete to server:", err);
+      });
+    }
+
     const totalCount = result.deleted + result.removedFromCollection;
     const targetCol = collections.find((c) => c.id === collectionId);
     const colName = targetCol ? `"${targetCol.name}"` : "collection";
@@ -722,6 +1123,9 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
         user,
         isAuthenticated,
         authLoading,
+        syncStatus,
+        lastSyncTime,
+        syncWorkspace: () => syncWorkspace(),
         importLimits,
         deductImportLimits,
         canImport,
@@ -774,9 +1178,9 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
         restoreItem,
         permanentDeleteItem,
         emptyTrash,
-      createCollection,
-      refreshWorkspaceCollections,
-      refreshWorkspaceItems,
+        createCollection,
+        refreshWorkspaceCollections,
+        refreshWorkspaceItems,
         updateCollection,
         deleteCollection,
         deleteCollectionItems,

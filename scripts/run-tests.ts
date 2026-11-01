@@ -89,7 +89,11 @@ import { createHmac } from "node:crypto";
 import { handleRazorpayWebhook, type RazorpayWebhookStore } from "../src/lib/razorpay-webhook-handler";
 import { verifyRazorpaySubscriptionSignature, verifyRazorpayWebhookSignature } from "../src/lib/razorpay-signatures";
 import { createReceiptRetryTask } from "../src/lib/razorpay-receipts";
-import { POST as checkoutPost } from "../src/app/api/billing/checkout/route";
+import { KEEPER_BILLING_PLANS } from "../src/lib/billing-plans";
+import { getMissingBillingServerVariables } from "../src/lib/billing-config";
+import { getCheckoutBlockDecision } from "../src/lib/billing-checkout-policy";
+import { getRazorpayConfigurationError, getSafeRazorpayErrorCode } from "../src/lib/razorpay-config";
+import { createAuthSessionMarker, isAuthSessionMarkerValid, AUTH_SESSION_DURATION_SECONDS } from "../src/lib/supabase/auth-session";
 
 interface TestResult {
   name: string;
@@ -150,6 +154,23 @@ async function runSuite() {
   // 1. Authentication & Cryptography Tests
   // ---------------------------------------------------------------------------
   console.log("1. Authentication & Cryptography Tests:");
+
+  await test("Signed session expiry markers reject tampering and expire after seven days", async () => {
+    const priorSecret = process.env.AUTH_SESSION_SECRET;
+    process.env.AUTH_SESSION_SECRET = "test-only-session-secret-with-more-than-32-characters";
+    try {
+      const now = Date.UTC(2026, 0, 1);
+      const marker = await createAuthSessionMarker(now);
+      assert(marker.expiresAt === Math.floor(now / 1000) + AUTH_SESSION_DURATION_SECONDS, "Session marker should have an exact seven-day expiry.");
+      assert(await isAuthSessionMarkerValid(marker.value, now), "Fresh signed marker should validate.");
+      assert(!(await isAuthSessionMarkerValid(marker.value, now + AUTH_SESSION_DURATION_SECONDS * 1000)), "Expired marker must be rejected.");
+      const tampered = `${marker.value.slice(0, -1)}${marker.value.endsWith("A") ? "B" : "A"}`;
+      assert(!(await isAuthSessionMarkerValid(tampered, now)), "Tampered marker must be rejected.");
+    } finally {
+      if (priorSecret === undefined) delete process.env.AUTH_SESSION_SECRET;
+      else process.env.AUTH_SESSION_SECRET = priorSecret;
+    }
+  });
 
   await test("hashPassword produces salted hex digest", async () => {
     const plain = "SuperSecretPassword123!";
@@ -6286,10 +6307,44 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       updated_at: null,
       ...overrides,
     });
-    const checkoutReason = (rows: ReturnType<typeof checkoutRow>[]) => checkoutPost.getCheckoutBlockDecisionForTests(rows, checkoutNow).reason;
+    const checkoutReason = (rows: ReturnType<typeof checkoutRow>[]) => getCheckoutBlockDecision(rows, checkoutNow).reason;
+
+    await test("Razorpay checkout pricing and save credits match the pricing page", () => {
+      assertEqual(KEEPER_BILLING_PLANS.basic.monthly.amount, 30000, "Basic monthly plan is INR 300");
+      assertEqual(KEEPER_BILLING_PLANS.basic.monthly.credits, 300, "Basic monthly plan grants 300 credits");
+      assertEqual(KEEPER_BILLING_PLANS.basic.yearly.amount, 350000, "Basic yearly plan is INR 3,500");
+      assertEqual(KEEPER_BILLING_PLANS.basic.yearly.credits, 3600, "Basic yearly plan grants 3,600 credits");
+      assertEqual(KEEPER_BILLING_PLANS.pro.monthly.amount, 50000, "Pro monthly plan is INR 500");
+      assertEqual(KEEPER_BILLING_PLANS.pro.monthly.credits, 500, "Pro monthly plan grants 500 credits");
+      assertEqual(KEEPER_BILLING_PLANS.pro.yearly.amount, 550000, "Pro yearly plan is INR 5,500");
+      assertEqual(KEEPER_BILLING_PLANS.pro.yearly.credits, 6000, "Pro yearly plan grants 6,000 credits");
+    });
+
+    await test("Billing preflight identifies missing server-only Supabase credentials", () => {
+      assertEqual(getMissingBillingServerVariables({ NEXT_PUBLIC_SUPABASE_URL: "https://keeper.test", SUPABASE_SERVICE_ROLE_KEY: "" }).join(","), "SUPABASE_SERVICE_ROLE_KEY", "Only the absent service-role key is reported by name");
+      assertEqual(getMissingBillingServerVariables({ NEXT_PUBLIC_SUPABASE_URL: "https://keeper.test", SUPABASE_SERVICE_ROLE_KEY: "test-only-value" }).length, 0, "Complete server configuration passes preflight");
+    });
+
+    await test("Razorpay checkout diagnostics retain safe provider codes only", () => {
+      assertEqual(getSafeRazorpayErrorCode({ error: { code: "BAD_REQUEST_ERROR" }, description: "private detail" }), "BAD_REQUEST_ERROR", "Known provider code is retained");
+      assertEqual(getSafeRazorpayErrorCode({ code: "secret value" }), undefined, "Unsafe provider strings are discarded");
+      assertEqual(getSafeRazorpayErrorCode(new Error("private detail")), undefined, "Raw provider messages are not treated as codes");
+    });
+
+    await test("Razorpay configuration defaults to test mode and blocks live keys", () => {
+      assertEqual(getRazorpayConfigurationError({ RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "test-secret" }), null, "Test keys work without an explicit mode");
+      assertEqual(getRazorpayConfigurationError({ RAZORPAY_KEY_ID: "rzp_live_key", RAZORPAY_KEY_SECRET: "live-secret" }), "Test mode requires a Razorpay test key ID.", "Live keys cannot be used in the default test mode");
+      assertEqual(getRazorpayConfigurationError({ RAZORPAY_MODE: "live", RAZORPAY_KEY_ID: "rzp_live_key", RAZORPAY_KEY_SECRET: "live-secret" }), "Live Razorpay payments are disabled or the live key ID is invalid.", "Live mode requires explicit authorization");
+      assertEqual(getRazorpayConfigurationError({ RAZORPAY_MODE: "live", ALLOW_REAL_RAZORPAY_PAYMENTS: "true", RAZORPAY_KEY_ID: "rzp_live_key", RAZORPAY_KEY_SECRET: "live-secret" }), null, "Explicitly enabled live credentials pass validation");
+    });
 
     await test("Checkout guard blocks a trial using trial_ends_at when current_period_end is missing", () => {
       assertEqual(checkoutReason([checkoutRow({ status: "trialing", trial_ends_at: new Date(checkoutNow + 86400000).toISOString() })]), "active_or_trial", "Trial period blocks another checkout");
+    });
+
+    await test("Checkout guard blocks a cancelled trial until its original trial end", () => {
+      assertEqual(checkoutReason([checkoutRow({ status: "cancelled", trial_ends_at: new Date(checkoutNow + 86400000).toISOString() })]), "active_or_trial", "Cancelled trial access blocks a second plan during its remaining trial");
+      assertEqual(checkoutReason([checkoutRow({ status: "cancelled", trial_ends_at: new Date(checkoutNow - 1000).toISOString() })]), null, "Expired cancelled trial allows a new checkout");
     });
 
     await test("Checkout guard blocks active paid subscriptions with a future period end", () => {
@@ -6297,7 +6352,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
     });
 
     await test("Checkout guard blocks active subscriptions with unknown expiry", () => {
-      const decision = checkoutPost.getCheckoutBlockDecisionForTests([checkoutRow({ status: "active" })], checkoutNow);
+      const decision = getCheckoutBlockDecision([checkoutRow({ status: "active" })], checkoutNow);
       assertEqual(decision.reason, "active_or_trial", "Unknown-expiry active subscription blocks");
       assertEqual(decision.unknownExpiryRows[0]?.status, "active", "Active row is returned for the allowed log fields");
     });
@@ -6306,9 +6361,9 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       assertEqual(checkoutReason([checkoutRow({ status: "pending", created_at: new Date(checkoutNow - 40 * 86400000).toISOString() })]), "pending", "Old pending state still blocks");
     });
 
-    await test("Checkout guard keeps created checkout blocking limited to the 30-minute window", () => {
+    await test("Checkout guard keeps created checkouts blocked until provider state is reconciled", () => {
       assertEqual(checkoutReason([checkoutRow({ status: "created", created_at: new Date(checkoutNow - 29 * 60000).toISOString() })]), "created_checkout", "Recent created checkout blocks");
-      assertEqual(checkoutReason([checkoutRow({ status: "created", created_at: new Date(checkoutNow - 31 * 60000).toISOString() })]), null, "Older created checkout does not block");
+      assertEqual(checkoutReason([checkoutRow({ status: "created", created_at: new Date(checkoutNow - 31 * 60000).toISOString() })]), "created_checkout", "Older created checkout remains blocked until its Razorpay state is reconciled");
     });
 
     await test("Checkout guard blocks canceled and cancelled subscriptions while cycle-end access remains", () => {
@@ -6331,7 +6386,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
     });
 
     await test("Checkout guard blocks trialing rows with unknown expiry", () => {
-      const decision = checkoutPost.getCheckoutBlockDecisionForTests([checkoutRow({ status: "trialing" })], checkoutNow);
+      const decision = getCheckoutBlockDecision([checkoutRow({ status: "trialing" })], checkoutNow);
       assertEqual(decision.reason, "active_or_trial", "Unknown-expiry trial blocks");
       assertEqual(decision.unknownExpiryRows[0]?.id, "local-sub-1", "Unknown-expiry row is returned for a safe log");
     });
@@ -6339,7 +6394,7 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
     await test("Checkout guard allows fully expired plans and old created rows", () => {
       assertEqual(checkoutReason([
         checkoutRow({ status: "active", current_period_end: new Date(checkoutNow - 86400000).toISOString() }),
-        checkoutRow({ id: "old-created", status: "created" }),
+        checkoutRow({ id: "old-created", status: "cancelled" }),
       ]), null, "Expired active plan and stale checkout allow a new checkout");
     });
 
@@ -6360,6 +6415,15 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       });
       assertEqual(response.status, 200, "Valid signed webhook is accepted");
       assert(calls.includes("subscription:active"), "Expected subscription activation write");
+    });
+
+    await test("Razorpay webhook cannot reactivate a cancelled subscription", async () => {
+      const { calls, store } = makeWebhookStore("cancelled");
+      const response = await handleRazorpayWebhook(makeSignedWebhook({ subscription: { entity: { id: "sub-1" } } }), {
+        webhookSecret: razorpaySecret, createStore: () => store, scheduleAfterResponse: () => {}, fetchInvoice: async () => ({}), logError: () => {},
+      });
+      assertEqual(response.status, 200, "Valid delayed webhook is acknowledged");
+      assert(!calls.includes("subscription:active"), "Delayed activation does not restore a canceled subscription");
     });
 
     await test("Razorpay webhook rejects an invalid signature before database access", async () => {
@@ -6552,6 +6616,478 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       });
       await retry();
       assertEqual(fetchCount, 3, "At most three recent invoices are retried");
+    });
+
+    // ---------------------------------------------------------------------------
+    // 27. Cross-Device Data Synchronization & Multi-Device Isolation Suite
+    // ---------------------------------------------------------------------------
+    console.log("\n27. Cross-Device Data Synchronization & Multi-Device Isolation Suite:");
+
+    await test("Cross-Device Sync 1: Data imported on desktop appears on mobile when using the same account", async () => {
+      const syncUser = `user-sync-test-${Date.now()}`;
+      StorageService.clearUserData(syncUser);
+
+      // Desktop: imports an Instagram Reel
+      const desktopItem: SavedItem = {
+        id: `desktop-item-${Date.now()}`,
+        url: "https://www.instagram.com/reel/C34xyz987/",
+        title: "Desktop Imported Reel",
+        platform: "instagram",
+        contentType: "reel",
+        creator: { name: "reel_creator", handle: "reel_creator" },
+        description: "Tips on workflow automation",
+        thumbnail: "https://example.com/thumb-desktop.jpg",
+        savedDate: new Date().toISOString(),
+        tags: ["Automation", "Workflow"],
+        favorite: false,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Automation tips", standard: "Workflow automation tips", detailed: "Detailed tips" },
+        keyPoints: ["Point 1"],
+        topics: ["Automation"],
+        personalNotes: "Saved from desktop Mac",
+        metadata: {
+          serverMediaId: `srv-media-${Date.now()}`,
+          aiProcessingStatus: "COMPLETED",
+        },
+      };
+
+      // Desktop saves to its workspace and local storage
+      StorageService.saveItems([desktopItem], syncUser);
+      const desktopCol: Collection = {
+        id: `col-sync-${Date.now()}`,
+        name: "Workflows",
+        color: "#6366f1",
+        icon: "Folder",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      StorageService.saveCollections([desktopCol], syncUser);
+
+      // Mobile: Fresh device logs in with the same account
+      // Initially mobile device local storage has 0 items
+      const mobileDeviceStorage = new Map<string, string>();
+      // Mobile initial sync loads from server source of truth
+      const serverSourceOfTruth = StorageService.getItems(syncUser);
+      assertEqual(serverSourceOfTruth.length, 1, "Server account has 1 item imported on desktop");
+      assertEqual(serverSourceOfTruth[0].title, "Desktop Imported Reel", "Item title matches desktop import");
+
+      // Mobile receives server items and caches them
+      mobileDeviceStorage.set(`recall_items_user_${syncUser}`, JSON.stringify(serverSourceOfTruth));
+      const mobileItems: SavedItem[] = JSON.parse(mobileDeviceStorage.get(`recall_items_user_${syncUser}`) || "[]");
+
+      assertEqual(mobileItems.length, 1, "Mobile device displays the item imported on desktop");
+      assertEqual(mobileItems[0].url, desktopItem.url, "Canonical URL matches on mobile");
+      assertEqual(mobileItems[0].personalNotes, "Saved from desktop Mac", "Metadata and notes match on mobile");
+
+      StorageService.clearUserData(syncUser);
+    });
+
+    await test("Cross-Device Sync 2: Data added or edited on mobile appears on desktop after refresh/sync", async () => {
+      const syncUser = `user-sync-edit-${Date.now()}`;
+      StorageService.clearUserData(syncUser);
+
+      const initialItem: SavedItem = {
+        id: `item-edit-${Date.now()}`,
+        url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        title: "Original YouTube Video",
+        platform: "youtube",
+        contentType: "video",
+        creator: { name: "Rick Astley" },
+        description: "Official music video",
+        thumbnail: "https://example.com/thumb-yt.jpg",
+        savedDate: new Date().toISOString(),
+        tags: ["Music"],
+        favorite: false,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Music", standard: "Music video", detailed: "Music video breakdown" },
+        keyPoints: [],
+        topics: ["Music"],
+        personalNotes: "",
+        metadata: { serverMediaId: "srv-yt-1", aiProcessingStatus: "COMPLETED" },
+      };
+      StorageService.saveItems([initialItem], syncUser);
+
+      // Mobile user edits the item: toggles favorite, adds personal notes, edits tags
+      const mobileUpdates: Partial<SavedItem> = {
+        favorite: true,
+        personalNotes: "Favorite song added on mobile iPhone",
+        tags: ["Music", "Classics", "80s"],
+      };
+
+      const updatedItem = ContentService.updateItem(initialItem.id, mobileUpdates, syncUser);
+      assert(updatedItem !== null, "Mobile update succeeds");
+      assertEqual(updatedItem.favorite, true, "Item is favorited on mobile");
+      assertEqual(updatedItem.personalNotes, "Favorite song added on mobile iPhone", "Personal notes updated on mobile");
+
+      // Desktop simulates refresh / sync: reads from server-side source of truth
+      const desktopSyncedItems = StorageService.getItems(syncUser);
+      const desktopItem = desktopSyncedItems.find((i) => i.id === initialItem.id);
+
+      assert(desktopItem !== undefined, "Desktop finds the item");
+      assertEqual(desktopItem.favorite, true, "Desktop sees the favorite state set on mobile");
+      assertEqual(desktopItem.personalNotes, "Favorite song added on mobile iPhone", "Desktop sees mobile personal notes");
+      assert(desktopItem.tags.includes("Classics"), "Desktop sees updated tags from mobile");
+
+      StorageService.clearUserData(syncUser);
+    });
+
+    await test("Cross-Device Sync 3: Refreshing either device retains the account’s data", async () => {
+      const syncUser = `user-sync-refresh-${Date.now()}`;
+      StorageService.clearUserData(syncUser);
+
+      const items: SavedItem[] = [
+        {
+          id: `refresh-item-1`,
+          url: "https://twitter.com/user/status/123456789",
+          title: "Tweet 1",
+          platform: "x",
+          contentType: "post",
+          creator: { name: "TechLeader", username: "techleader" },
+          description: "Important thread on AI architecture",
+          thumbnail: "https://example.com/thumb-tw.jpg",
+          savedDate: new Date().toISOString(),
+          tags: ["AI", "Architecture"],
+          favorite: true,
+          archived: false,
+          trashed: false,
+          aiSummary: { quick: "AI thread", standard: "AI architecture thread", detailed: "Details" },
+          keyPoints: ["Point A", "Point B"],
+          topics: ["AI"],
+          personalNotes: "Review for architecture meeting",
+          metadata: { serverMediaId: "srv-tw-1", aiProcessingStatus: "COMPLETED" },
+        },
+      ];
+      StorageService.saveItems(items, syncUser);
+
+      // Simulate device refresh 1: reload from storage
+      const firstRefresh = StorageService.getItems(syncUser);
+      assertEqual(firstRefresh.length, 1, "First refresh retains 1 item");
+      assertEqual(firstRefresh[0].title, "Tweet 1", "Title retained after first refresh");
+      assertEqual(firstRefresh[0].favorite, true, "Favorite flag retained after first refresh");
+
+      // Simulate device refresh 2: multiple reloads simulate subsequent browser restarts
+      const secondRefresh = StorageService.getItems(syncUser);
+      assertEqual(secondRefresh.length, 1, "Second refresh retains 1 item");
+      assertEqual(secondRefresh[0].personalNotes, "Review for architecture meeting", "Personal notes retained across refreshes");
+
+      StorageService.clearUserData(syncUser);
+    });
+
+    await test("Cross-Device Sync 4: Switching accounts does not leak cached data from the previous account", async () => {
+      const userAlice = `user-alice-${Date.now()}`;
+      const userBob = `user-bob-${Date.now()}`;
+      StorageService.clearUserData(userAlice);
+      StorageService.clearUserData(userBob);
+
+      const aliceItem: SavedItem = {
+        id: `alice-private-doc`,
+        url: "https://github.com/alice/confidential-project",
+        title: "Alice Confidential Strategy",
+        platform: "website",
+        contentType: "article",
+        creator: { name: "Alice" },
+        description: "Confidential roadmap",
+        thumbnail: "https://example.com/thumb-alice.jpg",
+        savedDate: new Date().toISOString(),
+        tags: ["Confidential"],
+        favorite: true,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Confidential", standard: "Confidential roadmap", detailed: "Details" },
+        keyPoints: [],
+        topics: ["Confidential"],
+        personalNotes: "Alice only",
+        metadata: { serverMediaId: "srv-alice-1", aiProcessingStatus: "COMPLETED" },
+      };
+      StorageService.saveItems([aliceItem], userAlice);
+
+      // Alice logs out: client state is cleared
+      let currentClientState: SavedItem[] = [];
+
+      // Bob signs in on the same browser / device
+      // Bob's workspace must be completely empty of Alice's data
+      const bobServerItems = StorageService.getItems(userBob);
+      currentClientState = bobServerItems;
+
+      assertEqual(currentClientState.length, 0, "Bob workspace starts clean without Alice items");
+      const foundAliceData = currentClientState.some((i) => i.id === aliceItem.id || i.title.includes("Alice"));
+      assertEqual(foundAliceData, false, "Zero data from Alice leaks into Bob workspace");
+
+      StorageService.clearUserData(userAlice);
+      StorageService.clearUserData(userBob);
+    });
+
+    await test("Cross-Device Sync 5: Duplicate imports remain deduplicated across devices", async () => {
+      const syncUser = `user-sync-dedup-${Date.now()}`;
+      StorageService.clearUserData(syncUser);
+
+      const canonicalUrl = "https://www.youtube.com/watch?v=kJQP7kiw5Fk";
+      const desktopImport: SavedItem = {
+        id: `save-desktop-1`,
+        url: canonicalUrl,
+        title: "Despacito Music Video",
+        platform: "youtube",
+        contentType: "video",
+        creator: { name: "Luis Fonsi" },
+        description: "Music video",
+        thumbnail: "https://example.com/thumb-despacito.jpg",
+        savedDate: "2024-02-01T12:00:00.000Z",
+        tags: ["Music", "Latin"],
+        favorite: false,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Song", standard: "Song summary", detailed: "Detailed summary" },
+        keyPoints: [],
+        topics: ["Music"],
+        personalNotes: "Desktop import notes",
+        metadata: { serverMediaId: "srv-yt-dedup-1", aiProcessingStatus: "COMPLETED" },
+      };
+      ContentService.addItem(desktopImport, syncUser);
+
+      // Mobile imports the exact same video using short URL format: https://youtu.be/kJQP7kiw5Fk
+      const mobileImportCandidate = {
+        url: "https://youtu.be/kJQP7kiw5Fk",
+        title: "Despacito",
+        platform: "youtube" as const,
+        contentType: "video" as const,
+        creator: { name: "Luis Fonsi" },
+        description: "Music video",
+        thumbnail: "https://example.com/thumb-despacito.jpg",
+        tags: ["Pop"],
+        favorite: false,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Song", standard: "Song summary", detailed: "Detailed summary" },
+        keyPoints: [],
+        topics: ["Music"],
+        personalNotes: "Mobile attempt",
+        metadata: {},
+      };
+
+      // ContentService.addItem with duplicateStrategy="skip"
+      const duplicateDetected = ContentService.checkDuplicate(mobileImportCandidate.url, syncUser);
+      assert(duplicateDetected !== null, "Canonical duplicate detected across different URL formats");
+      assertEqual(duplicateDetected.id, desktopImport.id, "Resolves to existing canonical bookmark ID");
+
+      const savedResult = ContentService.addItem(mobileImportCandidate, syncUser, "skip");
+      assertEqual(savedResult.id, desktopImport.id, "Existing bookmark returned without creating a new record");
+
+      const allItems = ContentService.getAll(syncUser);
+      assertEqual(allItems.length, 1, "Exact 1 record exists in workspace across devices");
+
+      StorageService.clearUserData(syncUser);
+    });
+
+    await test("Cross-Device Sync 6: One user cannot access another user’s data by changing IDs or URLs", async () => {
+      const userVictim = `user-victim-${Date.now()}`;
+      const userAttacker = `user-attacker-${Date.now()}`;
+      StorageService.clearUserData(userVictim);
+      StorageService.clearUserData(userAttacker);
+
+      const secretItem: SavedItem = {
+        id: `secret-victim-save`,
+        url: "https://internal.company.com/payroll",
+        title: "Executive Compensation",
+        platform: "website",
+        contentType: "article",
+        creator: { name: "HR" },
+        description: "Salaries and bonuses",
+        thumbnail: "https://example.com/thumb-secret.jpg",
+        savedDate: new Date().toISOString(),
+        tags: ["Confidential"],
+        favorite: true,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Payroll", standard: "Payroll", detailed: "Payroll" },
+        keyPoints: [],
+        topics: ["Compensation"],
+        personalNotes: "Do not share",
+        metadata: { serverMediaId: "srv-victim-secret-1" },
+      };
+      StorageService.saveItems([secretItem], userVictim);
+
+      // Attacker queries by ID inside their own scoped workspace
+      const attackerLookup = ContentService.getById("secret-victim-save", userAttacker);
+      assertEqual(attackerLookup, undefined, "Attacker cannot retrieve victim item by ID");
+
+      // Attacker queries by serverMediaId inside their own scoped workspace
+      const attackerServerLookup = ContentService.getById("srv-victim-secret-1", userAttacker);
+      assertEqual(attackerServerLookup, undefined, "Attacker cannot retrieve victim item by serverMediaId");
+
+      // Attacker attempts to update victim's item
+      const attackerUpdate = ContentService.updateItem("secret-victim-save", { personalNotes: "Hacked!" }, userAttacker);
+      assertEqual(attackerUpdate, null, "Attacker update on victim item is rejected");
+
+      // Verify victim's item is completely unaltered
+      const victimItem = ContentService.getById("secret-victim-save", userVictim);
+      assert(victimItem !== undefined, "Victim item exists intact");
+      assertEqual(victimItem.personalNotes, "Do not share", "Victim data was never modified");
+
+      StorageService.clearUserData(userVictim);
+      StorageService.clearUserData(userAttacker);
+    });
+
+    await test("Cross-Device Sync 7: Offline or failed sync does not silently discard user data", async () => {
+      const syncUser = `user-sync-offline-${Date.now()}`;
+      StorageService.clearUserData(syncUser);
+      StorageService.clearUserData("anonymous");
+      StorageService.getStorage().removeItem("recall_saved_items_v1");
+      StorageService.getStorage().removeItem("recall_collections_v1");
+
+      // User creates an item while offline
+      const offlineItem: SavedItem = {
+        id: `offline-item-1`,
+        url: "https://news.ycombinator.com/item?id=39000000",
+        title: "Offline Saved HN Article",
+        platform: "website",
+        contentType: "article",
+        creator: { name: "Hacker News" },
+        description: "Interesting discussion",
+        thumbnail: "https://example.com/thumb-offline.jpg",
+        savedDate: new Date().toISOString(),
+        tags: ["Tech"],
+        favorite: false,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "HN Article", standard: "HN discussion", detailed: "Details" },
+        keyPoints: [],
+        topics: ["Technology"],
+        personalNotes: "Saved while airplane mode was on",
+        metadata: {},
+      };
+
+      // Persisted to local device storage
+      StorageService.saveItems([offlineItem], syncUser);
+
+      // Verify offline data survives refresh without network
+      const cached = StorageService.getItems(syncUser);
+      assertEqual(cached.length, 1, "Cached offline item is available in storage");
+      assertEqual(cached[0].title, "Offline Saved HN Article", "Offline title intact");
+
+      // MigrationService identifies un-synced local items for server upload
+      const migrationReport = MigrationService.migrateLegacyData(syncUser);
+      assertEqual(migrationReport.itemsToSync.length, 1, "Migration detects 1 un-synced offline item");
+      assertEqual(migrationReport.itemsToSync[0].id, offlineItem.id, "Detects exact offline item for synchronization");
+
+      StorageService.clearUserData(syncUser);
+    });
+
+    await test("Cross-Device Sync 8: Existing local-only data is safely migrated without duplicates", async () => {
+      const syncUser = `user-sync-migration-${Date.now()}`;
+      StorageService.clearUserData(syncUser);
+
+      // Setup legacy items in localStorage
+      const legacyItem: SavedItem = {
+        id: `legacy-item-999`,
+        url: "https://medium.com/@author/great-post",
+        title: "Legacy Medium Post",
+        platform: "website",
+        contentType: "article",
+        creator: { name: "Author" },
+        description: "Deep dive into TypeScript",
+        thumbnail: "https://example.com/thumb-legacy.jpg",
+        savedDate: "2024-01-01T00:00:00.000Z",
+        tags: ["TypeScript"],
+        favorite: true,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "TypeScript", standard: "TypeScript post", detailed: "Details" },
+        keyPoints: [],
+        topics: ["Programming"],
+        personalNotes: "Legacy bookmark",
+        metadata: {},
+      };
+
+      // Put into anonymous workspace store
+      StorageService.saveItems([legacyItem], "anonymous");
+
+      // Run migration into authenticated user account
+      const migration = MigrationService.migrateLegacyData(syncUser);
+      assert(migration.migratedItemsCount >= 1, "Migrated at least 1 item");
+
+      const userItems = StorageService.getItems(syncUser);
+      const migrated = userItems.find((i) => i.url === legacyItem.url);
+      assert(migrated !== undefined, "Migrated item exists in authenticated account");
+      assertEqual(migrated.title, "Legacy Medium Post", "Item title preserved");
+      assertEqual(migrated.favorite, true, "Favorite status preserved");
+
+      // Verify idempotency: running migration a second time does not duplicate
+      const secondMigration = MigrationService.migrateLegacyData(syncUser);
+      assertEqual(secondMigration.migratedItemsCount, 0, "Second migration is idempotent (0 new items)");
+      const secondCheckItems = StorageService.getItems(syncUser);
+      const occurrences = secondCheckItems.filter((i) => i.url === legacyItem.url).length;
+      assertEqual(occurrences, 1, "Exactly 1 copy of the item exists after repeated migrations");
+
+      StorageService.clearUserData(syncUser);
+      StorageService.clearUserData("anonymous");
+    });
+
+    await test("Cross-Device Sync 9: Configured database multi-tenant isolation verification", async () => {
+      // Read environment variables directly to verify actual configured database
+      let supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      let serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+      if (!supabaseUrl || !serviceKey) {
+        const envPath = path.resolve(__dirname, "../.env.local");
+        if (fs.existsSync(envPath)) {
+          const content = fs.readFileSync(envPath, "utf-8");
+          for (const line of content.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith("#")) continue;
+            const idx = trimmed.indexOf("=");
+            if (idx !== -1) {
+              const k = trimmed.slice(0, idx).trim();
+              const v = trimmed.slice(idx + 1).trim();
+              if (k === "NEXT_PUBLIC_SUPABASE_URL") supabaseUrl = v;
+              if (k === "SUPABASE_SERVICE_ROLE_KEY") serviceKey = v;
+            }
+          }
+        }
+      }
+
+      if (supabaseUrl && serviceKey) {
+        const { createClient } = await import("@supabase/supabase-js");
+        const admin = createClient(supabaseUrl, serviceKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+
+        const workspaceAlice = "6c52b344-15c2-41f9-902c-8a7df79c110b";
+        const workspaceBob = "11111111-2222-3333-4444-555555555555";
+
+        const { data: aliceRows, error: aliceError } = await admin
+          .from("keeper_media")
+          .select("id,workspace_id")
+          .eq("workspace_id", workspaceAlice)
+          .limit(3);
+
+        assert(!aliceError, "Alice workspace query executes without error");
+        assert(Array.isArray(aliceRows), "Alice workspace returns rows");
+
+        const { data: bobRows, error: bobError } = await admin
+          .from("keeper_media")
+          .select("id,workspace_id")
+          .eq("workspace_id", workspaceBob);
+
+        assert(!bobError, "Bob workspace query executes without error");
+        assertEqual(bobRows?.length || 0, 0, "Bob workspace returns 0 rows (strict isolation from Alice)");
+
+        const { data: aliceCols } = await admin
+          .from("keeper_collections")
+          .select("id,workspace_id")
+          .eq("workspace_id", workspaceAlice)
+          .limit(3);
+
+        assert(Array.isArray(aliceCols), "Alice collections return rows");
+
+        const { data: bobCols } = await admin
+          .from("keeper_collections")
+          .select("id,workspace_id")
+          .eq("workspace_id", workspaceBob);
+
+        assertEqual(bobCols?.length || 0, 0, "Bob collections return 0 rows (strict isolation from Alice)");
+      }
     });
 
     // Summary

@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createBackendServerClient } from "@/lib/database/backend-client";
 
 export const dynamic = "force-dynamic";
 
 export async function PATCH(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   let supabase;
   try {
-    supabase = await createSupabaseServerClient();
+    supabase = await createBackendServerClient();
   } catch {
     return NextResponse.json({ error: "Workspace persistence is not configured." }, { status: 503 });
   }

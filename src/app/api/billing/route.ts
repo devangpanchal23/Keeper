@@ -1,6 +1,6 @@
 import { after, NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { createBackendServerClient } from "@/lib/database/backend-client";
+import { createBackendAdminClient } from "@/lib/database/backend-client";
 import { getRazorpayClient } from "@/lib/razorpay";
 import { createReceiptRetryTask } from "@/lib/razorpay-receipts";
 import { logServerError } from "@/lib/monitoring";
@@ -8,8 +8,8 @@ import { logServerError } from "@/lib/monitoring";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  let supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
-  try { supabase = await createSupabaseServerClient(); }
+  let supabase: Awaited<ReturnType<typeof createBackendServerClient>>;
+  try { supabase = await createBackendServerClient(); }
   catch { return NextResponse.json({ error: "Billing is not configured yet. Complete the Supabase server setup first." }, { status: 503 }); }
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) return NextResponse.json({ error: "Sign in to view billing." }, { status: 401 });
@@ -24,7 +24,8 @@ export async function GET() {
     const now = Date.now();
     const subscriptions = subscriptionsResult.data || [];
     const current = subscriptions.find((entry) => {
-      const entitledStatus = ["trialing", "authenticated", "active"].includes(entry.status) || (entry.status === "cancelled" && entry.cancel_at_cycle_end);
+      const entitledStatus = ["trialing", "authenticated", "active"].includes(entry.status)
+        || (entry.status === "cancelled" && (entry.cancel_at_cycle_end || Boolean(entry.trial_ends_at)));
       const periodEnd = entry.current_period_end || entry.trial_ends_at;
       const end = periodEnd ? Date.parse(periodEnd) : Number.POSITIVE_INFINITY;
       return entitledStatus && end > now;
@@ -32,7 +33,7 @@ export async function GET() {
     const tier = current ? current.plan : "free";
     const displaySubscriptions = subscriptions.map((entry) => {
       const periodEnd = entry.current_period_end || entry.trial_ends_at;
-      if (["trialing", "authenticated", "active"].includes(entry.status) && periodEnd && Date.parse(periodEnd) <= now) {
+      if ((["trialing", "authenticated", "active"].includes(entry.status) || entry.status === "cancelled") && periodEnd && Date.parse(periodEnd) <= now) {
         return { ...entry, status: "expired" };
       }
       return entry;
@@ -45,7 +46,7 @@ export async function GET() {
       after(createReceiptRetryTask(missingReceipts, {
         fetchInvoice: (invoiceId) => getRazorpayClient().invoices.fetch(invoiceId),
         saveReceiptUrl: async (paymentId, receiptUrl) => {
-          const admin = createSupabaseAdminClient();
+          const admin = createBackendAdminClient();
           const { error } = await admin.from("billing_payments").update({ receipt_url: receiptUrl })
             .eq("razorpay_payment_id", paymentId).eq("user_id", user.id).is("receipt_url", null);
           if (error) throw new Error("Payment receipt link could not be saved.");

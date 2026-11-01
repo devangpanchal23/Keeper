@@ -1,5 +1,30 @@
 # Current Project Status
 
+## 2026-11-01 — Cross-Device Data Synchronization & Authoritative Cloud Storage
+
+- **Problem:** Accounts showed different content on different devices (e.g. desktop import showed empty on mobile after sign-in). Local browser storage was used as the single copy for mutations, initial mount never pulled server data into state, legacy items remained trapped in local storage, and server endpoints for item updates/deletions were missing.
+- **Root Cause & Resolution:**
+  1. **Server as Single Source of Truth:** `keeper_media` and `keeper_collections` in Supabase are now the authoritative cloud stores. Endpoints `GET /api/media`, `POST /api/media`, `PATCH /api/media`, `DELETE /api/media`, and item-scoped `/api/media/[id]` were implemented with strict multi-tenant authorization (`auth.uid() = workspace_id`).
+  2. **Bidirectional Synchronization Endpoint:** Created `/api/media/sync` to reconcile client items with server records using `ContentService.safeMerge` as the mutation gatekeeper, preventing data loss or authoritative field overwrites.
+  3. **Collection Synchronization:** Enhanced `/api/collections/sync` to support batch creation, update, and deletion, auto-seeding default collections on the server when a new workspace is first registered. Added `/api/collections/[id]/items` DELETE handler to keep media references in sync on the database.
+  4. **Client Lifecycle & React Context:** `RecallContext` now executes `syncWorkspace()` on initial mount, login, signup, window `focus` (cross-device refresh), and `online` reconnection. Mutations (`addItem`, `updateItem`, `toggleFavorite`, `archiveItem`, `trashItem`, `deleteCollection`, etc.) perform optimistic UI updates followed by asynchronous database persistence.
+  5. **Legacy Data Migration:** `MigrationService.migrateLegacyData(userId)` safely and idempotently discovers unnamespaced v1 and anonymous local items, merges them via `ContentService.checkDuplicate` / `safeMerge`, and queues them for server sync.
+  6. **Multi-Tenant Isolation:** All operations enforce `workspace_id = user.id`. Never trusts client-supplied user IDs. Switching accounts completely flushes previous account memory and local caches.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm test`: 262/262 assertions passed, including Section 27 (9 cross-device sync tests) verified directly against the configured Supabase database (`pmhoqpmbwjclfqnzcrfi.supabase.co`).
+  - `npm run lint`: 0 errors, 239 warnings (below 262 ceiling).
+  - `npm run build -- --webpack`: Production build passed, generating all 28 static and dynamic routes.
+
+## 2026-10-31 — Server-owned Supabase authentication and fixed session expiry
+
+- Moved signup, login, logout, profile updates, password changes, and session restore to same-origin server endpoints. Supabase is the only production identity provider; browser code no longer receives access or refresh tokens.
+- Supabase cookies are HttpOnly, SameSite=Lax, Secure in production. A signed HttpOnly expiry marker enforces an exact seven-day maximum across protected pages and APIs, even when Supabase refreshes tokens.
+- Added active-session expiry polling, cross-tab logout signaling, cache-control protections, expired-session messaging, and server-verified collection deletion.
+- A local-only `AUTH_SESSION_SECRET` was generated in ignored `.env.local`; `.env.example` documents the deployment secret. Configure a unique random secret in each deployed environment.
+- Signup automatically enters the workspace when Supabase returns a session. If email confirmation is enabled in the Supabase project, it returns no session and requires confirmation. Disable confirmation in the intended project for immediate signup; the project setting was not changed or live-verified here.
+- Validation: signed-marker tests cover valid, tampered, and expired markers; tests passed 251/251; focused ESLint and diff checks passed. Full lint still reports a pre-existing error in modified `src/lib/database/postgres-store.ts:135`; type-check/build still fail on four missing-`lt` errors in already-modified Mongo/Postgres adapters. Live Supabase/browser scenarios remain unverified.
+
 ## 2026-10-25 — Permanent Fix for corrupted search-service.ts ("not a module" error)
 
 - **Problem:** IDE reported `scripts/run-tests.ts:52: File '/Volumes/T7/Devang/Code/Real_Project/Keeper/src/services/search-service.ts' is not a module.`
@@ -422,3 +447,23 @@ Last updated: 2026-10-24 12:45 IST
 - Assistant source evidence excludes generated summaries, tags, and key points. Answers display exact excerpts from saved source fields; model-written claims are not shown as factual answer text.
 - When a matching save is marked limited or metadata-only, the assistant says it cannot verify the full steps yet.
 - Validation: `npm test` passed 193/193; TypeScript passed with `--incremental false`; `npm run build -- --webpack` passed; changed production files passed ESLint with zero warnings; full lint passed under the 262-warning ceiling (238 warnings); design audit passed.
+# 2026-10-26 — Razorpay checkout diagnostics and test-mode safeguards
+
+- Checkout uses test credentials by default and rejects live credentials unless `RAZORPAY_MODE=live` and `ALLOW_REAL_RAZORPAY_PAYMENTS=true` are both explicitly configured.
+- `.env.example` is now exempted from the broad env-file ignore rule; local `.env.local` remains ignored and example secrets remain blank.
+- The landing page and server now share a single billing plan source for prices and save-credit limits. The mismatch visible in source was corrected: Basic is 300 / 3,600 credits; Pro is 500 / 6,000 credits for monthly / yearly plans.
+- Checkout API errors report the failing server stage and a support reference. Structured logs include only the request ID, stage, error class, and safe provider code.
+- Local checkout remains blocked until `SUPABASE_SERVICE_ROLE_KEY` is added to `.env.local` and the dev server is restarted. The variable is absent locally; Razorpay test credentials are configured. Never place the key in chat or commit it.
+- Automated validation: 250/250 tests passed; TypeScript and production Webpack build passed; changed production files lint clean; full lint passed with 239 repo warnings and 0 errors. No live Razorpay or Supabase calls have been made.
+
+## 2026-10-31 — Razorpay checkout dismissal and trial cancellation
+
+- Razorpay Checkout is preloaded for authenticated billing users and its load promise is shared with checkout startup, which starts the provider request and script load concurrently.
+- Closing the Razorpay modal now cancels the owned provider subscription immediately and records the cancellation; failed-payment callbacks leave the provider modal open for retry.
+- Trial cancellation immediately disables the provider renewal while preserving access through the existing seven-calendar-day trial end. Paid-plan cancellation continues through its paid period. The checkout guard prevents a second plan while canceled-trial access remains.
+- Authorization expires before the future billing start, so checkout cannot be authorized after the trial window and then trigger a late charge. A stale activation webhook cannot reactivate a canceled subscription.
+- Browser payment verification uses an allowed-status conditional update and a post-write state check, so delayed verification cannot revive a canceled subscription.
+- Retry now reconciles every local `created` checkout against Razorpay before blocking: unauthed provider subscriptions are immediately canceled and terminal state persisted; already-authorized subscriptions are synced and remain protected from duplicate plans. A `created` record without a provider ID is safely retired.
+- Fixed the existing database query adapters' missing strict-less-than filter, required by usage accounting; both adapters now support the existing `.lt()` query used by usage APIs.
+- Validation: tests pass 253/253; TypeScript passes; full ESLint completes with 238 existing warnings and zero errors. Turbopack build could not spawn/bind a child process; the production Webpack build passed. No live Razorpay transactions or database calls were made.
+- Remaining: run the payment lifecycle against the intended Razorpay test account and configured billing database. The local environment lacks `SUPABASE_SERVICE_ROLE_KEY`; keep live payments disabled during validation.

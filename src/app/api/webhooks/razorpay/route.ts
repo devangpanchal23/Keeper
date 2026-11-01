@@ -1,5 +1,5 @@
 import { after, NextRequest } from "next/server";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { createBackendAdminClient } from "@/lib/database/backend-client";
 import { getRazorpayClient } from "@/lib/razorpay";
 import { logServerError } from "@/lib/monitoring";
 import { handleRazorpayWebhook, type RazorpayWebhookStore } from "@/lib/razorpay-webhook-handler";
@@ -11,7 +11,7 @@ export async function POST(request: NextRequest) {
   return handleRazorpayWebhook(request, {
     webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET,
     createStore: () => {
-      const admin = createSupabaseAdminClient();
+      const admin = createBackendAdminClient();
       const store: RazorpayWebhookStore = {
         async claimEvent(eventId, eventType) {
           const { error: insertError } = await admin.from("razorpay_webhook_events").insert({ event_id: eventId, event_type: eventType, processed_at: null });

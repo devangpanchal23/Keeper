@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { IngestionService } from "@/services/ingestion-service";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createBackendServerClient } from "@/lib/database/backend-client";
 import { logServerError } from "@/lib/monitoring";
 import { AIProcessingState } from "@/types";
 
@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
     let supabase;
     let user;
     try {
-      supabase = await createSupabaseServerClient();
+      supabase = await createBackendServerClient();
       const auth = await supabase.auth.getUser();
       user = auth.data.user;
     } catch {

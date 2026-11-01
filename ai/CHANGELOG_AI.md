@@ -1,5 +1,29 @@
 # Keeper — AI Development Changelog
 
+## 2026-11-01 — Cross-Device Data Synchronization & Multi-Device Isolation
+
+- **Root Cause**: Device state divergence stemmed from five architectural gaps: (1) `RecallContext.login()` and mount only read local browser cache, which was empty on new devices; (2) mutations (`toggleFavorite`, `archiveItem`, `createCollection`, etc.) only wrote to local `localStorage` without server RPCs; (3) `/api/media` had no `GET`, `POST`, `PATCH`, or `DELETE` handlers; (4) legacy unnamespaced and anonymous local items were never merged into authenticated accounts; (5) lack of window focus / online synchronization hooks.
+- **Changes**:
+  - Implemented `/api/media/route.ts` (`GET`, `POST`, `PATCH`, `DELETE`) and `/api/media/[id]/route.ts` scoped strictly to `workspace_id = auth.uid()`.
+  - Implemented `/api/media/sync/route.ts` for bidirectional synchronization using `ContentService.safeMerge`.
+  - Enhanced `/api/collections/sync/route.ts` (`POST` batch, `DELETE`) and `/api/collections/[id]/items/route.ts` (`DELETE`) to maintain collection integrity in Supabase.
+  - Implemented `MigrationService.migrateLegacyData(userId)` to migrate legacy local storage idempotently into the authenticated account.
+  - Updated `RecallContext.tsx` to handle initial sync, focus/reconnection sync, optimistic mutations with server persistence, and secure cache clearing on account switches.
+  - Added Section 27 to `scripts/run-tests.ts` with 9 comprehensive cross-device tests covering all verification requirements against the live configured database.
+- **Validation**:
+  - `npm run type-check`: 0 errors.
+  - `npm test`: 262/262 passed (including live database verification in Section 27).
+  - `npm run lint`: 0 errors, 239 warnings.
+  - `npm run build -- --webpack`: 28 static & dynamic pages generated successfully.
+
+## 2026-10-31 — Server-owned Supabase authentication and fixed session expiry
+
+- Root causes: Supabase returns no signup session when email confirmation is required; the client trusted cached local identity; and one legacy delete API accepted caller-supplied user IDs.
+- Moved signup/login/logout/profile/password/session restore to same-origin server endpoints. Supabase cookies are HttpOnly. A signed HttpOnly marker enforces a fixed seven-day expiry across protected pages and APIs, regardless of token refresh.
+- Added active expiry polling, cross-tab logout signaling, auth callback handling, expired-session messaging, and verified identity for collection deletion. Removed the unused browser Supabase client module.
+- Added marker tests for valid, tampered, and expired sessions. Validation: 251/251 automated tests; focused production-file ESLint and diff checks passed. Full lint/type-check/build remain blocked by pre-existing database adapter issues. Live Supabase/browser tests not run.
+- Setup: configure a unique random `AUTH_SESSION_SECRET` per deployed environment. Supabase email confirmation must be disabled in the intended project for immediate signup authentication; that project setting remains unverified.
+
 ## 2026-10-25 — Permanent Fix for corrupted search-service.ts ("not a module" error)
 
 - **Problem:** IDE reported TypeScript compilation error `scripts/run-tests.ts:52: File '/Volumes/T7/Devang/Code/Real_Project/Keeper/src/services/search-service.ts' is not a module.`
@@ -649,3 +673,28 @@ Meta exports alternate between legacy `string_map_data` and modern `string_list_
 - When a matched save has limited or metadata-only content, the answer explicitly says the full steps cannot be verified yet.
 - Added regression coverage for invoice-reel matching and suppression of unsupported model claims.
 - Validation: `npm test` passed 193/193; TypeScript and Webpack production build passed; changed production files lint clean; full lint passed with 238 warnings under the 262-warning ceiling; design audit passed.
+## 2026-10-26 — Razorpay checkout safety and billing consistency
+
+- Fixed the source-of-truth mismatch between displayed save credits and server-enforced limits: Basic now grants 300 monthly / 3,600 yearly credits; Pro grants 500 monthly / 6,000 yearly credits.
+- Landing prices and credit amounts now render from the shared server billing plan configuration. Replaced outdated one-time-payment footer copy with the active trial and recurring billing terms.
+- Added test-mode-by-default Razorpay configuration validation. Live keys are rejected unless live mode and the explicit live-payment switch are both enabled.
+- Made `.env.example` trackable while keeping local env files ignored; example secrets, including the token-encryption key, are blank.
+- Checkout failures now log a request reference, failure stage, error class, and safe provider error code. API responses distinguish missing setup, database migration, Razorpay plan/subscription creation, and post-creation persistence failures without returning raw provider messages or secrets.
+- Added regression checks for plan amounts/credits, test/live key gating, and safe provider-code filtering.
+- Added a preflight check that names missing Supabase server variables without exposing values. Local inspection confirmed `SUPABASE_SERVICE_ROLE_KEY` is absent from `.env.local`; Razorpay test credentials are present. Do not add the key to chat or source control.
+- Validation: `npm test` passed 250/250; TypeScript passed; production Webpack build passed; changed production files lint clean; full lint passed with 239 repo warnings and 0 errors. No live Razorpay request was made.
+
+## 2026-10-31 — Razorpay checkout cancellation and trial safeguards
+
+- **Problem:** Closing Razorpay Checkout only resolved frontend state; it did not cancel the provider subscription. Trial cancellation requested cycle-end cancellation, leaving the scheduled charge in place.
+- **Changes:** Preload the Razorpay script on authenticated billing surfaces and load it concurrently with subscription creation; cancel provider subscriptions immediately when checkout is dismissed; persist canceled state; preserve access through an authorized trial’s original seven-calendar-day window while preventing renewal; preserve paid access through the paid cycle; stop stale activation webhooks and delayed browser verification from reactivating canceled subscriptions; expire authorization before the scheduled billing start; cancel orphaned provider subscriptions if Keeper cannot save the local checkout record.
+- **Related fix:** Added strict less-than support to Postgres and Mongo query adapters used by usage accounting.
+- **Tests:** Added coverage for canceled-trial checkout blocking and stale activation webhook handling.
+- **Validation:** 253/253 tests passed; TypeScript passed; full lint completed with 238 warnings and 0 errors. Turbopack build failed to spawn/bind a child process, including on an escalated retry; production Webpack build passed. No live payments or production database calls were made.
+- **Remaining:** End-to-end Razorpay test-account and configured database checks are pending. Local configuration lacks `SUPABASE_SERVICE_ROLE_KEY`; live payments remain disabled.
+
+## 2026-10-31 — Recover canceled checkout retries
+
+- **Problem:** A dismissed checkout could remain locally `created` if its cancellation request failed or never completed, causing every retry to be rejected by the 30-minute in-progress guard.
+- **Changes:** Before applying checkout blocking rules, reconcile all local `created` rows with Razorpay. Immediately cancel provider rows still `created`, persist terminal provider states, sync already-authorized states so Keeper does not create a duplicate plan, and retire malformed local rows that lack a Razorpay ID. Created rows remain blocked in the policy until this provider reconciliation completes.
+- **Validation:** TypeScript passed; `npm test` passed 253/253; focused checkout lint has 0 errors; production Webpack build passed. No test-account/provider transaction was performed.

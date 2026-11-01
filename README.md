@@ -2,7 +2,123 @@
 
 > **"Save anything. Understand it with AI. Find it anytime."**
 
-An original, pre-production SaaS prototype for an AI-powered universal bookmark and personal knowledge platform. Inspired by modern knowledge apps like Albo, Notion, and Raindrop, with a custom design system, dark/light theme, simulated AI analysis, and client-side persistence.
+An AI-powered universal bookmark and knowledge platform. Keeper combines a Next.js workspace, local library state, authenticated ingestion, durable AI processing, grounded search, and subscription billing. Some library mutations still live in browser storage; see the storage section below before treating the database as a full library sync backend.
+
+## Database and self-hosting choices
+
+Keeper supports three server-side storage modes. Select one per Keeper deployment with the private environment variable `DATABASE_PROVIDER`:
+
+| Value | Storage | Best fit | Setup |
+|---|---|---|---|
+| `supabase` | Supabase Postgres, PostgREST, SQL functions, and Supabase Auth | Simplest managed setup and current default | Configure a Supabase project and apply the ordered `supabase/migrations/*.sql` files. |
+| `postgres` | A user-managed PostgreSQL database | Local PostgreSQL, a private server, or hosted PostgreSQL | Set `DATABASE_URL`, then apply [`database/postgres/001_keeper.sql`](database/postgres/001_keeper.sql). |
+| `mongodb` | A user-managed MongoDB database | Local MongoDB replica set or MongoDB Atlas | Set `MONGODB_URI`; Keeper creates required indexes on first server connection. |
+
+**Supabase is still the identity provider in all three modes.** Sign-in, signup, session refresh, and server-side user verification currently use Supabase Auth. When `DATABASE_PROVIDER=postgres` or `mongodb`, content, AI, usage, conversation, and billing records use the selected database, while Supabase Auth supplies the verified user/workspace ID. Configure `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (or the legacy anon key) for every mode. `SUPABASE_SERVICE_ROLE_KEY` is needed only for `DATABASE_PROVIDER=supabase`.
+
+Database selection is for a **whole Keeper installation**, not an individual account in a shared hosted Keeper service. Connection strings are server secrets and must never be placed in `NEXT_PUBLIC_*` variables. Each mode points to a separate store; changing `DATABASE_PROVIDER` does not copy or migrate existing records.
+
+### Common configuration
+
+```bash
+cp .env.example .env.local
+# Configure Supabase Auth values, then choose one database mode below.
+npm ci
+npm run dev
+```
+
+Use the Supabase project’s publishable/anon key for browser authentication. Keep database passwords, private keys, and service-role keys server-side. Restart the Next.js server after changing `.env.local`.
+
+### Supabase-managed Postgres
+
+Leave `DATABASE_PROVIDER=supabase`. Configure the Supabase URL, publishable key, and server-only service-role key. Apply the project migrations in filename order using the documented Supabase migration workflow; do not apply them to production as an exploratory check. Supabase mode uses its existing Auth integration, RLS policies, and SQL RPC functions.
+
+### Local or hosted PostgreSQL
+
+Set `DATABASE_PROVIDER=postgres` and `DATABASE_URL` to a private Postgres connection string. A local Docker instance can be started with:
+
+```bash
+docker run --name keeper-postgres \
+  -e POSTGRES_USER=keeper \
+  -e POSTGRES_PASSWORD=replace-with-a-local-password \
+  -e POSTGRES_DB=keeper \
+  -p 5432:5432 -d postgres:17
+```
+
+Apply Keeper’s standalone schema once, using a database owner/migration account:
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/postgres/001_keeper.sql
+```
+
+Example local setting:
+
+```dotenv
+DATABASE_PROVIDER=postgres
+DATABASE_URL=postgresql://keeper:replace-with-a-local-password@localhost:5432/keeper
+DATABASE_POOL_MAX=10
+```
+
+For cloud Postgres, use the provider’s TLS connection string and its recommended pooled/direct connection endpoint. The server process needs network access to the database. Run schema changes as a migration role; use a separate restricted runtime role where your deployment supports it. The app’s API routes enforce workspace scoping, so do not expose this database directly to browsers or public networks.
+
+### Local MongoDB or MongoDB Atlas
+
+Set `DATABASE_PROVIDER=mongodb` and `MONGODB_URI`. Keeper creates unique and lookup indexes for media identity, import jobs, collections, transcripts, analyses, billing records, usage, and AI conversations when the first database client connects.
+
+MongoDB transactions are required for atomic import, credit ledger, and AI job creation. **Use MongoDB Atlas or a local replica set**; a standalone `mongod` does not provide multi-document transactions. For local development, start a single-node replica set:
+
+```bash
+docker run --name keeper-mongodb -p 27017:27017 -d mongo:8 --replSet rs0 --bind_ip_all
+docker exec keeper-mongodb mongosh --quiet --eval 'rs.initiate()'
+```
+
+Then configure:
+
+```dotenv
+DATABASE_PROVIDER=mongodb
+MONGODB_URI=mongodb://localhost:27017/keeper?replicaSet=rs0
+MONGODB_DATABASE=keeper
+DATABASE_POOL_MAX=10
+```
+
+For Atlas, create a database user with access only to the Keeper database, allow network access from the Keeper server, and use the connection string supplied by Atlas (normally `mongodb+srv://...`). The URI contains credentials: store it only in `.env.local` or your deployment’s secret manager.
+
+### Persistence scope and switching databases
+
+The selected database backs authenticated imports, durable AI jobs and their derived data, collections synchronized for server processing, usage accounting, billing, and cloud assistant history. The main library still has a browser-local compatibility layer: notes, favorites, archive/trash state, and many collection/item edits are not yet a complete cross-device database sync. Demo and local prototype accounts also use browser storage. This is an existing architecture boundary, not a difference between PostgreSQL and MongoDB.
+
+Keeper does not automatically move data between Supabase, PostgreSQL, and MongoDB. Before changing a deployment’s provider, export/back up the source, migrate records with a reviewed one-time migration, preserve workspace IDs and canonical URLs, and verify counts and ownership before switching traffic. Never point a new provider at production just to test it.
+
+### Server data model and relationships
+
+PostgreSQL uses relational tables with JSONB for the canonical saved-item payload and structured AI output. MongoDB uses collections with the same names; references are explicit workspace/media/conversation IDs rather than ORM-managed relations.
+
+| Entity | PostgreSQL table / MongoDB collection | Relationship and role |
+|---|---|---|
+| Saved media | `keeper_media` | One row/document per workspace and canonical URL. Stores `payload`, processing state, source identity, and content fingerprint. |
+| Transcript | `keeper_media_transcripts` | At most one current transcript per media item; stores segments, language, status, and provider provenance. |
+| Transcript history | `keeper_media_transcript_history` | Many archived transcript versions per media item, created during reprocessing. |
+| AI analysis | `keeper_media_analyses` | Current grounded summary, tags, topic, collection result, confidence, and analysis JSON for a media item. |
+| AI job | `keeper_ai_jobs` | One durable processing job per media item; unique workspace/idempotency key, lease, attempt count, retry time, and failure state. |
+| Collection | `keeper_collections` | Workspace-owned collections, unique by workspace and collection ID. Media payloads reference collection IDs. |
+| Collection profile | `keeper_collection_profiles` | Workspace/collection terms used for matching; references a collection. |
+| Workspace memory | `keeper_workspace_memory` | One row/document per workspace for free-cycle anchor and organizer memory. |
+| Organization correction | `keeper_organization_corrections` | Append-only user collection corrections tied to a workspace and media item. |
+| Assignment memory | `keeper_workspace_assignments` | Latest AI/manual assignment per workspace/media item. |
+| Usage ledger | `keeper_usage_ledger` | One import-credit record per workspace/media item, with plan and billing-cycle boundaries. |
+| Subscription and payment | `billing_subscriptions`, `billing_payments`, `billing_plan_catalog` | Workspace/user billing lifecycle, Razorpay plan mapping, and payment history. |
+| Webhook records | `razorpay_webhook_events`, `billing_payment_failures` | Idempotent Razorpay event tracking and failed payment records. |
+| Assistant history | `keeper_ai_conversations`, `keeper_ai_messages` | One conversation to many messages, scoped by workspace. |
+
+### Backend implementation notes
+
+- [`src/lib/database/backend-client.ts`](src/lib/database/backend-client.ts) selects the configured store while keeping Supabase Auth verification at the API boundary.
+- [`src/lib/database/postgres-store.ts`](src/lib/database/postgres-store.ts) provides parameterized SQL access, transactional import/quota behavior, and `SKIP LOCKED` AI job claiming.
+- [`src/lib/database/mongodb-store.ts`](src/lib/database/mongodb-store.ts) provides collection access, index creation, replica-set transaction handling for imports, and atomic job claiming.
+- [`database/postgres/001_keeper.sql`](database/postgres/001_keeper.sql) is the standalone PostgreSQL schema. Supabase projects continue using `supabase/migrations/` because those migrations include Supabase Auth/RLS-specific behavior.
+- `DATABASE_POOL_MAX` controls PostgreSQL/MongoDB server pool size (default `10`). Never create database clients in browser components.
+
+MongoDB uses single-document atomic updates and transactions for cross-document operations; a transaction-capable deployment is required for the import invariant. [MongoDB transaction documentation](https://www.mongodb.com/docs/manual/core/transactions/). PostgreSQL job claiming uses row locking with `SKIP LOCKED`, designed for concurrent consumers of queue-like tables. [PostgreSQL locking documentation](https://www.postgresql.org/docs/current/sql-select.html).
 
 ---
 
