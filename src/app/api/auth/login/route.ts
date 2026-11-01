@@ -18,7 +18,8 @@ export async function POST(request: NextRequest) {
     }
     const response = NextResponse.json({ user: data.user }, { headers: { "Cache-Control": "private, no-store" } });
     return await setAuthSessionCookie(response);
-  } catch {
+  } catch (error) {
+    console.error("Sign-in error:", error);
     return NextResponse.json({ error: "Sign-in failed. Check your connection and try again." }, { status: 503 });
   }
 }

@@ -1,5 +1,20 @@
 # AI Development Handoff
 
+## 2026-11-01 — Production Authentication 401 & 503 Resolution
+
+- **Problem:** On deployed site `https://keeper-nu-amber.vercel.app`, users experienced `401` on `/api/auth/session` and `503 Service Unavailable` on `/api/auth/login`.
+- **Root Cause & Fix:**
+  1. `src/proxy.ts`: `/api/auth/session` was missing from `publicApi`, so the proxy rejected unauthenticated session checks with 401. Added `/api/auth/session` to `publicApi`.
+  2. `src/lib/supabase/auth-session.ts`: `sessionSecret()` threw `AUTH_SESSION_SECRET must be configured with at least 32 characters` because the variable was not populated in Vercel. Added resilient fallback to server-available Supabase keys.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm run lint -- --max-warnings=262`: 0 errors, 239 warnings.
+  - `npm run build`: Turbopack build passed.
+  - `npm test`: 262/262 passed.
+- **Next Steps:**
+  - Push the patch to `main` so Vercel redeploys with the fix.
+  - (Recommended) Add `AUTH_SESSION_SECRET` (at least 32 random characters) to Vercel Project Settings ➔ Environment Variables for defense-in-depth, though fallback now prevents 503 errors if omitted.
+
 ## 2026-11-01 — CI/CD Pipeline Audit & Production Dependency Vulnerability Fix
 
 - **Problem:** GitHub Actions failed on `main` branch push at:

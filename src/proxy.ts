@@ -43,7 +43,7 @@ export async function proxy(request: NextRequest) {
   const protectedPage = pathname === "/app" || pathname.startsWith("/app/") || pathname === "/dashboard" || pathname.startsWith("/item/");
   const authPage = pathname === "/sign-in" || pathname === "/sign-up";
   const publicApi = new Set([
-    "/api/auth/login", "/api/auth/signup", "/api/auth/logout",
+    "/api/auth/login", "/api/auth/signup", "/api/auth/logout", "/api/auth/session",
     "/api/health", "/api/webhooks/razorpay", "/api/ai/worker", "/api/bulk-import/capabilities",
   ]);
   const protectedApi = pathname.startsWith("/api/") && !publicApi.has(pathname);

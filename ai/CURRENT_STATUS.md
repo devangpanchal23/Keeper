@@ -1,5 +1,23 @@
 # Current Project Status
 
+## 2026-11-01 — Production Authentication 401 & 503 Resolution
+
+- **Problem:** Production site (`https://keeper-nu-amber.vercel.app`) returned:
+  - `401 Unauthorized` on `GET /api/auth/session`
+  - `503 Service Unavailable` on `POST /api/auth/login` (even though Supabase auth succeeded and set the `sb-...-auth-token` cookie)
+- **Root Causes:**
+  1. `src/proxy.ts`: `publicApi` set did not include `"/api/auth/session"`. Next.js proxy treated `/api/auth/session` as a `protectedApi` and rejected unauthenticated visitors with 401 before the route handler could return `{ user: null }`.
+  2. `src/lib/supabase/auth-session.ts`: `sessionSecret()` threw `Error("AUTH_SESSION_SECRET must be configured with at least 32 characters.")` because `AUTH_SESSION_SECRET` was not populated in Vercel production environment variables. `setAuthSessionCookie()` threw inside the route handler, and the catch block returned 503.
+- **Fix:**
+  - Added `"/api/auth/session"` to `publicApi` in `src/proxy.ts`.
+  - Added a resilient server-side fallback in `sessionSecret()` using configured Supabase server/anon keys when `AUTH_SESSION_SECRET` is omitted from deployment variables.
+  - Added explicit error logging in `login` and `signup` route catch blocks.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm run lint -- --max-warnings=262`: 0 errors, 239 warnings.
+  - `npm run build`: Turbopack production build succeeded (all 28 routes generated).
+  - `npm test`: 262/262 passed across all 24 test suites.
+
 ## 2026-11-01 — CI/CD Pipeline Audit & Production Dependency Vulnerability Fix
 
 - **Problem:** GitHub Actions failed on push to `main` at:

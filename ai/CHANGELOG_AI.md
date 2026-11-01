@@ -1,5 +1,23 @@
 # Keeper — AI Development Changelog
 
+## 2026-11-01 — Permanent Fix for Production Auth 401 & 503 Errors
+
+- **Problem**: Login failed on deployed production (`keeper-nu-amber.vercel.app`):
+  - `GET /api/auth/session` returned 401.
+  - `POST /api/auth/login` returned 503 Service Unavailable, despite Supabase successfully returning an auth token.
+- **Root Cause**:
+  1. `src/proxy.ts` treated `/api/auth/session` as a protected API because it was missing from `publicApi`.
+  2. `src/lib/supabase/auth-session.ts` threw an error when `AUTH_SESSION_SECRET` was missing from Vercel's production environment variables, causing `setAuthSessionCookie()` to fail inside `/api/auth/login`.
+- **Changes**:
+  - `src/proxy.ts`: Added `/api/auth/session` to `publicApi`.
+  - `src/lib/supabase/auth-session.ts`: Added fallback to `SUPABASE_SERVICE_ROLE_KEY` or `NEXT_PUBLIC_SUPABASE_ANON_KEY` in `sessionSecret()` so session marker signing does not fail if `AUTH_SESSION_SECRET` is omitted in Vercel.
+  - `src/app/api/auth/login/route.ts` & `src/app/api/auth/signup/route.ts`: Log errors in catch blocks.
+- **Validation**:
+  - `npm run type-check`: 0 errors.
+  - `npm run lint -- --max-warnings=262`: 0 errors, 239 warnings.
+  - `npm test`: 262/262 passed.
+  - `npm run build`: Turbopack build passed.
+
 ## 2026-11-01 — CI/CD Pipeline Dependency Security Audit Fix
 
 - **Problem**: Following push to `main`, CI and CD workflows failed on `Dependency Security Audit` in CI (`ci.yml`) and `Production quality gates` in CD (`deploy.yml`). Downstream build and deployment jobs were skipped.

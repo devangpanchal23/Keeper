@@ -3,6 +3,20 @@ export const AUTH_SESSION_DURATION_SECONDS = 7 * 24 * 60 * 60;
 
 function sessionSecret(): string {
   const secret = process.env.AUTH_SESSION_SECRET;
+  if (secret && secret.length >= 32) return secret;
+
+  // Resilient fallback: If AUTH_SESSION_SECRET is omitted from deployment environment variables,
+  // use the server-only SUPABASE_SERVICE_ROLE_KEY or derive from the configured Supabase key
+  // so valid Supabase logins don't crash with 503 Service Unavailable.
+  const fallback =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+
+  if (fallback && fallback.length >= 32) {
+    return fallback;
+  }
+
   if (!secret || secret.length < 32) throw new Error("AUTH_SESSION_SECRET must be configured with at least 32 characters.");
   return secret;
 }

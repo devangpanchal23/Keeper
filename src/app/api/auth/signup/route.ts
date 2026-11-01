@@ -32,7 +32,8 @@ export async function POST(request: NextRequest) {
     }
     const response = NextResponse.json({ user: data.user, confirmationRequired: false }, { status: 201, headers: { "Cache-Control": "private, no-store" } });
     return await setAuthSessionCookie(response);
-  } catch {
+  } catch (error) {
+    console.error("Sign-up error:", error);
     return NextResponse.json({ error: "Sign-up failed. Check your connection and try again." }, { status: 503 });
   }
 }
