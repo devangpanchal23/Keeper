@@ -122,8 +122,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
           <div>
             <div className="text-base font-bold tracking-tight text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
               Keeper
-              <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-500">
-                {getPlanLabel(user?.tier).toUpperCase()}
+              <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                OPEN SOURCE
               </span>
             </div>
             <p className="text-[10px] text-zinc-400 font-medium truncate max-w-[130px]">
@@ -300,17 +300,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
 
       {/* Bottom Storage & AI badge info */}
       <div className="p-4 border-t border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-900/30">
-        <Link
-          href="/#pricing"
-          onClick={onCloseMobile}
-          className="mb-3 flex min-h-11 items-center justify-between rounded-xl bg-indigo-600 px-3.5 py-2.5 text-white shadow-sm transition-colors hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-zinc-950"
-        >
-          <span className="flex items-center gap-2 text-xs font-semibold">
-            <Sparkles className="h-4 w-4" />
-            Upgrade plan
-          </span>
-          <ArrowUpRight className="h-4 w-4" />
-        </Link>
         <div className="p-3 rounded-xl bg-gradient-to-br from-indigo-500/10 via-purple-500/5 to-transparent border border-indigo-500/15">
           <div className="flex items-center gap-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 mb-1">
             <Sparkles className="w-3.5 h-3.5" />

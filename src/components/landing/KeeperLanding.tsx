@@ -25,8 +25,6 @@ import {
 import { useRecall } from "@/context/RecallContext";
 import { AddContentModal } from "@/components/modals/AddContentModal";
 import { getPlanLabel } from "@/lib/user-plan";
-import { prepareRazorpayCheckout, startKeeperSubscription } from "@/lib/subscription-checkout";
-import { KEEPER_BILLING_PLANS } from "@/lib/billing-plans";
 
 type DemoSave = {
   title: string;
@@ -111,12 +109,12 @@ const faqs = [
     answer: "Keeper keeps the link and any details you provide or imported. It marks unavailable media honestly instead of substituting an unrelated image.",
   },
   {
-    question: "How are save credits used?",
-    answer: "Each successfully saved item uses one credit. Items skipped as duplicates or unsupported during a bulk import don’t use credits.",
+    question: "Is Keeper completely free and open source?",
+    answer: "Yes. Keeper Open-Source Edition is completely free with no subscription tiers, paywalls, or artificial quotas. All features are unlocked.",
   },
   {
-    question: "Is there an extra charge for bulk imports?",
-    answer: "No per-import fee is proposed. Bulk imports draw from your plan’s save-credit allowance, one credit for each item Keeper successfully saves.",
+    question: "Can I self-host Keeper on my own infrastructure?",
+    answer: "Yes. You can self-host Keeper with Next.js and Supabase (or local Postgres). Complete configuration instructions are provided in the repository.",
   },
 ];
 
@@ -136,7 +134,6 @@ function KeeperNav() {
   const links = [
     { label: "How it works", href: "#how-it-works" },
     { label: "The workspace", href: "#product" },
-    { label: "Pricing", href: "#pricing" },
     { label: "Why Keeper", href: "#why-keeper" },
     { label: "FAQ", href: "#faq" },
   ];
@@ -159,7 +156,7 @@ function KeeperNav() {
               <button
                 type="button"
                 className="keeper-nav-avatar"
-                aria-label={`Open ${user.name}'s account menu (${getPlanLabel(user.tier)} plan)`}
+                aria-label={`Open ${user.name}'s account menu`}
                 aria-expanded={profileOpen}
                 onClick={() => setProfileOpen((open) => !open)}
               >
@@ -170,7 +167,7 @@ function KeeperNav() {
                 <div className="keeper-nav-account-menu">
                   <strong>{user.name}</strong>
                   <span>{user.email}</span>
-                  <small>{getPlanLabel(user.tier)} workspace</small>
+                  <small>Open Source Workspace</small>
                   <Link href="/app" onClick={() => setProfileOpen(false)}>Open workspace <ArrowUpRight size={14} /></Link>
                   <Link href="/app/profile" onClick={() => setProfileOpen(false)}>Profile &amp; account <ArrowUpRight size={14} /></Link>
                   <button type="button" onClick={() => {
@@ -427,117 +424,6 @@ function SourcesSection() {
   );
 }
 
-function PricingSection() {
-  const [billingCycle, setBillingCycle] = useState<"monthly" | "yearly">("yearly");
-  const [checkoutBusy, setCheckoutBusy] = useState<string | null>(null);
-  const [checkoutMessage, setCheckoutMessage] = useState<{ text: string; error: boolean } | null>(null);
-  const { user, isAuthenticated, addToast, syncBillingTier } = useRecall();
-  const isYearly = billingCycle === "yearly";
-  const formatPrice = (amount: number) => new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(amount / 100);
-  const plans = [
-    {
-      name: "Basic",
-      id: "basic" as const,
-      monthlyPrice: KEEPER_BILLING_PLANS.basic.monthly.amount,
-      yearlyPrice: KEEPER_BILLING_PLANS.basic.yearly.amount,
-      monthlyCredits: `${KEEPER_BILLING_PLANS.basic.monthly.credits.toLocaleString("en-IN")} save credits each month`,
-      yearlyCredits: `${KEEPER_BILLING_PLANS.basic.yearly.credits.toLocaleString("en-IN")} save credits for the year`,
-      saving: "₹100",
-      featured: false,
-      benefits: [
-        "Bulk import supported exports and bookmark files",
-        "1 credit per successfully saved item",
-        "Collections, tags, favorites, and full-library search",
-        "AI summaries when source content is available",
-      ],
-    },
-    {
-      name: "Pro",
-      id: "pro" as const,
-      monthlyPrice: KEEPER_BILLING_PLANS.pro.monthly.amount,
-      yearlyPrice: KEEPER_BILLING_PLANS.pro.yearly.amount,
-      monthlyCredits: `${KEEPER_BILLING_PLANS.pro.monthly.credits.toLocaleString("en-IN")} save credits each month`,
-      yearlyCredits: `${KEEPER_BILLING_PLANS.pro.yearly.credits.toLocaleString("en-IN")} save credits for the year`,
-      saving: "₹500",
-      featured: true,
-      benefits: [
-        "Bulk import larger libraries from supported exports and files",
-        "1 credit per successfully saved item",
-        "Collections, tags, favorites, and full-library search",
-        "Detailed AI summaries, topics, and key points when content allows",
-        "Transcript search and smart organization when source media is available",
-      ],
-    },
-  ];
-
-  const startCheckout = async (plan: "basic" | "pro") => {
-    if (!isAuthenticated || !user) return;
-    const checkoutKey = `${plan}-${billingCycle}`;
-    setCheckoutBusy(checkoutKey);
-    setCheckoutMessage(null);
-
-    try {
-      const result = await startKeeperSubscription({ plan, billingCycle, name: user.name, email: user.email });
-      if (result === "cancelled") { setCheckoutBusy(null); return; }
-      try {
-        const billingResponse = await fetch("/api/billing", { cache: "no-store" });
-        if (billingResponse.ok) {
-          const billing = await billingResponse.json() as { tier?: "free" | "basic" | "pro" };
-          if (billing.tier) syncBillingTier(billing.tier);
-        }
-      } catch (refreshError) {
-        console.warn("Payment is verified, but the visible plan badge could not refresh:", refreshError);
-      }
-      const planLabel = plan === "basic" ? "Basic" : "Pro";
-      const message = `Your ${planLabel} plan is authorized. Your 7-day trial is active; the first recurring charge is scheduled after the trial.`;
-      setCheckoutMessage({ text: message, error: false });
-      addToast("Plan activated", message, "success");
-      setCheckoutBusy(null);
-    } catch (error) {
-      setCheckoutMessage({ text: error instanceof Error ? error.message : "Checkout could not be started.", error: true });
-      setCheckoutBusy(null);
-    }
-  };
-
-  return (
-    <section id="pricing" className="keeper-pricing-section">
-      <div className="keeper-pricing-heading">
-        <span className="keeper-overline">SIMPLE, CLEAR PRICING</span>
-        <h2>A plan that fits<br /><em>your library.</em></h2>
-        <p>Choose a plan and billing rhythm. Start with a 7-day trial, then your selected amount renews automatically until you cancel.</p>
-      </div>
-      <div className="keeper-billing-toggle" role="group" aria-label="Choose a billing period">
-        <button type="button" aria-pressed={!isYearly} className={!isYearly ? "is-selected" : ""} onClick={() => setBillingCycle("monthly")}>Monthly</button>
-        <button type="button" aria-pressed={isYearly} className={isYearly ? "is-selected" : ""} onClick={() => setBillingCycle("yearly")}>Yearly <span>Save up to 8.3%</span></button>
-      </div>
-      <div className="keeper-pricing-grid">
-        {plans.map((plan) => <article key={plan.name} className={`keeper-plan-card${plan.featured ? " keeper-plan-card-featured" : ""}`}>
-          <div className="keeper-plan-topline"><span>KEEPER {plan.name.toUpperCase()}</span><span className="keeper-plan-save">{isYearly ? `SAVE ${plan.saving}` : "FLEXIBLE"}</span></div>
-          <h3>{plan.name}</h3>
-          <p className="keeper-plan-price"><strong>{formatPrice(isYearly ? plan.yearlyPrice : plan.monthlyPrice)}</strong><span>/ {isYearly ? "year" : "month"}</span></p>
-          <p className="keeper-plan-billing">{isYearly ? <>Then {formatPrice(plan.yearlyPrice)} every year · Save {plan.saving} vs monthly</> : <>Then {formatPrice(plan.monthlyPrice)} every month</>}</p>
-          <p className="keeper-plan-credit-allocation">{isYearly ? plan.yearlyCredits : plan.monthlyCredits}</p>
-          {isAuthenticated ? (
-            <button type="button" disabled={checkoutBusy !== null} onClick={() => void startCheckout(plan.id)} className={`keeper-button keeper-plan-cta${plan.featured ? " keeper-button-gold" : " keeper-button-dark"}`}>
-              {checkoutBusy === `${plan.id}-${billingCycle}` ? "Opening secure checkout…" : "Start 7-day trial"}<ArrowRight size={15} />
-            </button>
-          ) : (
-            <Link href={`/sign-in?next=${encodeURIComponent("/#pricing")}`} className={`keeper-button keeper-plan-cta${plan.featured ? " keeper-button-gold" : " keeper-button-dark"}`}>Sign in to continue <ArrowRight size={15} /></Link>
-          )}
-          <ul>{plan.benefits.map((benefit) => <li key={benefit}><Check size={15} />{benefit}</li>)}</ul>
-        </article>)}
-      </div>
-      {checkoutMessage && <p role={checkoutMessage.error ? "alert" : "status"} className="keeper-pricing-status">{checkoutMessage.text}</p>}
-      <p className="keeper-pricing-credit-note">A credit is used only when Keeper successfully saves an item. Duplicate or unsupported entries in an import don’t use credits.</p>
-      <p className="keeper-pricing-status">Razorpay manages your recurring subscription. Your first charge is scheduled after the 7-day trial, then renews each billing cycle until you cancel.</p>
-    </section>
-  );
-}
-
 function FAQSection() {
   return (
     <section id="faq" className="keeper-faq-section">
@@ -554,7 +440,7 @@ function KeeperFooter() {
     <footer className="keeper-footer">
       <div className="keeper-footer-main">
         <div className="keeper-footer-brand"><Link href="/" className="keeper-wordmark"><KeeperMark light /><span>keeper</span></Link><p>A home for the things you don’t want to lose.</p></div>
-        <div className="keeper-footer-links"><span>EXPLORE</span><a href="#how-it-works">How it works</a><a href="#product">The workspace</a><a href="#pricing">Pricing</a><a href="#faq">Questions</a></div>
+        <div className="keeper-footer-links"><span>EXPLORE</span><a href="#how-it-works">How it works</a><a href="#product">The workspace</a><a href="#faq">Questions</a></div>
         <div className="keeper-footer-links"><span>YOUR KEEPER</span><Link href="/sign-in">Sign in</Link><Link href="/sign-up">Create an account</Link><Link href="/app">Open workspace</Link></div>
       </div>
       <div className="keeper-footer-bottom"><span>© {new Date().getFullYear()} Keeper</span><span>Keep what matters close.</span><a href="#top">Back to top ↑</a></div>
@@ -564,10 +450,6 @@ function KeeperFooter() {
 
 export function KeeperLanding() {
   const { openAddContent, isAuthenticated, authLoading } = useRecall();
-  useEffect(() => {
-    if (authLoading || !isAuthenticated) return;
-    void prepareRazorpayCheckout().catch((error: unknown) => console.warn("Razorpay preload failed; checkout will retry on demand.", error));
-  }, [authLoading, isAuthenticated]);
 
   return (
     <div id="top" className="keeper-site">
@@ -609,8 +491,6 @@ export function KeeperLanding() {
             <div className="keeper-demo-footnote"><span /> Source-linked answer <span className="keeper-demo-dot" /> Saved context</div>
           </div>
         </section>
-
-        <PricingSection />
 
         <section className="keeper-closing-cta">
           <KeeperMark />

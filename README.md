@@ -1,8 +1,10 @@
-# Recall — AI-Powered Universal Bookmark & Knowledge Platform
+# Keeper — Free Open-Source AI-Powered Universal Bookmark & Knowledge Platform
 
 > **"Save anything. Understand it with AI. Find it anytime."**
 
-An AI-powered universal bookmark and knowledge platform. Keeper combines a Next.js workspace, local library state, authenticated ingestion, durable AI processing, grounded search, and subscription billing. Some library mutations still live in browser storage; see the storage section below before treating the database as a full library sync backend.
+An AI-powered universal bookmark and knowledge platform. Keeper combines a Next.js workspace, local library state, authenticated ingestion, durable AI processing, grounded search, and rich multi-device organization.
+
+This branch (`open_source_keeper`) is the **Free Open-Source Edition** of Keeper. All monetization, subscription plans, payment checkout gateways, and artificial usage quotas have been removed. All features are 100% free and unlocked for self-hosting.
 
 ## Database and self-hosting choices
 
@@ -105,9 +107,7 @@ PostgreSQL uses relational tables with JSONB for the canonical saved-item payloa
 | Workspace memory | `keeper_workspace_memory` | One row/document per workspace for free-cycle anchor and organizer memory. |
 | Organization correction | `keeper_organization_corrections` | Append-only user collection corrections tied to a workspace and media item. |
 | Assignment memory | `keeper_workspace_assignments` | Latest AI/manual assignment per workspace/media item. |
-| Usage ledger | `keeper_usage_ledger` | One import-credit record per workspace/media item, with plan and billing-cycle boundaries. |
-| Subscription and payment | `billing_subscriptions`, `billing_payments`, `billing_plan_catalog` | Workspace/user billing lifecycle, Razorpay plan mapping, and payment history. |
-| Webhook records | `razorpay_webhook_events`, `billing_payment_failures` | Idempotent Razorpay event tracking and failed payment records. |
+| Usage ledger | `keeper_usage_ledger` | Import audit record per workspace/media item for activity tracking. |
 | Assistant history | `keeper_ai_conversations`, `keeper_ai_messages` | One conversation to many messages, scoped by workspace. |
 
 ### Backend implementation notes
@@ -285,7 +285,7 @@ The public homepage has been rebuilt in the visual style of [krackerz.com](https
   - `--ink` (`#111111`): All body typography, headings, outlines, and tactile borders.
   - `--grid-dot` (`#D3D0C5`): Subtle tactile background grid.
 - **30% Secondary Brand (MAX 3 Shades)**:
-  - `--oxblood` (`#4E0F15`): Deep hero cloud, pricing highlights, dark overlays, and footer.
+  - `--oxblood` (`#4E0F15`): Deep hero cloud, dark overlays, and footer.
   - `--maroon` (`#7A1710`): Feature panel progression and architectural telemetry.
   - `--brick` (`#C4271B`): The ONE brand red: problem tickets, stat cards, checkmark badges.
 - **10% Regulated Accent**:
@@ -299,7 +299,7 @@ The public homepage has been rebuilt in the visual style of [krackerz.com](https
 
 ### 3. Product Dashboard Integration (`/app`)
 - Centralized via `ROUTES.dashboard = "/app"` in [src/config/routes.ts](file:///Volumes/T7/Devang/Code/Real_Project/Keeper/src/config/routes.ts).
-- Integrated as a secondary button in the floating nav, full-screen mobile menu drawer, sticky mobile quick bar, pricing tier, 404 page, and footer.
+- Integrated as a secondary button in the floating nav, full-screen mobile menu drawer, sticky mobile quick bar, 404 page, and footer.
 - Keyboard accessible with visible focus-visible rings and prefetch on hover.
 
 ### 4. Interactive Spline 3D Hero Scene
@@ -321,3 +321,13 @@ Visit the live styleguide at `/styleguide`:
 - Live 60:30:10 allocation meter.
 - WCAG AA contrast matrix.
 - Interactive token swatches and component hierarchy.
+
+---
+
+## Open-Source Edition Notice
+
+This branch (`open_source_keeper`) provides Keeper as a completely free, self-hostable personal knowledge platform.
+- **No Monetization**: No paid tiers, subscription plans, checkout flows, or billing webhooks.
+- **No Artificial Quotas**: Unlimited bookmark saving, bulk importing, transcription, and AI assistance.
+- **Full Capabilities**: Multi-platform ingestion (YouTube, Instagram, Reddit, X, web), AI summaries, auto-tagging, search, collections, and multi-device sync are completely operational.
+

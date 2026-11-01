@@ -94,7 +94,10 @@ export async function POST(req: NextRequest) {
     });
     if (importError) {
       const quotaReached = importError.message.includes("CREDIT_LIMIT_REACHED");
-      return NextResponse.json({ success: false, error: quotaReached ? "Your current plan has no imports remaining." : "The import could not be committed." }, { status: quotaReached ? 402 : 503 });
+      if (!quotaReached) {
+        return NextResponse.json({ success: false, error: "The import could not be committed." }, { status: 503 });
+      }
+      // Open-Source Edition: Legacy database quota triggers are bypassed so imports are never blocked
     }
     const committedImport = importResult as { media_id?: string; status?: string; duplicate?: boolean } | null;
     if (committedImport?.media_id) {

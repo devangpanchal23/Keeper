@@ -18,7 +18,6 @@ import {
   Menu,
   User as UserIcon,
 } from "lucide-react";
-import { ImportLimitsIndicator } from "./ImportLimitsIndicator";
 import { getPlanLabel } from "@/lib/user-plan";
 
 interface HeaderProps {
@@ -185,12 +184,7 @@ export const Header: React.FC<HeaderProps> = ({ onMobileMenuToggle }) => {
           )}
         </button>
 
-        {/* 2. Import Limits Indicator (Theme -> Import Limits -> Profile) */}
-        <div className="shrink-0">
-          <ImportLimitsIndicator />
-        </div>
-
-        {/* 3. Profile Avatar & Menu (Theme -> Import Limits -> Profile) */}
+        {/* 2. Profile Avatar & Menu */}
         <div className="relative shrink-0 pr-0.5 sm:pr-1">
           <button
             onClick={() => setProfileOpen(!profileOpen)}
@@ -217,8 +211,8 @@ export const Header: React.FC<HeaderProps> = ({ onMobileMenuToggle }) => {
                     {user?.name || "My Account"}
                   </div>
                   <div className="text-zinc-400 text-[11px] truncate">{user?.email || "No email"}</div>
-                  <span className="inline-block mt-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-indigo-500/10 text-indigo-500">
-                    {getPlanLabel(user?.tier)} Workspace
+                  <span className="inline-block mt-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    Open Source Edition
                   </span>
                 </div>
 
@@ -250,7 +244,7 @@ export const Header: React.FC<HeaderProps> = ({ onMobileMenuToggle }) => {
                   <button
                     onClick={() => {
                       setProfileOpen(false);
-                      if (window.confirm("Restore the sample library? This replaces your saved items and collections. Your plan and purchased credits will remain unchanged.")) {
+                      if (window.confirm("Restore the sample library? This replaces your saved items and collections.")) {
                         resetDemoData();
                       }
                     }}

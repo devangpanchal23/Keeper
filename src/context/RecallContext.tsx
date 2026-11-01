@@ -174,16 +174,8 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const refreshPlanFromBilling = useCallback(async (userId: string) => {
-    if (userId.startsWith("user-demo")) return;
-    try {
-      const response = await fetch("/api/billing", { cache: "no-store" });
-      if (!response.ok) return;
-      const billing = await response.json() as { tier?: User["tier"] };
-      if (billing.tier) setUser((current) => current?.id === userId ? { ...current, tier: billing.tier as User["tier"] } : current);
-    } catch (error) {
-      console.warn("Could not refresh account plan from billing:", error);
-    }
+  const refreshPlanFromBilling = useCallback(async (_userId: string) => {
+    // Open-Source Edition: No paid subscriptions or billing endpoints to poll
   }, []);
 
   const currentUserId = user?.id;
@@ -362,17 +354,6 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     };
   }, [isAuthenticated, currentUserId]);
 
-  useEffect(() => {
-    if (!currentUserId || currentUserId.startsWith("user-demo")) return;
-    const refresh = () => { void refreshPlanFromBilling(currentUserId); };
-    refresh();
-    const timer = window.setInterval(refresh, 5 * 60 * 1000);
-    window.addEventListener("focus", refresh);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("focus", refresh);
-    };
-  }, [currentUserId, refreshPlanFromBilling]);
 
   // Listen to OS system color scheme changes when theme is "system"
   useEffect(() => {
@@ -710,32 +691,21 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     setQuickNoteItem(null);
   };
 
-  // Import limits handlers
+  // Import limits handlers (Keeper Open-Source Edition: No artificial quotas)
   const deductImportLimits = (count = 1): boolean => {
     const result = StorageService.deductImportLimit(count, user?.id);
     setImportLimits(result.limits);
-    return result.success;
+    return true;
   };
 
-  const canImport = (count = 1): boolean => {
-    const current = StorageService.getImportLimits(user?.id);
-    return current.remaining >= count;
+  const canImport = (_count = 1): boolean => {
+    // Open-Source Edition: Unlimited imports for all users
+    return true;
   };
 
   const refreshImportLimits = () => {
     const current = StorageService.getImportLimits(user?.id);
     setImportLimits(current);
-    if (isAuthenticated) {
-      void fetch("/api/usage", { cache: "no-store" }).then(async (response) => {
-        if (!response.ok) return;
-        const usage = await response.json() as { total: number | null; used: number; remaining: number | null };
-        const total = usage.total ?? Math.max(current.total, usage.used + 1);
-        const limits = StorageService.setImportLimits({ total, used: usage.used }, user?.id);
-        setImportLimits(limits);
-      }).catch((error: unknown) => {
-        console.warn("Could not refresh server import usage.", error);
-      });
-    }
   };
 
   const addImportCredits = (count: number) => {
@@ -748,15 +718,6 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
   // Content actions
   const addItem = (itemData: Omit<SavedItem, "id" | "savedDate"> & { id?: string; savedDate?: string }): SavedItem => {
     const activeUserId = user?.id || StorageService.getActiveUserId();
-    const currentLimits = StorageService.getImportLimits(activeUserId);
-    if (currentLimits.remaining <= 0) {
-      addToast(
-        "Import limit reached",
-        `You have used all ${currentLimits.total} imports. Please reset or upgrade your quota to import more items.`,
-        "error"
-      );
-      throw new Error("Import limit reached: 0 remaining imports.");
-    }
 
     const created = ContentService.addItem(itemData, activeUserId);
     setItems(ContentService.getAll(activeUserId));
@@ -791,7 +752,7 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
 
     addToast(
       "Item saved to Recall",
-      `"${created.title}" is now analyzed and indexed. (${deductResult.limits.remaining} imports remaining)`,
+      `"${created.title}" is now analyzed and indexed.`,
       "success"
     );
     return created;

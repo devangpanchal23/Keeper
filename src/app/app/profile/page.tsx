@@ -6,7 +6,6 @@ import { useRecall } from "@/context/RecallContext";
 import { getPlanLabel } from "@/lib/user-plan";
 import { generateInitialsAvatar } from "@/services/auth-service";
 import { formatDate } from "@/lib/utils";
-import { BillingSection } from "@/components/profile/BillingSection";
 import {
   User as UserIcon,
   Lock,
@@ -225,8 +224,8 @@ export default function ProfilePage() {
                 <h2 className="text-base sm:text-lg font-bold text-zinc-900 dark:text-zinc-100 truncate">
                   {user.name}
                 </h2>
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-indigo-500/10 text-indigo-500 border border-indigo-500/20 shrink-0">
-                  {getPlanLabel(user.tier)} Plan
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                  Open Source Edition
                 </span>
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 font-mono mt-0.5 truncate">{user.email}</p>
@@ -270,8 +269,6 @@ export default function ProfilePage() {
           </div>
         )}
       </div>
-
-      <BillingSection />
 
       {/* Section 1: Edit Profile Information */}
       <div className="p-6 rounded-3xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs space-y-4">
