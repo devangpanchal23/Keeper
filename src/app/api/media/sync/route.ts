@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createBackendAdminClient, createBackendServerClient } from "@/lib/database/backend-client";
 import { ContentService } from "@/services/content-service";
+import { getCanonicalIdentityKey, getAuthoritativeCanonicalUrl } from "@/lib/media-identity";
 import { SavedItem } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -31,31 +32,68 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Could not retrieve existing workspace media." }, { status: 503 });
     }
 
-    const serverByUrl = new Map<string, { id: string; payload: SavedItem; status: string }>();
+    const serverByKey = new Map<string, { id: string; payload: SavedItem; status: string; canonical_url: string }>();
+    const duplicateIdsToDelete: string[] = [];
+
     for (const row of existingRows || []) {
       if (row.payload && typeof row.payload === "object") {
-        serverByUrl.set(row.canonical_url.toLowerCase().trim(), {
-          id: row.id,
-          payload: row.payload as SavedItem,
-          status: row.processing_status,
-        });
+        const key = getCanonicalIdentityKey(row.canonical_url || (row.payload as SavedItem).url);
+        if (!key) continue;
+
+        const existing = serverByKey.get(key);
+        if (existing) {
+          // Merge duplicate row and queue redundant row for deletion
+          existing.payload = ContentService.safeMerge(existing.payload, row.payload as SavedItem);
+          duplicateIdsToDelete.push(row.id);
+        } else {
+          serverByKey.set(key, {
+            id: row.id,
+            payload: row.payload as SavedItem,
+            status: row.processing_status,
+            canonical_url: row.canonical_url,
+          });
+        }
+      }
+    }
+
+    // Clean up historical duplicate rows asynchronously
+    if (duplicateIdsToDelete.length > 0) {
+      for (const dupId of duplicateIdsToDelete) {
+        void admin.from("keeper_media").delete().eq("id", dupId).eq("workspace_id", user.id);
       }
     }
 
     // Process incoming local items: if not on server, insert; if present, merge updates
     for (const localItem of localItems) {
       if (!localItem || !localItem.url || typeof localItem.url !== "string") continue;
-      const cleanUrl = localItem.url.toLowerCase().trim();
-      const existing = serverByUrl.get(cleanUrl);
+      const key = getCanonicalIdentityKey(localItem.url);
+      if (!key) continue;
+
+      const existing = serverByKey.get(key);
+      const authoritativeUrl = getAuthoritativeCanonicalUrl(localItem.url);
 
       if (existing) {
-        // Safe-merge local updates into existing server item
-        const mergedPayload = ContentService.safeMerge(existing.payload, localItem);
-        // Only update if changes exist
+        // Safe-merge local updates into existing server item, preserving chosen collection
+        const incomingColId = localItem.collectionId;
+        const mergedCollections = Array.from(
+          new Set([
+            ...(existing.payload.collections || []),
+            ...(localItem.collections || []),
+            ...(incomingColId ? [incomingColId] : []),
+            ...(existing.payload.collectionId ? [existing.payload.collectionId] : []),
+          ])
+        );
+        const mergedPayload: SavedItem = {
+          ...ContentService.safeMerge(existing.payload, localItem),
+          collectionId: incomingColId || existing.payload.collectionId,
+          collections: mergedCollections,
+        };
+
         if (JSON.stringify(mergedPayload) !== JSON.stringify(existing.payload)) {
           await admin
             .from("keeper_media")
             .update({
+              canonical_url: authoritativeUrl,
               payload: mergedPayload,
               updated_at: new Date().toISOString(),
             })
@@ -64,46 +102,56 @@ export async function POST(req: NextRequest) {
           existing.payload = mergedPayload;
         }
       } else {
-        // Local-only legacy item: insert into server database
+        // Local-only legacy item: insert into server database with normalized canonical URL
         const processingStatus = localItem.metadata?.aiProcessingStatus || "PENDING";
-        const { data: insertedRows } = await admin
+        const { data: insertedRows, error: insertError } = await admin
           .from("keeper_media")
           .insert({
             workspace_id: user.id,
-            canonical_url: localItem.url.trim(),
+            canonical_url: authoritativeUrl,
             payload: localItem,
             processing_status: processingStatus,
           })
           .select("id");
 
-        const newId = ((insertedRows as unknown as Array<{ id: string }>) || [])[0]?.id || localItem.metadata?.serverMediaId || "";
-        serverByUrl.set(cleanUrl, {
-          id: newId,
-          payload: localItem,
-          status: processingStatus,
-        });
+        if (!insertError) {
+          const newId = ((insertedRows as unknown as Array<{ id: string }>) || [])[0]?.id || localItem.metadata?.serverMediaId || "";
+          serverByKey.set(key, {
+            id: newId,
+            payload: localItem,
+            status: processingStatus,
+            canonical_url: authoritativeUrl,
+          });
+        }
       }
     }
 
-    // Fetch the final, authoritative server library
+    // Final authoritative server library
     const { data: finalRows } = await admin
       .from("keeper_media")
-      .select("id,payload,processing_status,created_at,updated_at")
+      .select("id,payload,processing_status,canonical_url,created_at,updated_at")
       .eq("workspace_id", user.id)
       .order("created_at", { ascending: false });
 
-    const items: SavedItem[] = (finalRows || []).flatMap((row) => {
-      if (!row.payload || typeof row.payload !== "object") return [];
-      const item = row.payload as SavedItem;
-      return [{
-        ...item,
+    const seenFinalKeys = new Set<string>();
+    const items: SavedItem[] = [];
+
+    for (const row of finalRows || []) {
+      if (!row.payload || typeof row.payload !== "object") continue;
+      const rawItem = row.payload as SavedItem;
+      const key = getCanonicalIdentityKey(row.canonical_url || rawItem.url);
+      if (key && seenFinalKeys.has(key)) continue;
+      if (key) seenFinalKeys.add(key);
+
+      items.push({
+        ...rawItem,
         metadata: {
-          ...item.metadata,
+          ...rawItem.metadata,
           serverMediaId: row.id,
           aiProcessingStatus: row.processing_status,
         },
-      }];
-    });
+      });
+    }
 
     return NextResponse.json({
       success: true,

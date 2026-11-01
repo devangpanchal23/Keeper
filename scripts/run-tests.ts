@@ -94,6 +94,7 @@ import { getMissingBillingServerVariables } from "../src/lib/billing-config";
 import { getCheckoutBlockDecision } from "../src/lib/billing-checkout-policy";
 import { getRazorpayConfigurationError, getSafeRazorpayErrorCode } from "../src/lib/razorpay-config";
 import { createAuthSessionMarker, isAuthSessionMarkerValid, AUTH_SESSION_DURATION_SECONDS } from "../src/lib/supabase/auth-session";
+import { getCanonicalIdentityKey, getAuthoritativeCanonicalUrl, isSameContentItem } from "../src/lib/media-identity";
 
 interface TestResult {
   name: string;
@@ -7088,6 +7089,194 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
 
         assertEqual(bobCols?.length || 0, 0, "Bob collections return 0 rows (strict isolation from Alice)");
       }
+    });
+
+    console.log("\n--- Section 23: Cross-Device Canonical Identity & Folder Assignment Regression Tests ---");
+
+    await test("Cross-device canonical URL identity normalization equates variant links", async () => {
+      const desktopUrl = "https://www.instagram.com/reel/C3x90ZaLkPq/?igsh=MW0yd2V2";
+      const mobileUrl = "https://instagram.com/reel/C3x90ZaLkPq";
+      const trackingUrl = "https://www.instagram.com/reel/C3x90ZaLkPq/?utm_source=ig_web_copy_link&utm_medium=share_sheet";
+
+      const keyDesktop = getCanonicalIdentityKey(desktopUrl);
+      const keyMobile = getCanonicalIdentityKey(mobileUrl);
+      const keyTracking = getCanonicalIdentityKey(trackingUrl);
+
+      assert(Boolean(keyDesktop), "Desktop key is generated");
+      assertEqual(keyDesktop, keyMobile, "Desktop and Mobile Instagram reel canonical keys match");
+      assertEqual(keyDesktop, keyTracking, "Tracking URL matches clean canonical key");
+
+      const authDesktop = getAuthoritativeCanonicalUrl(desktopUrl);
+      const authMobile = getAuthoritativeCanonicalUrl(mobileUrl);
+      assertEqual(authDesktop, authMobile, "Authoritative URLs match without query pollution");
+    });
+
+    await test("isSameContentItem identifies saved records across device representations", async () => {
+      const itemDesktop = {
+        id: "item-desktop-1",
+        url: "https://www.instagram.com/reel/C3x90ZaLkPq/?igsh=xyz",
+        title: "Inspiring Reel",
+      } as SavedItem;
+
+      const itemMobile = {
+        id: "item-mobile-2",
+        url: "https://instagram.com/reel/C3x90ZaLkPq/",
+        title: "Inspiring Reel",
+      } as SavedItem;
+
+      assert(isSameContentItem(itemDesktop, itemMobile), "Desktop and Mobile items are recognized as same content item");
+    });
+
+    await test("ContentService.addItem prevents duplicate saves across device URL variations", async () => {
+      const testUser = "test-user-cross-device-" + Date.now();
+      StorageService.clearUserData(testUser);
+
+      const desktopSaved = ContentService.addItem({
+        title: "Deep Dive Video",
+        url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=10s",
+        thumbnail: "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+        platform: "youtube",
+        contentType: "video",
+        creator: { name: "Rick" },
+        tags: ["music"],
+        favorite: false,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Rick Astley classic.", standard: "Rick Astley classic overview.", detailed: "Rick Astley classic detailed breakdown." },
+        keyPoints: [],
+        topics: ["music"],
+        personalNotes: "",
+        description: "",
+        metadata: {},
+      }, testUser);
+
+      assert(Boolean(desktopSaved.id), "First save succeeds");
+
+      // Save from mobile device with shortened link & tracking parameters
+      const mobileAttempt = ContentService.addItem({
+        title: "Deep Dive Video Mobile",
+        url: "https://youtu.be/dQw4w9WgXcQ?si=abcdef12345",
+        thumbnail: "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+        platform: "youtube",
+        contentType: "video",
+        creator: { name: "Rick" },
+        tags: ["music"],
+        favorite: false,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Rick Astley classic.", standard: "Rick Astley classic overview.", detailed: "Rick Astley classic detailed breakdown." },
+        keyPoints: [],
+        topics: ["music"],
+        personalNotes: "",
+        description: "",
+        metadata: {},
+      }, testUser, "skip");
+
+      assertEqual(mobileAttempt.id, desktopSaved.id, "Second save resolves to existing item without creating duplicate");
+
+      const allItems = ContentService.getAll(testUser);
+      assertEqual(allItems.length, 1, "Only 1 item exists in user library (no duplicates)");
+      StorageService.clearUserData(testUser);
+    });
+
+    await test("Folder assignment persistence: saving with collectionId attaches and retains folder", async () => {
+      const testUser = "test-user-folder-" + Date.now();
+      StorageService.clearUserData(testUser);
+
+      const savedCol = CollectionService.create({
+        name: "Design Inspo",
+        color: "#6366f1",
+        icon: "Folder",
+      }, testUser);
+
+      const savedItem = ContentService.addItem({
+        title: "Figma Tips",
+        url: "https://www.youtube.com/watch?v=3lZF8W_AaUo",
+        thumbnail: "https://example.com/thumb.jpg",
+        platform: "youtube",
+        contentType: "video",
+        creator: { name: "Designer" },
+        collectionId: savedCol.id,
+        collections: [savedCol.id],
+        tags: ["design"],
+        favorite: false,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Figma design system tips.", standard: "Figma tips standard overview.", detailed: "Figma tips detailed breakdown." },
+        keyPoints: [],
+        topics: ["design"],
+        personalNotes: "",
+        description: "",
+        metadata: {},
+      }, testUser);
+
+      assertEqual(savedItem.collectionId, savedCol.id, "Item collectionId matches assigned folder");
+      assert(savedItem.collections?.includes(savedCol.id) === true, "Item collections includes assigned folder");
+
+      const fetched = ContentService.getById(savedItem.id, testUser);
+      assertEqual(fetched?.collectionId, savedCol.id, "Fetched item retains collectionId");
+      assert(fetched?.collections?.includes(savedCol.id) === true, "Fetched item retains collections array");
+
+      StorageService.clearUserData(testUser);
+    });
+
+    await test("Multi-tenant isolation: different users independently save same URL without data leakage", async () => {
+      const userAlice = "user-alice-" + Date.now();
+      const userBob = "user-bob-" + Date.now();
+      StorageService.clearUserData(userAlice);
+      StorageService.clearUserData(userBob);
+
+      const sharedUrl = "https://www.instagram.com/reel/C3x90ZaLkPq/";
+
+      const aliceItem = ContentService.addItem({
+        title: "Alice Private Save",
+        url: sharedUrl,
+        thumbnail: "https://example.com/thumb1.jpg",
+        platform: "instagram",
+        contentType: "reel",
+        creator: { name: "Creator" },
+        personalNotes: "Alice secret note",
+        tags: ["alice-tag"],
+        favorite: true,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Summary", standard: "Summary overview.", detailed: "Summary detailed." },
+        keyPoints: [],
+        topics: [],
+        description: "",
+        metadata: {},
+      }, userAlice);
+
+      const bobItem = ContentService.addItem({
+        title: "Bob Private Save",
+        url: sharedUrl,
+        thumbnail: "https://example.com/thumb2.jpg",
+        platform: "instagram",
+        contentType: "reel",
+        creator: { name: "Creator" },
+        personalNotes: "Bob different note",
+        tags: ["bob-tag"],
+        favorite: false,
+        archived: false,
+        trashed: false,
+        aiSummary: { quick: "Summary", standard: "Summary overview.", detailed: "Summary detailed." },
+        keyPoints: [],
+        topics: [],
+        description: "",
+        metadata: {},
+      }, userBob);
+
+      const aliceItems = ContentService.getAll(userAlice);
+      const bobItems = ContentService.getAll(userBob);
+
+      assertEqual(aliceItems.length, 1, "Alice has 1 item");
+      assertEqual(bobItems.length, 1, "Bob has 1 item");
+      assertEqual(aliceItems[0].personalNotes, "Alice secret note", "Alice notes are intact");
+      assertEqual(bobItems[0].personalNotes, "Bob different note", "Bob notes are intact");
+      assert(aliceItems[0].id !== bobItems[0].id, "Alice and Bob have distinct item IDs");
+
+      StorageService.clearUserData(userAlice);
+      StorageService.clearUserData(userBob);
     });
 
     // Summary

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createBackendAdminClient, createBackendServerClient } from "@/lib/database/backend-client";
 import { ContentService } from "@/services/content-service";
-import { SavedItem } from "@/types";
+import { getCanonicalIdentityKey, getAuthoritativeCanonicalUrl } from "@/lib/media-identity";
+import { AIProcessingState, SavedItem } from "@/types";
 
 export const dynamic = "force-dynamic";
 
@@ -16,26 +17,50 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: "Sign in to read workspace media." }, { status: 401 });
 
   const { data: rows, error } = await supabase.from("keeper_media")
-    .select("id,payload,processing_status,created_at,updated_at")
+    .select("id,payload,processing_status,canonical_url,created_at,updated_at")
     .eq("workspace_id", user.id)
     .order("created_at", { ascending: false })
     .limit(1000);
 
   if (error) return NextResponse.json({ error: "Workspace media could not be loaded." }, { status: 503 });
 
-  const items = (rows || []).flatMap((row) => {
-    if (!row.payload || typeof row.payload !== "object") return [];
-    const item = row.payload as SavedItem;
-    return [{
-      ...item,
+  // Group and deduplicate by canonical identity key
+  const seenIdentities = new Map<string, { id: string; item: SavedItem }>();
+  const duplicateIdsToDelete: string[] = [];
+
+  for (const row of rows || []) {
+    if (!row.payload || typeof row.payload !== "object") continue;
+    const rawItem = row.payload as SavedItem;
+    const item: SavedItem = {
+      ...rawItem,
       metadata: {
-        ...item.metadata,
+        ...rawItem.metadata,
         serverMediaId: row.id,
         aiProcessingStatus: row.processing_status,
       },
-    }];
-  });
+    };
+    const key = getCanonicalIdentityKey(row.canonical_url || item.url);
+    if (!key) continue;
 
+    const existing = seenIdentities.get(key);
+    if (existing) {
+      // Existing duplicate: safe-merge payload and mark duplicate row for safe cleanup
+      existing.item = ContentService.safeMerge(existing.item, item);
+      duplicateIdsToDelete.push(row.id);
+    } else {
+      seenIdentities.set(key, { id: row.id, item });
+    }
+  }
+
+  // Asynchronously clean up redundant duplicate rows if any existed
+  if (duplicateIdsToDelete.length > 0) {
+    const admin = createBackendAdminClient();
+    for (const dupId of duplicateIdsToDelete) {
+      void admin.from("keeper_media").delete().eq("id", dupId).eq("workspace_id", user.id);
+    }
+  }
+
+  const items = Array.from(seenIdentities.values()).map((entry) => entry.item);
   return NextResponse.json({ items }, { headers: { "Cache-Control": "no-store" } });
 }
 
@@ -60,50 +85,80 @@ export async function POST(req: NextRequest) {
     const admin = createBackendAdminClient();
     const results: SavedItem[] = [];
 
+    // Query existing candidate items for this workspace
+    const { data: existingRows } = await admin
+      .from("keeper_media")
+      .select("id,payload,processing_status,canonical_url")
+      .eq("workspace_id", user.id);
+
+    const existingByKey = new Map<string, { id: string; payload: SavedItem; processing_status: string; canonical_url: string }>();
+    for (const row of existingRows || []) {
+      if (row.payload && typeof row.payload === "object") {
+        const key = getCanonicalIdentityKey(row.canonical_url || (row.payload as SavedItem).url);
+        if (key && !existingByKey.has(key)) {
+          existingByKey.set(key, {
+            id: row.id,
+            payload: row.payload as SavedItem,
+            processing_status: row.processing_status,
+            canonical_url: row.canonical_url,
+          });
+        }
+      }
+    }
+
     for (const item of candidates) {
       if (!item || !item.url || typeof item.url !== "string") continue;
-      const canonicalUrl = item.url.trim();
+      const key = getCanonicalIdentityKey(item.url);
+      const authoritativeUrl = getAuthoritativeCanonicalUrl(item.url);
+      const existing = existingByKey.get(key);
 
-      // Check if item with this canonical URL already exists in user's workspace
-      const { data: existingRows } = await admin
-        .from("keeper_media")
-        .select("id,payload,processing_status")
-        .eq("workspace_id", user.id)
-        .eq("canonical_url", canonicalUrl)
-        .limit(1);
+      if (existing) {
+        // Safe-merge with existing payload to protect authoritative facts and preserve collection folder
+        const incomingColId = item.collectionId;
+        const mergedCollections = Array.from(
+          new Set([
+            ...(existing.payload.collections || []),
+            ...(item.collections || []),
+            ...(incomingColId ? [incomingColId] : []),
+            ...(existing.payload.collectionId ? [existing.payload.collectionId] : []),
+          ])
+        );
+        const mergedPayload: SavedItem = {
+          ...ContentService.safeMerge(existing.payload, item),
+          collectionId: incomingColId || existing.payload.collectionId,
+          collections: mergedCollections,
+        };
 
-      const existingRow = existingRows?.[0];
-
-      if (existingRow && existingRow.payload && typeof existingRow.payload === "object") {
-        // Safe-merge with existing payload to protect authoritative facts
-        const mergedPayload = ContentService.safeMerge(existingRow.payload as SavedItem, item);
         const { error: updateError } = await admin
           .from("keeper_media")
           .update({
+            canonical_url: authoritativeUrl,
             payload: mergedPayload,
             updated_at: new Date().toISOString(),
           })
-          .eq("id", existingRow.id)
+          .eq("id", existing.id)
           .eq("workspace_id", user.id);
 
         if (!updateError) {
-          results.push({
+          const updatedItem = {
             ...mergedPayload,
             metadata: {
               ...mergedPayload.metadata,
-              serverMediaId: existingRow.id,
-              aiProcessingStatus: existingRow.processing_status,
+              serverMediaId: existing.id,
+              aiProcessingStatus: (existing.processing_status as AIProcessingState) || "PENDING",
             },
-          });
+          };
+          results.push(updatedItem);
+          existing.payload = mergedPayload;
         }
       } else {
-        // New item insertion
+        // New item insertion with clean canonical URL
         const processingStatus = item.metadata?.aiProcessingStatus || "PENDING";
         const { data: insertedRows, error: insertError } = await admin
           .from("keeper_media")
           .insert({
             workspace_id: user.id,
-            canonical_url: canonicalUrl,
+            canonical_url: authoritativeUrl,
             payload: item,
             processing_status: processingStatus,
           })
@@ -111,14 +166,49 @@ export async function POST(req: NextRequest) {
 
         if (!insertError) {
           const insertedId = ((insertedRows as unknown as Array<{ id: string }>) || [])[0]?.id || item.metadata?.serverMediaId;
-          results.push({
+          const createdItem = {
             ...item,
             metadata: {
               ...item.metadata,
               serverMediaId: insertedId,
               aiProcessingStatus: processingStatus,
             },
+          };
+          results.push(createdItem);
+          existingByKey.set(key, {
+            id: insertedId || "",
+            payload: item,
+            processing_status: processingStatus,
+            canonical_url: authoritativeUrl,
           });
+        } else if (insertError.code === "23505") {
+          // Concurrency race: Another device/request inserted the same item in parallel.
+          // Retrieve the newly inserted item, safe-merge to guarantee idempotency.
+          const { data: conflictRows } = await admin
+            .from("keeper_media")
+            .select("id,payload,processing_status")
+            .eq("workspace_id", user.id)
+            .eq("canonical_url", authoritativeUrl)
+            .limit(1);
+
+          const conflictRow = conflictRows?.[0];
+          if (conflictRow?.payload) {
+            const merged = ContentService.safeMerge(conflictRow.payload as SavedItem, item);
+            await admin
+              .from("keeper_media")
+              .update({ payload: merged, updated_at: new Date().toISOString() })
+              .eq("id", conflictRow.id)
+              .eq("workspace_id", user.id);
+
+            results.push({
+              ...merged,
+              metadata: {
+                ...merged.metadata,
+                serverMediaId: conflictRow.id,
+                aiProcessingStatus: conflictRow.processing_status,
+              },
+            });
+          }
         }
       }
     }
@@ -152,16 +242,21 @@ export async function PATCH(req: NextRequest) {
 
     const admin = createBackendAdminClient();
 
-    // Query candidate matching either server ID (UUID) or client ID / URL
+    // Query candidate matching either server ID (UUID) or client ID / URL / identity key
     const { data: rows } = await admin
       .from("keeper_media")
-      .select("id,payload,processing_status")
+      .select("id,payload,processing_status,canonical_url")
       .eq("workspace_id", user.id);
 
+    const targetKey = getCanonicalIdentityKey(id);
     const matchingRow = (rows || []).find((row) => {
       if (row.id === id) return true;
       const payload = row.payload as SavedItem | undefined;
-      return payload?.id === id || payload?.url === id;
+      if (payload?.id === id || payload?.url === id) return true;
+      if (targetKey && (getCanonicalIdentityKey(row.canonical_url) === targetKey || getCanonicalIdentityKey(payload?.url || "") === targetKey)) {
+        return true;
+      }
+      return false;
     });
 
     if (!matchingRow || !matchingRow.payload || typeof matchingRow.payload !== "object") {
@@ -261,15 +356,23 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "No item ID provided for deletion." }, { status: 400 });
     }
 
-    // Resolve target IDs against either row.id or payload.id
+    // Resolve target IDs against row.id, payload.id, or canonical identity
     const { data: rows } = await admin
       .from("keeper_media")
-      .select("id,payload")
+      .select("id,payload,canonical_url")
       .eq("workspace_id", user.id);
 
     const targetSet = new Set(itemIdsToDelete);
+    const targetKeys = new Set(itemIdsToDelete.map(getCanonicalIdentityKey).filter(Boolean));
+
     const matchingRowIds = (rows || [])
-      .filter((row) => targetSet.has(row.id) || targetSet.has((row.payload as SavedItem | undefined)?.id || ""))
+      .filter((row) => {
+        if (targetSet.has(row.id)) return true;
+        const payload = row.payload as SavedItem | undefined;
+        if (payload?.id && targetSet.has(payload.id)) return true;
+        const rowKey = getCanonicalIdentityKey(row.canonical_url || payload?.url || "");
+        return Boolean(rowKey && targetKeys.has(rowKey));
+      })
       .map((row) => row.id);
 
     for (const rowId of matchingRowIds) {

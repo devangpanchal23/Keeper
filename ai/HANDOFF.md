@@ -1,5 +1,23 @@
 # AI Development Handoff
 
+## 2026-11-01 — Cross-Device Deduplication, Mobile Usability, Latency Optimization, & Folder Persistence Fix
+
+- **Problem:**
+  1. Duplicate imports across devices for the same URL.
+  2. Unresponsive mobile buttons on the first screen.
+  3. Slow loading on sign-in and refresh.
+  4. Saved folder assignments not sticking, and viewing an item resetting category.
+- **Root Cause & Fix:**
+  1. *Duplicate Imports*: Added `src/lib/media-identity.ts` for canonical URL identity extraction. Updated `api/media` and `api/media/sync` to index and merge existing rows by canonical identity keys and gracefully resolve unique constraint `23505` concurrency races. Updated client sync to deduplicate and avoid false re-uploads.
+  2. *Unresponsive Mobile Buttons*: Removed `!authLoading &&` conditional hiding on hero CTA buttons in `KeeperLanding.tsx` so interactive buttons render immediately. Added `touch-manipulation`, `-webkit-tap-highlight-color: transparent`, safe-area insets, and 44px+ minimum touch targets in `globals.css` and `MobileNav.tsx`.
+  3. *Slow Loading*: Eliminated the blocking sequential network wait in `RecallContext.tsx`. Hydrated items and collections immediately from `StorageService` cache and set `authLoading = false` right away, running collection and media synchronization in parallel via `Promise.all` in the background.
+  4. *Folder Assignment*: Added `initialCollectionId` parameter to `openAddContent`, hooked "+ Add Link" in collection views, protected folder selection in `AddContentModal` from AI suggestion overwrites, persisted `manualCollectionIds`, and ensured `api/ai/worker` and `app/item/[id]` preserve user folders during background AI processing and item viewing.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm run lint`: 0 errors, 240 warnings.
+  - `npm test`: 267/267 assertions passed across all 24 test suites (all 5 new Section 23 tests passed).
+  - `npm run build`: Turbopack production build succeeded (all 28 routes compiled).
+
 ## 2026-11-01 — Production Authentication 401 & 503 Resolution
 
 - **Problem:** On deployed site `https://keeper-nu-amber.vercel.app`, users experienced `401` on `/api/auth/session` and `503 Service Unavailable` on `/api/auth/login`.
@@ -214,6 +232,24 @@ Read every Markdown file in `ai/`, then inspect `git status`, `git log -n 30 --s
 > The following notes are preserved from the prior handoff for historical context. They describe older states and must not override the current status above or current source code.
 
 # AI Development Handoff
+
+## 2026-11-01 — Cross-Device Deduplication, Mobile Usability, Latency Optimization, & Folder Persistence Fix
+
+- **Problem:**
+  1. Duplicate imports across devices for the same URL.
+  2. Unresponsive mobile buttons on the first screen.
+  3. Slow loading on sign-in and refresh.
+  4. Saved folder assignments not sticking, and viewing an item resetting category.
+- **Root Cause & Fix:**
+  1. *Duplicate Imports*: Added `src/lib/media-identity.ts` for canonical URL identity extraction. Updated `api/media` and `api/media/sync` to index and merge existing rows by canonical identity keys and gracefully resolve unique constraint `23505` concurrency races. Updated client sync to deduplicate and avoid false re-uploads.
+  2. *Unresponsive Mobile Buttons*: Removed `!authLoading &&` conditional hiding on hero CTA buttons in `KeeperLanding.tsx` so interactive buttons render immediately. Added `touch-manipulation`, `-webkit-tap-highlight-color: transparent`, safe-area insets, and 44px+ minimum touch targets in `globals.css` and `MobileNav.tsx`.
+  3. *Slow Loading*: Eliminated the blocking sequential network wait in `RecallContext.tsx`. Hydrated items and collections immediately from `StorageService` cache and set `authLoading = false` right away, running collection and media synchronization in parallel via `Promise.all` in the background.
+  4. *Folder Assignment*: Added `initialCollectionId` parameter to `openAddContent`, hooked "+ Add Link" in collection views, protected folder selection in `AddContentModal` from AI suggestion overwrites, persisted `manualCollectionIds`, and ensured `api/ai/worker` and `app/item/[id]` preserve user folders during background AI processing and item viewing.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm run lint`: 0 errors, 240 warnings.
+  - `npm test`: 267/267 assertions passed across all 24 test suites (all 5 new Section 23 tests passed).
+  - `npm run build`: Turbopack production build succeeded (all 28 routes compiled).
 
 ### Latest follow-up — Vercel Hobby cron limit (2026-10-10)
 - Removed root `vercel.json` because it declared `* * * * *`, which Vercel Hobby rejects. The former Vercel Cron would also issue GET while `/api/ai/worker` only accepts authenticated POST.

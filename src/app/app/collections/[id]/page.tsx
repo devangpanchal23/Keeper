@@ -308,7 +308,7 @@ export default function CollectionDetailPage({
             </div>
 
             <button
-              onClick={() => openAddContent()}
+              onClick={() => openAddContent("", collection.id)}
               className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition-all"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -480,7 +480,7 @@ export default function CollectionDetailPage({
           title="No bookmarks in this collection yet"
           description="Save links directly to this folder, or assign existing library bookmarks to it."
           actionLabel="+ Add Content to Collection"
-          onAction={() => openAddContent()}
+          onAction={() => openAddContent("", collection.id)}
         />
       )}
 

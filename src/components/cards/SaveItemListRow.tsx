@@ -51,7 +51,7 @@ export const SaveItemListRow: React.FC<SaveItemListRowProps> = ({
 
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const collection = collections.find((c) => c.id === item.collectionId);
+  const collection = collections.find((c) => c.id === (item.collectionId || item.collections?.[0]));
 
   const handleRowClick = () => {
     if (selectable && onToggleSelect) {

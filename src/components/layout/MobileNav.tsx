@@ -19,7 +19,7 @@ export const MobileNav: React.FC = () => {
   ];
 
   return (
-    <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-16 border-t border-zinc-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-950/90 backdrop-blur-lg px-4 flex items-center justify-around">
+    <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-[calc(4rem+env(safe-area-inset-bottom,0px))] pb-[env(safe-area-inset-bottom,0px)] border-t border-zinc-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-950/90 backdrop-blur-lg px-4 flex items-center justify-around touch-manipulation select-none">
       {links.slice(0, 2).map((item) => {
         const isActive = pathname === item.href;
         return (
@@ -27,7 +27,7 @@ export const MobileNav: React.FC = () => {
             key={item.href}
             href={item.href}
             className={cn(
-              "flex flex-col items-center gap-1 text-[11px] font-medium transition-colors",
+              "flex flex-col items-center justify-center min-w-[48px] min-h-[44px] gap-1 text-[11px] font-medium transition-colors touch-manipulation",
               isActive
                 ? "text-indigo-600 dark:text-indigo-400"
                 : "text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
@@ -42,7 +42,7 @@ export const MobileNav: React.FC = () => {
       {/* Floating Center + Add button */}
       <button
         onClick={() => openAddContent()}
-        className="-mt-5 w-12 h-12 rounded-full bg-indigo-600 text-white flex items-center justify-center shadow-lg shadow-indigo-600/40 active:scale-95 transition-transform"
+        className="-mt-5 w-12 h-12 min-w-[48px] min-h-[48px] rounded-full bg-indigo-600 text-white flex items-center justify-center shadow-lg shadow-indigo-600/40 active:scale-95 transition-transform touch-manipulation cursor-pointer"
         aria-label="Add Content"
       >
         <Plus className="w-6 h-6" />
@@ -55,7 +55,7 @@ export const MobileNav: React.FC = () => {
             key={item.href}
             href={item.href}
             className={cn(
-              "flex flex-col items-center gap-1 text-[11px] font-medium transition-colors",
+              "flex flex-col items-center justify-center min-w-[48px] min-h-[44px] gap-1 text-[11px] font-medium transition-colors touch-manipulation",
               isActive
                 ? "text-indigo-600 dark:text-indigo-400"
                 : "text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"

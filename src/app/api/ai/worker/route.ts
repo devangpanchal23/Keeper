@@ -140,6 +140,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const manualCollectionIds = Array.isArray(priorOrganization.manualCollectionIds)
       ? priorOrganization.manualCollectionIds.filter((id: unknown): id is string => typeof id === "string")
       : [];
+    const itemCollectionId = item.collectionId;
+    if (itemCollectionId && !priorAiCollectionIds.includes(itemCollectionId) && !manualCollectionIds.includes(itemCollectionId)) {
+      manualCollectionIds.unshift(itemCollectionId);
+    }
     const autoOrganizationDisabled = priorOrganization.autoOrganizationDisabled === true;
     const preservedCollections = (item.collections || []).filter((id) => !priorAiCollectionIds.includes(id));
     let acquiredMedia: MediaAcquisitionResult | null = null;
@@ -578,9 +582,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           candidateIds: collectionMatches.map((candidate) => candidate.collectionId) }, source: "workspace_collection_matcher", basedOn: ["transcript", "aiGeneratedTags"],
         retrievedAt: new Date().toISOString(),
       } },
-      ...(analysis.collectionId ? { collectionId: analysis.collectionId } : {}),
-      collections: analysis.collectionIds.length || analysis.collectionId
-        ? [...new Set([...(enrichedItem.collections || []), ...analysis.collectionIds, ...(analysis.collectionId ? [analysis.collectionId] : [])])]
+      ...(manualCollectionIds.length
+        ? { collectionId: manualCollectionIds[0] }
+        : analysis.collectionId
+        ? { collectionId: analysis.collectionId }
+        : {}),
+      collections: analysis.collectionIds.length || analysis.collectionId || manualCollectionIds.length
+        ? [...new Set([...(enrichedItem.collections || []), ...manualCollectionIds, ...analysis.collectionIds, ...(analysis.collectionId ? [analysis.collectionId] : [])])]
         : (enrichedItem.collections || []),
     };
     const generatedContent = {

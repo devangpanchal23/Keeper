@@ -154,7 +154,7 @@ function KeeperNav() {
         </nav>
 
         <div className="keeper-nav-actions">
-          {!authLoading && (isAuthenticated && user ? (
+          {isAuthenticated && user ? (
             <div className="keeper-nav-account">
               <button
                 type="button"
@@ -181,14 +181,16 @@ function KeeperNav() {
                 </div>
               </>}
             </div>
-          ) : <Link href="/sign-in" className="keeper-nav-signin">Sign in</Link>)}
-          {!authLoading && (isAuthenticated ? (
+          ) : (
+            <Link href="/sign-in" className="keeper-nav-signin">Sign in</Link>
+          )}
+          {isAuthenticated ? (
             <button type="button" className="keeper-button keeper-button-dark keeper-nav-cta" onClick={() => openAddContent()}>
               Save a link <ArrowUpRight size={15} />
             </button>
           ) : (
             <Link href="/sign-up" className="keeper-button keeper-button-dark keeper-nav-cta">Create account <ArrowRight size={15} /></Link>
-          ))}
+          )}
           <button
             type="button"
             className="keeper-menu-toggle"
@@ -577,12 +579,16 @@ export function KeeperLanding() {
             <h1>Keep what matters.<br /><em>Find it when it does.</em></h1>
             <p>Keeper brings your saved videos, posts, articles, and notes into one thoughtful library—so a good idea doesn’t disappear into another tab.</p>
             <div className="keeper-hero-actions">
-              {!authLoading && (isAuthenticated ? (
+              {isAuthenticated ? (
                 <button type="button" className="keeper-button keeper-button-dark" onClick={() => openAddContent()}>Save your first link <ArrowUpRight size={16} /></button>
-              ) : <Link href="/sign-up" className="keeper-button keeper-button-dark">Create your account <ArrowRight size={15} /></Link>)}
-              {!authLoading && (isAuthenticated ? (
+              ) : (
+                <Link href="/sign-up" className="keeper-button keeper-button-dark">Create your account <ArrowRight size={15} /></Link>
+              )}
+              {isAuthenticated ? (
                 <Link href="/app" className="keeper-button keeper-button-quiet">Open your workspace <ArrowRight size={15} /></Link>
-              ) : <Link href="/sign-in" className="keeper-button keeper-button-quiet">I have an account <ArrowRight size={15} /></Link>)}
+              ) : (
+                <Link href="/sign-in" className="keeper-button keeper-button-quiet">I have an account <ArrowRight size={15} /></Link>
+              )}
             </div>
             <div className="keeper-hero-note"><span className="keeper-note-icons"><i><CirclePlay size={12} /></i><i><Camera size={12} /></i><i><Globe2 size={12} /></i></span><span>For the links, clips, and thoughts you mean to come back to.</span></div>
           </div>

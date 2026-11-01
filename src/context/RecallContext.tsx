@@ -8,6 +8,7 @@ import { CollectionService } from "@/services/collection-service";
 import { AIService } from "@/services/ai-service";
 import { AuthService } from "@/services/auth-service";
 import { MigrationService } from "@/services/migration-service";
+import { getCanonicalIdentityKey, isSameContentItem } from "@/lib/media-identity";
 
 export interface RecallContextType {
   // Auth State
@@ -57,7 +58,8 @@ export interface RecallContextType {
   // Modals
   isAddContentOpen: boolean;
   addContentInitialUrl: string;
-  openAddContent: (initialUrl?: string) => void;
+  addContentInitialCollectionId?: string;
+  openAddContent: (initialUrl?: string, initialCollectionId?: string) => void;
   closeAddContent: () => void;
 
   isCommandPaletteOpen: boolean;
@@ -134,6 +136,7 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
   // Modals state
   const [isAddContentOpen, setIsAddContentOpen] = useState(false);
   const [addContentInitialUrl, setAddContentInitialUrl] = useState("");
+  const [addContentInitialCollectionId, setAddContentInitialCollectionId] = useState<string | undefined>(undefined);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isCollectionModalOpen, setIsCollectionModalOpen] = useState(false);
   const [editingCollection, setEditingCollection] = useState<Collection | null>(null);
@@ -205,106 +208,134 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
       // 2. Discover and safely merge local-only legacy data into this user account
       const migration = MigrationService.migrateLegacyData(activeId);
 
-      // 3. Synchronize collections with server
-      let currentCollections = StorageService.getCollections(activeId);
-      try {
-        if (migration.collectionsToSync.length > 0) {
-          await fetch("/api/collections/sync", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ collections: migration.collectionsToSync }),
-          });
-        }
-
-        const colRes = await fetch("/api/collections/sync", { cache: "no-store" });
-        if (colRes.ok) {
-          const colData = await colRes.json() as {
-            collections?: Array<{
-              id: string;
-              name: string;
-              description?: string | null;
-              profile?: Record<string, unknown>;
-              updated_at?: string;
-            }>;
-          };
-          if (Array.isArray(colData.collections)) {
-            const serverCols: Collection[] = colData.collections.map((entry) => {
-              const profile = entry.profile || {};
-              return {
-                id: entry.id,
-                name: entry.name,
-                description: entry.description || "",
-                color: typeof profile.color === "string" ? profile.color : "#d9ad32",
-                icon: typeof profile.icon === "string" ? profile.icon : "Folder",
-                createdAt: entry.updated_at || new Date().toISOString(),
-                updatedAt: entry.updated_at || new Date().toISOString(),
-                ...(profile.isSystem === true ? { isSystem: true } : {}),
-              };
+      // 3 & 4. Synchronize collections and media concurrently for fast loading
+      const syncCollections = async () => {
+        try {
+          if (migration.collectionsToSync.length > 0) {
+            await fetch("/api/collections/sync", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ collections: migration.collectionsToSync }),
             });
-            currentCollections = serverCols;
-            StorageService.saveCollections(serverCols, activeId);
-            setCollections(serverCols);
           }
-        }
-      } catch (colErr) {
-        console.warn("Could not synchronize collections with server; using local collections:", colErr);
-      }
 
-      // 4. Synchronize media items with server
-      let currentItems = StorageService.getItems(activeId);
-      try {
-        if (migration.itemsToSync.length > 0) {
-          const syncRes = await fetch("/api/media/sync", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ localItems: migration.itemsToSync }),
-          });
-          if (syncRes.ok) {
-            const syncPayload = await syncRes.json() as { items?: SavedItem[] };
-            if (Array.isArray(syncPayload.items)) {
-              currentItems = syncPayload.items;
-              StorageService.saveItems(currentItems, activeId);
-              setItems(currentItems);
-            }
-          }
-        } else {
-          const mediaRes = await fetch("/api/media", { cache: "no-store" });
-          if (mediaRes.ok) {
-            const mediaPayload = await mediaRes.json() as { items?: SavedItem[] };
-            if (Array.isArray(mediaPayload.items)) {
-              const localByUrl = new Map(currentItems.map((item) => [item.url.toLowerCase().trim(), item]));
-              const serverItems = mediaPayload.items.map((serverItem) => {
-                const key = serverItem.url.toLowerCase().trim();
-                const localItem = localByUrl.get(key);
-                if (localItem) localByUrl.delete(key);
-                return localItem ? ContentService.safeMerge(localItem, serverItem) : serverItem;
+          const colRes = await fetch("/api/collections/sync", { cache: "no-store" });
+          if (colRes.ok) {
+            const colData = await colRes.json() as {
+              collections?: Array<{
+                id: string;
+                name: string;
+                description?: string | null;
+                profile?: Record<string, unknown>;
+                updated_at?: string;
+              }>;
+            };
+            if (Array.isArray(colData.collections)) {
+              const serverCols: Collection[] = colData.collections.map((entry) => {
+                const profile = entry.profile || {};
+                return {
+                  id: entry.id,
+                  name: entry.name,
+                  description: entry.description || "",
+                  color: typeof profile.color === "string" ? profile.color : "#d9ad32",
+                  icon: typeof profile.icon === "string" ? profile.icon : "Folder",
+                  createdAt: entry.updated_at || new Date().toISOString(),
+                  updatedAt: entry.updated_at || new Date().toISOString(),
+                  ...(profile.isSystem === true ? { isSystem: true } : {}),
+                };
               });
-
-              // Any remaining local items missing from server: upload them asynchronously
-              const unSyncedLocal = [...localByUrl.values()];
-              if (unSyncedLocal.length > 0) {
-                void fetch("/api/media", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ items: unSyncedLocal }),
-                });
-              }
-
-              currentItems = [...serverItems, ...unSyncedLocal];
-              StorageService.saveItems(currentItems, activeId);
-              setItems(currentItems);
+              StorageService.saveCollections(serverCols, activeId);
+              setCollections(serverCols);
             }
           }
+        } catch (colErr) {
+          console.warn("Could not synchronize collections with server; using local collections:", colErr);
         }
-        setSyncStatus("synced");
-        setLastSyncTime(new Date().toISOString());
-      } catch (mediaErr) {
-        console.warn("Could not synchronize media with server; using local storage:", mediaErr);
-        setSyncStatus("offline");
-      }
+      };
+
+      const syncMedia = async () => {
+        let currentItems = StorageService.getItems(activeId);
+        try {
+          if (migration.itemsToSync.length > 0) {
+            const syncRes = await fetch("/api/media/sync", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ localItems: migration.itemsToSync }),
+            });
+            if (syncRes.ok) {
+              const syncPayload = await syncRes.json() as { items?: SavedItem[] };
+              if (Array.isArray(syncPayload.items)) {
+                currentItems = syncPayload.items;
+                StorageService.saveItems(currentItems, activeId);
+                setItems(currentItems);
+              }
+            }
+          } else {
+            const mediaRes = await fetch("/api/media", { cache: "no-store" });
+            if (mediaRes.ok) {
+              const mediaPayload = await mediaRes.json() as { items?: SavedItem[] };
+              if (Array.isArray(mediaPayload.items)) {
+                // Index local items by canonical identity key to prevent cross-device duplicates
+                const localByKey = new Map<string, SavedItem>();
+                for (const item of currentItems) {
+                  const key = getCanonicalIdentityKey(item.url) || item.url.toLowerCase().trim();
+                  localByKey.set(key, item);
+                }
+
+                const serverItems = mediaPayload.items.map((serverItem) => {
+                  const key = getCanonicalIdentityKey(serverItem.url) || serverItem.url.toLowerCase().trim();
+                  const localItem = localByKey.get(key);
+                  if (localItem) localByKey.delete(key);
+                  return localItem ? ContentService.safeMerge(localItem, serverItem) : serverItem;
+                });
+
+                // Check remaining local items: do not re-upload if already matched by content equivalence
+                const unSyncedLocal: SavedItem[] = [];
+                for (const localItem of localByKey.values()) {
+                  const alreadyMatched = serverItems.some((s) => isSameContentItem(s, localItem));
+                  if (!alreadyMatched) {
+                    unSyncedLocal.push(localItem);
+                  }
+                }
+
+                if (unSyncedLocal.length > 0) {
+                  void fetch("/api/media", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ items: unSyncedLocal }),
+                  });
+                }
+
+                // Final deduplication pass to ensure local state and storage are completely clean
+                const combined = [...serverItems, ...unSyncedLocal];
+                const seenKeys = new Set<string>();
+                const deduped: SavedItem[] = [];
+                for (const item of combined) {
+                  const key = getCanonicalIdentityKey(item.url) || item.url.toLowerCase().trim();
+                  if (!seenKeys.has(key)) {
+                    seenKeys.add(key);
+                    deduped.push(item);
+                  }
+                }
+
+                currentItems = deduped;
+                StorageService.saveItems(currentItems, activeId);
+                setItems(currentItems);
+              }
+            }
+          }
+        } catch (mediaErr) {
+          console.warn("Could not synchronize media with server; using local storage:", mediaErr);
+          throw mediaErr;
+        }
+      };
+
+      await Promise.all([syncCollections(), syncMedia()]);
+      setSyncStatus("synced");
+      setLastSyncTime(new Date().toISOString());
     } catch (err) {
-      console.warn("Workspace synchronization failed; keeping local data available.", err);
-      setSyncStatus("error");
+      console.warn("Workspace synchronization finished with offline fallback:", err);
+      setSyncStatus("offline");
     }
   }, [user?.id]);
 
@@ -418,8 +449,17 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
           setThemeState(savedTheme);
           applyThemeClass(savedTheme);
 
-          // Perform full authoritative workspace sync
-          await syncWorkspace(activeUser.id);
+          // Populate workspace state immediately from fast local cache
+          const cachedItems = StorageService.getItems(activeUser.id);
+          const cachedCollections = StorageService.getCollections(activeUser.id);
+          if (cachedItems.length > 0) setItems(cachedItems);
+          if (cachedCollections.length > 0) setCollections(cachedCollections);
+
+          // Unblock auth loading immediately so the user does not wait on network roundtrips
+          setAuthLoading(false);
+
+          // Authoritative workspace sync runs smoothly in the background
+          void syncWorkspace(activeUser.id);
         } else {
           setUser(null);
           setIsAuthenticated(false);
@@ -427,8 +467,10 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
           setCollections([]);
           setImportLimits({ total: 30, used: 0, remaining: 30 });
           applyThemeClass("dark");
+          setAuthLoading(false);
         }
-      } finally {
+      } catch (err) {
+        console.warn("Could not load initial user session:", err);
         setAuthLoading(false);
       }
     })();
@@ -633,14 +675,16 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Modal actions
-  const openAddContent = (initialUrl = "") => {
+  const openAddContent = (initialUrl = "", initialCollectionId?: string) => {
     setAddContentInitialUrl(initialUrl);
+    setAddContentInitialCollectionId(initialCollectionId);
     setIsAddContentOpen(true);
   };
 
   const closeAddContent = () => {
     setIsAddContentOpen(false);
     setAddContentInitialUrl("");
+    setAddContentInitialCollectionId(undefined);
   };
 
   const openCommandPalette = () => setIsCommandPaletteOpen(true);
@@ -1156,6 +1200,7 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
         demoLogin,
         isAddContentOpen,
         addContentInitialUrl,
+        addContentInitialCollectionId,
         openAddContent,
         closeAddContent,
         isCommandPaletteOpen,

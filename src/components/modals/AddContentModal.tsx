@@ -130,6 +130,7 @@ export const AddContentModal: React.FC = () => {
     isAddContentOpen,
     closeAddContent,
     addContentInitialUrl,
+    addContentInitialCollectionId,
     collections,
     addItem,
     createCollection,
@@ -163,15 +164,27 @@ export const AddContentModal: React.FC = () => {
   const [newColError, setNewColError] = useState("");
   const [isSubmittingCol, setIsSubmittingCol] = useState(false);
 
-  // Populate initial URL if passed
+  // Populate initial URL and initial collection if passed
   useEffect(() => {
-    if (addContentInitialUrl) {
-      setUrl(addContentInitialUrl);
-      startSimulation(addContentInitialUrl);
+    if (isAddContentOpen) {
+      if (addContentInitialCollectionId) {
+        setSelectedCollectionId(addContentInitialCollectionId);
+        setCollectionWasManuallyChanged(true);
+      }
+      if (addContentInitialUrl) {
+        setUrl(addContentInitialUrl);
+        startSimulation(addContentInitialUrl);
+      } else {
+        resetState();
+        if (addContentInitialCollectionId) {
+          setSelectedCollectionId(addContentInitialCollectionId);
+          setCollectionWasManuallyChanged(true);
+        }
+      }
     } else {
       resetState();
     }
-  }, [addContentInitialUrl, isAddContentOpen]);
+  }, [addContentInitialUrl, addContentInitialCollectionId, isAddContentOpen]);
 
   const resetState = () => {
     setUrl("");
@@ -374,13 +387,19 @@ export const AddContentModal: React.FC = () => {
       setAiResult(analysis);
       setTags(suggestedTags);
       setTagSuggestionNote(suggestedTags.length ? `Suggested from available caption, title, and hashtags.` : "No tags could be suggested from available source details.");
-      setSelectedCollectionId(selectedSuggestionId);
-      setCollectionWasManuallyChanged(false);
-      setCollectionSuggestionNote(tagMatchedCollection
-        ? `Auto-selected ${tagMatchedCollection.name} from matching tags (${Math.round(tagMatchedCollection.confidence * 100)}% match). You can change it.`
-        : inferredCategory && !suggestedCollection
-        ? `A ${inferredCategory} collection will be created when you save this item.`
-        : "No clear tag match found. Choose a collection, or keep this in the General Library.");
+
+      if (!collectionWasManuallyChanged && !addContentInitialCollectionId) {
+        setSelectedCollectionId(selectedSuggestionId);
+        setCollectionWasManuallyChanged(false);
+        setCollectionSuggestionNote(tagMatchedCollection
+          ? `Auto-selected ${tagMatchedCollection.name} from matching tags (${Math.round(tagMatchedCollection.confidence * 100)}% match). You can change it.`
+          : inferredCategory && !suggestedCollection
+          ? `A ${inferredCategory} collection will be created when you save this item.`
+          : "No clear tag match found. Choose a collection, or keep this in the General Library.");
+      } else {
+        const currentTargetCol = collections.find((c) => c.id === (selectedCollectionId || addContentInitialCollectionId));
+        setCollectionSuggestionNote(currentTargetCol ? `Saving into collection: ${currentTargetCol.name}.` : "Saving into selected collection.");
+      }
       await new Promise((r) => setTimeout(r, 250));
 
       // Step 7: Ready
@@ -471,6 +490,9 @@ export const AddContentModal: React.FC = () => {
       };
     }
 
+    const targetFolderId = savedCollectionId && !savedCollectionId.startsWith("__create__:") ? savedCollectionId : undefined;
+    const manualCols = targetFolderId ? [targetFolderId] : [];
+
     const savedItem = addItem({
       title: title || extractedMeta.title,
       url: originalUrl,
@@ -480,8 +502,8 @@ export const AddContentModal: React.FC = () => {
       creator: finalCreator,
       community: extractedMeta.community,
       description: extractedMeta.description,
-      collectionId: savedCollectionId && !savedCollectionId.startsWith("__create__:") ? savedCollectionId : undefined,
-      collections: savedCollectionId && !savedCollectionId.startsWith("__create__:") ? [savedCollectionId] : [],
+      collectionId: targetFolderId,
+      collections: manualCols,
       tags,
       favorite: false,
       archived: false,
@@ -490,7 +512,15 @@ export const AddContentModal: React.FC = () => {
       keyPoints: aiResult.keyPoints,
       topics: aiResult.topics,
       personalNotes,
-      metadata: { ...extractedMeta.metadata, userTags: tags, captureTagSource: "available_source_metadata" },
+      metadata: {
+        ...extractedMeta.metadata,
+        userTags: tags,
+        captureTagSource: "available_source_metadata",
+        aiOrganization: {
+          ...(extractedMeta.metadata?.aiOrganization || {}),
+          manualCollectionIds: manualCols,
+        },
+      },
       contentStatus: aiResult.status,
       isLimited: aiResult.isLimited,
       limitedReason: aiResult.limitedReason,

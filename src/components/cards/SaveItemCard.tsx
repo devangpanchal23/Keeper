@@ -52,7 +52,7 @@ export const SaveItemCard: React.FC<SaveItemCardProps> = ({
 
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const collection = collections.find((c) => c.id === item.collectionId);
+  const collection = collections.find((c) => c.id === (item.collectionId || item.collections?.[0]));
 
   const handleCardClick = () => {
     if (selectable && onToggleSelect) {

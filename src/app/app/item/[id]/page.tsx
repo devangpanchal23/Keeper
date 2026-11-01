@@ -199,8 +199,15 @@ export default function ItemDetailPage({
         const result = await response.json() as { data?: SavedItem; processingStatus?: string; processingError?: string | null };
         if (!result.data || stopped) return;
         const processingStatus = (result.processingStatus || status) as AIProcessingState;
+        const currentItem = items.find((i) => i.id === itemId);
+        const effectiveColId = result.data.collectionId || currentItem?.collectionId || item?.collectionId;
+        const effectiveCols = (result.data.collections && result.data.collections.length > 0)
+          ? result.data.collections
+          : (currentItem?.collections || item?.collections || (effectiveColId ? [effectiveColId] : []));
         const updated = {
           ...result.data,
+          collectionId: effectiveColId,
+          collections: effectiveCols,
           metadata: { ...result.data.metadata, aiProcessingStatus: processingStatus, aiProcessingError: result.processingError || undefined },
         };
         updateItem(itemId, updated);
@@ -772,7 +779,7 @@ export default function ItemDetailPage({
                 Collection
               </label>
               <select
-                value={item.collectionId || ""}
+                value={item.collectionId || item.collections?.[0] || ""}
                 onChange={(e) => handleCollectionChange(e.target.value)}
                 className="w-full px-3 py-2 rounded-xl text-xs border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >

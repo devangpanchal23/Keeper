@@ -1,5 +1,25 @@
 # Current Project Status
 
+## 2026-11-01 — Cross-Device Deduplication, Mobile Usability, Latency Optimization, & Folder Persistence Fix
+
+- **Problem 1 (Duplicate Imports Across Devices):** Saving a URL across multiple devices produced duplicate records in the same collection.
+  - **Root Cause:** Raw URLs with differing tracking query params (`?igsh=...`, `?utm_source=...`) or subdomain/slash variations generated different keys. Client sync logic failed on crude string comparisons, falsely treating existing records as unsynced local rows and re-uploading them. Server `POST /api/media` did not reconcile concurrent inserts via unique canonical keys.
+  - **Fix:** Created `src/lib/media-identity.ts` providing `getCanonicalIdentityKey(url)` and `getAuthoritativeCanonicalUrl(url)`. In `src/app/api/media/route.ts` and `src/app/api/media/sync/route.ts`, indexed items by canonical identity key, safely merged existing items, gracefully caught database unique constraint `23505` concurrency races, and returned deduplicated datasets.
+- **Problem 2 (Unresponsive Mobile Buttons on First Screen):** First-screen buttons did not respond reliably on mobile.
+  - **Root Cause:** Hero CTA buttons in `KeeperLanding.tsx` were conditionally guarded by `!authLoading && (...)`, rendering 0 buttons during the 2–5 second session verification window. Small touch targets (< 30px) and missing safe-area insets on mobile navigation caused iOS gesture bar interception.
+  - **Fix:** Removed the blocking `!authLoading &&` wrapper from hero CTA buttons in `KeeperLanding.tsx` so primary action buttons render immediately on first paint. Added `touch-manipulation`, `-webkit-tap-highlight-color: transparent`, and `min-w-[44px] min-h-[44px]` targets in `src/app/globals.css` and `src/components/layout/MobileNav.tsx` with `pb-[env(safe-area-inset-bottom)]`.
+- **Problem 3 (Slow Loading on Sign-in/Refresh):** Library and content took too long to load on desktop and mobile.
+  - **Root Cause:** `RecallContext` blocked `authLoading = true` while awaiting sequential network calls (`fetch("/api/collections/sync")` followed by `fetch("/api/media")`), completely ignoring the existing local storage cache.
+  - **Fix:** Hydrated local items and collections immediately from `StorageService` cache on mount and set `authLoading = false` right away, running authoritative workspace synchronization in the background. Parallelized collections and media sync with `Promise.all`.
+- **Problem 4 (Incorrect Category / Folder Behavior):** Saving into a folder didn't persist, and opening/viewing media reset the category.
+  - **Root Cause:** `openAddContent` did not accept or pass the current collection folder. In `AddContentModal`, AI suggestions unconditionally overwrote user selection. Background AI worker discarded user-selected collection IDs if `manualCollectionIds` was empty. When viewing an item, polling `/api/media/[id]/reprocess` wiped local `collectionId` and `collections` if server response was unassigned.
+  - **Fix:** Extended `openAddContent(url, initialCollectionId)` and wired "+ Add Link" in collection views to preselect `collection.id`. Preserved user folder selection in `AddContentModal` against AI suggestion overwrite and persisted `manualCollectionIds: [targetId]`. Updated AI worker in `src/app/api/ai/worker/route.ts` to preserve `item.collectionId` as an authoritative manual folder. Updated `SaveItemCard.tsx`, `SaveItemListRow.tsx`, and `item/[id]/page.tsx` to preserve `item.collectionId || item.collections?.[0]` across re-processing and viewing.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm run lint`: 0 errors, 240 warnings.
+  - `npm test`: 267/267 assertions passed across all 24 test suites (including Section 23 cross-device & folder regression suite).
+  - `npm run build`: Turbopack production build succeeded (all 28 routes generated).
+
 ## 2026-11-01 — Production Authentication 401 & 503 Resolution
 
 - **Problem:** Production site (`https://keeper-nu-amber.vercel.app`) returned:

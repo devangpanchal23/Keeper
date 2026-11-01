@@ -147,7 +147,7 @@
 .keeper-nav-account-menu small { align-self: flex-start; margin: 9px 0 8px; padding: 4px 7px; border-radius: 999px; background: rgba(217,174,50,.17); color: #6c5513; font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .keeper-nav-account-menu a, .keeper-nav-account-menu button { display: flex; min-height: 39px; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--k-line); background: transparent; color: #514c42; font-size: 11px; text-align: left; cursor: pointer; }
 .keeper-nav-account-menu a:hover, .keeper-nav-account-menu button:hover { color: var(--k-ink); }
-.keeper-button { min-height: 45px; padding: 0 19px; display: inline-flex; align-items: center; justify-content: center; gap: 12px; border: 1px solid transparent; border-radius: 14px; font-size: 12px; font-weight: 650; cursor: pointer; transition: transform .2s var(--keeper-ease), background .2s ease, box-shadow .2s ease; }
+.keeper-button { min-height: 45px; padding: 0 19px; display: inline-flex; align-items: center; justify-content: center; gap: 12px; border: 1px solid transparent; border-radius: 14px; font-size: 12px; font-weight: 650; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent; transition: transform .2s var(--keeper-ease), background .2s ease, box-shadow .2s ease; }
 .keeper-button:hover { transform: translateY(-2px); }
 .keeper-button:active { transform: translateY(0) scale(.985); }
 .keeper-button-dark { background: var(--keeper-dark); color: #fffdf7 !important; box-shadow: 0 5px 12px rgba(24, 23, 21, .13); }
@@ -155,7 +155,7 @@
 .keeper-button-quiet { color: #57534c !important; padding-left: 5px; padding-right: 5px; }
 .keeper-button-quiet:hover { color: var(--k-ink) !important; }
 .keeper-button-light { background: #fffdf8; border-color: rgba(255,255,255,.27); color: var(--k-ink) !important; }
-.keeper-menu-toggle { display: none; width: 42px; height: 42px; align-items: center; justify-content: center; border: 1px solid var(--k-line); border-radius: 13px; background: var(--k-surface); cursor: pointer; }
+.keeper-menu-toggle { display: none; width: 44px; height: 44px; min-width: 44px; min-height: 44px; align-items: center; justify-content: center; border: 1px solid var(--k-line); border-radius: 13px; background: var(--k-surface); cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 .keeper-mobile-menu { display: none; }
 
 .keeper-hero { position: relative; padding: 92px 24px 44px; text-align: center; }
