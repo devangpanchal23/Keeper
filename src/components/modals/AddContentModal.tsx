@@ -396,37 +396,81 @@ export const AddContentModal: React.FC = () => {
         const json = await res.json() as { success?: boolean; error?: string; data?: IngestionResult; job?: { media_id?: string; status?: string } };
         if (res.ok) {
           if (json.success && json.data) {
-            const data = json.data;
-            serverEnrichment = data.aiEnrichment;
+            const data = json.data as IngestionResult & Partial<SavedItem>;
+
+            const safeContentId =
+              data.sourceData?.contentId ||
+              (data as unknown as SavedItem).id ||
+              (data as unknown as SavedItem).metadata?.shortcode ||
+              trimmed;
+
+            const safePlatform =
+              data.sourceData?.platform ||
+              (data as unknown as SavedItem).platform ||
+              "web";
+
+            const safeContentType =
+              data.sourceData?.contentType ||
+              (data as unknown as SavedItem).contentType ||
+              "post";
+
+            const safeTitle =
+              data.sourceData?.title ||
+              (data as unknown as SavedItem).title ||
+              "Saved Content";
+
+            const safeCreator =
+              data.sourceData?.creator ||
+              (data as unknown as SavedItem).creator || {
+                name: "Creator",
+                displayName: "Creator",
+                platform: safePlatform,
+              };
+
+            const safeThumbnail =
+              data.sourceData?.thumbnailUrl ||
+              (data as unknown as SavedItem).thumbnail ||
+              "";
+
+            serverEnrichment = data.aiEnrichment || {
+              summary: (data as unknown as SavedItem).aiSummary?.standard || "",
+              takeaways: [],
+              tags: (data as unknown as SavedItem).tags || [],
+              suggestedCollectionName: "General",
+              category: "General",
+              status: "COMPLETED",
+              confidence: 1,
+            };
+
             extracted = {
-              contentId: data.sourceData.contentId,
-              platform: data.sourceData.platform,
-              contentType: data.sourceData.contentType,
+              contentId: safeContentId,
+              platform: safePlatform,
+              contentType: safeContentType,
               url: trimmed,
-              canonicalUrl: data.sourceData.canonicalUrl,
-              title: data.sourceData.title,
-              creator: data.sourceData.creator,
-              community: data.sourceData.community,
-              subreddit: data.sourceData.community?.name,
-              description: data.sourceData.description || "",
-              thumbnail: data.sourceData.thumbnailUrl,
+              canonicalUrl: data.sourceData?.canonicalUrl || (data as unknown as SavedItem).url || trimmed,
+              title: safeTitle,
+              creator: safeCreator,
+              community: data.sourceData?.community,
+              subreddit: data.sourceData?.community?.name,
+              description: data.sourceData?.description || (data as unknown as SavedItem).description || "",
+              thumbnail: safeThumbnail,
               metadata: {
-                domain: `${data.sourceData.platform}.com`,
-                publishedAt: data.sourceData.publishedAt,
-                duration: data.sourceData.duration,
-                views: data.sourceData.viewCount,
-                likes: data.sourceData.likeCount,
+                domain: `${safePlatform}.com`,
+                publishedAt: data.sourceData?.publishedAt || (data as unknown as SavedItem).savedDate,
+                duration: data.sourceData?.duration,
+                views: data.sourceData?.viewCount,
+                likes: data.sourceData?.likeCount,
                 serverMediaId: json.job?.media_id,
                 aiProcessingStatus: json.job?.status === "QUEUED" ? "QUEUED" : "PENDING",
               },
-              suggestedTags: data.aiEnrichment.tags,
-              suggestedCollectionName: data.aiEnrichment.suggestedCollectionName || "Watch Later",
-              status: data.aiEnrichment.status,
-              isLimited: Boolean(data.sourceData.isRestricted && !data.sourceData.caption && !data.sourceData.bodyText),
-              limitedReason: data.sourceData.restrictionReason,
-              provenance: data.sourceData.provenance,
-              bodyText: data.sourceData.bodyText,
-              caption: data.sourceData.caption,
+              suggestedTags: serverEnrichment.tags || [],
+              suggestedCollectionName: serverEnrichment.suggestedCollectionName || "Watch Later",
+              status: serverEnrichment.status || "COMPLETED",
+              isLimited: Boolean(data.sourceData?.isRestricted && !data.sourceData?.caption && !data.sourceData?.bodyText),
+              limitedReason: data.sourceData?.restrictionReason,
+              provenance: data.sourceData?.provenance || {},
+              bodyText: data.sourceData?.bodyText,
+              caption: data.sourceData?.caption,
             };
           } else {
             throw new Error("The import service returned an invalid response. Please try again.");

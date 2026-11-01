@@ -62,8 +62,8 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        data: result.savedItem,
-        source: result.savedItem.platform || "web",
+        data: result,
+        job: { media_id: result.savedItem.id, status: "READY" },
         latencyMs: Date.now() - startTime,
       });
     }
