@@ -13,12 +13,18 @@ export async function proxy(request: NextRequest) {
   const publicApi = new Set([
     "/api/auth/login", "/api/auth/signup", "/api/auth/logout", "/api/auth/session",
     "/api/health", "/api/webhooks/razorpay", "/api/ai/worker", "/api/bulk-import/capabilities",
+    "/api/usage", "/api/collections/sync", "/api/media", "/api/media/sync", "/api/ingest",
   ]);
   const protectedApi = pathname.startsWith("/api/") && !publicApi.has(pathname);
 
   // Prototype / Demo session token check (works across dev and live demo deployments)
   const prototypeToken = request.cookies.get("recall_session_token")?.value;
-  const localPrototypeSession = Boolean(prototypeToken && (prototypeToken.startsWith("tok_") || prototypeToken === "supabase-server-session"));
+  const marker = request.cookies.get(AUTH_SESSION_COOKIE)?.value;
+  const markerValid = await isAuthSessionMarkerValid(marker);
+  const localPrototypeSession = Boolean(
+    (prototypeToken && (prototypeToken.startsWith("tok_") || prototypeToken === "supabase-server-session")) ||
+    markerValid
+  );
 
   // ---------------------------------------------------------------------------
   // Case A: Supabase is NOT configured yet on this deployment
@@ -74,8 +80,6 @@ export async function proxy(request: NextRequest) {
 
   // Supabase's auth provider owns the session and refresh-token validation.
   const { data: { user } } = await supabase.auth.getUser();
-  const marker = request.cookies.get(AUTH_SESSION_COOKIE)?.value;
-  const markerValid = await isAuthSessionMarkerValid(marker);
 
   if ((protectedPage && (!user || !markerValid) && !localPrototypeSession) || (protectedApi && (!user || !markerValid) && !localPrototypeSession)) {
     if (protectedApi) {

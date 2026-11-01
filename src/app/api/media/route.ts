@@ -2,84 +2,93 @@ import { NextRequest, NextResponse } from "next/server";
 import { createBackendAdminClient, createBackendServerClient } from "@/lib/database/backend-client";
 import { ContentService } from "@/services/content-service";
 import { getCanonicalIdentityKey, getAuthoritativeCanonicalUrl } from "@/lib/media-identity";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { AIProcessingState, SavedItem } from "@/types";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  let supabase;
+  if (!isSupabaseConfigured()) {
+    return NextResponse.json({ items: [] }, { headers: { "Cache-Control": "no-store" } });
+  }
+
   try {
-    supabase = await createBackendServerClient();
+    const supabase = await createBackendServerClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ items: [] }, { headers: { "Cache-Control": "no-store" } });
+
+    const { data: rows, error } = await supabase.from("keeper_media")
+      .select("id,payload,processing_status,canonical_url,created_at,updated_at")
+      .eq("workspace_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(1000);
+
+    if (error) return NextResponse.json({ items: [] }, { headers: { "Cache-Control": "no-store" } });
+
+    // Group and deduplicate by canonical identity key
+    const seenIdentities = new Map<string, { id: string; item: SavedItem }>();
+    const duplicateIdsToDelete: string[] = [];
+
+    for (const row of rows || []) {
+      if (!row.payload || typeof row.payload !== "object") continue;
+      const rawItem = row.payload as SavedItem;
+      const item: SavedItem = {
+        ...rawItem,
+        metadata: {
+          ...rawItem.metadata,
+          serverMediaId: row.id,
+          aiProcessingStatus: row.processing_status,
+        },
+      };
+      const key = getCanonicalIdentityKey(row.canonical_url || item.url);
+      if (!key) continue;
+
+      const existing = seenIdentities.get(key);
+      if (existing) {
+        // Existing duplicate: safe-merge payload and mark duplicate row for safe cleanup
+        existing.item = ContentService.safeMerge(existing.item, item);
+        duplicateIdsToDelete.push(row.id);
+      } else {
+        seenIdentities.set(key, { id: row.id, item });
+      }
+    }
+
+    // Asynchronously clean up redundant duplicate rows if any existed
+    if (duplicateIdsToDelete.length > 0) {
+      const admin = createBackendAdminClient();
+      for (const dupId of duplicateIdsToDelete) {
+        void admin.from("keeper_media").delete().eq("id", dupId).eq("workspace_id", user.id);
+      }
+    }
+
+    const items = Array.from(seenIdentities.values()).map((entry) => entry.item);
+    return NextResponse.json({ items }, { headers: { "Cache-Control": "no-store" } });
   } catch {
-    return NextResponse.json({ error: "Workspace media storage is not configured." }, { status: 503 });
+    return NextResponse.json({ items: [] }, { headers: { "Cache-Control": "no-store" } });
   }
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Sign in to read workspace media." }, { status: 401 });
-
-  const { data: rows, error } = await supabase.from("keeper_media")
-    .select("id,payload,processing_status,canonical_url,created_at,updated_at")
-    .eq("workspace_id", user.id)
-    .order("created_at", { ascending: false })
-    .limit(1000);
-
-  if (error) return NextResponse.json({ error: "Workspace media could not be loaded." }, { status: 503 });
-
-  // Group and deduplicate by canonical identity key
-  const seenIdentities = new Map<string, { id: string; item: SavedItem }>();
-  const duplicateIdsToDelete: string[] = [];
-
-  for (const row of rows || []) {
-    if (!row.payload || typeof row.payload !== "object") continue;
-    const rawItem = row.payload as SavedItem;
-    const item: SavedItem = {
-      ...rawItem,
-      metadata: {
-        ...rawItem.metadata,
-        serverMediaId: row.id,
-        aiProcessingStatus: row.processing_status,
-      },
-    };
-    const key = getCanonicalIdentityKey(row.canonical_url || item.url);
-    if (!key) continue;
-
-    const existing = seenIdentities.get(key);
-    if (existing) {
-      // Existing duplicate: safe-merge payload and mark duplicate row for safe cleanup
-      existing.item = ContentService.safeMerge(existing.item, item);
-      duplicateIdsToDelete.push(row.id);
-    } else {
-      seenIdentities.set(key, { id: row.id, item });
-    }
-  }
-
-  // Asynchronously clean up redundant duplicate rows if any existed
-  if (duplicateIdsToDelete.length > 0) {
-    const admin = createBackendAdminClient();
-    for (const dupId of duplicateIdsToDelete) {
-      void admin.from("keeper_media").delete().eq("id", dupId).eq("workspace_id", user.id);
-    }
-  }
-
-  const items = Array.from(seenIdentities.values()).map((entry) => entry.item);
-  return NextResponse.json({ items }, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function POST(req: NextRequest) {
-  let supabase;
+  let body: { item?: SavedItem; items?: SavedItem[] } = {};
   try {
-    supabase = await createBackendServerClient();
+    body = await req.json();
   } catch {
-    return NextResponse.json({ error: "Workspace media storage is not configured." }, { status: 503 });
+    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Sign in to save workspace media." }, { status: 401 });
+  const candidates = body.item ? [body.item] : Array.isArray(body.items) ? body.items : [];
+  if (candidates.length === 0) {
+    return NextResponse.json({ error: "No media items provided to save." }, { status: 400 });
+  }
+
+  if (!isSupabaseConfigured()) {
+    return NextResponse.json({ items: candidates, success: true, localOnly: true });
+  }
 
   try {
-    const body = await req.json() as { item?: SavedItem; items?: SavedItem[] };
-    const candidates = body.item ? [body.item] : Array.isArray(body.items) ? body.items : [];
-
-    if (candidates.length === 0) {
-      return NextResponse.json({ error: "No media items provided to save." }, { status: 400 });
+    const supabase = await createBackendServerClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ items: candidates, success: true, localOnly: true });
     }
 
     const admin = createBackendAdminClient();

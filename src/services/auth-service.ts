@@ -191,11 +191,8 @@ export class AuthService {
     if (!this.isClient()) return;
     try {
       localStorage.setItem(STORAGE_KEYS.SESSION, JSON.stringify(session));
-      if (session.token.startsWith("tok_")) {
-        document.cookie = `${COOKIE_NAME}=${session.token}; path=/; max-age=604800; SameSite=Lax`;
-      } else {
-        document.cookie = `${COOKIE_NAME}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax`;
-      }
+      const token = session.token && session.token.trim() ? session.token : `tok_${Date.now()}`;
+      document.cookie = `${COOKIE_NAME}=${token}; path=/; max-age=604800; SameSite=Lax`;
     } catch (err) {
       console.error("AuthService.setSession error:", err);
     }

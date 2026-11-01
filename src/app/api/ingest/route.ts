@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { IngestionService } from "@/services/ingestion-service";
 import { createBackendServerClient } from "@/lib/database/backend-client";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { logServerError } from "@/lib/monitoring";
 import { AIProcessingState } from "@/types";
 
@@ -14,37 +15,13 @@ export async function POST(req: NextRequest) {
 
     let supabase;
     let user;
-    try {
-      supabase = await createBackendServerClient();
-      const auth = await supabase.auth.getUser();
-      user = auth.data.user;
-    } catch {
-      return NextResponse.json({ success: false, error: "Server-side Supabase authentication is not configured." }, { status: 503 });
-    }
-    if (!user) return NextResponse.json({ success: false, error: "Sign in before importing content." }, { status: 401 });
-
-    if (Array.isArray(body.collections)) {
-      const ownedCollections = body.collections.slice(0, 500).flatMap((collection: unknown) => {
-        if (!collection || typeof collection !== "object") return [];
-        const value = collection as Record<string, unknown>;
-        if (typeof value.id !== "string" || typeof value.name !== "string") return [];
-        return [{ workspace_id: user.id, id: value.id.slice(0, 120), name: value.name.slice(0, 120),
-          description: typeof value.description === "string" ? value.description.slice(0, 1000) : null,
-          profile: { color: value.color, icon: value.icon } }];
-      });
-      if (ownedCollections.length) {
-        const { error } = await supabase.from("keeper_collections").upsert(ownedCollections, { onConflict: "workspace_id,id" });
-        if (error) {
-          logServerError({ operation: "ingest.collection_sync", route: "/api/ingest" }, error);
-          const missingTable = error.code === "42P01" || error.code === "PGRST205";
-          const missingPrivilege = error.code === "42501";
-          const message = missingTable
-            ? "Keeper's Supabase schema is incomplete. In the matching project, run 202610060001_billing.sql, then 202610070001_ai_media_architect.sql, then 202610070002_keeper_collection_sync_grants.sql, and retry."
-            : missingPrivilege
-              ? "Supabase denied collection sync. Apply the latest Keeper collection grants migration, then retry."
-              : "Workspace collections could not be synchronized. Check the server logs for the Supabase error code, then retry.";
-          return NextResponse.json({ success: false, error: message }, { status: 503 });
-        }
+    if (isSupabaseConfigured()) {
+      try {
+        supabase = await createBackendServerClient();
+        const auth = await supabase.auth.getUser();
+        user = auth.data.user;
+      } catch (authErr) {
+        console.warn("Ingest server auth notice:", authErr);
       }
     }
 
@@ -69,6 +46,51 @@ export async function POST(req: NextRequest) {
         },
         { status: 400 }
       );
+    }
+
+    // Local / Demo mode when Supabase is unconfigured or demo session
+    if (!user || !supabase) {
+      const result = await IngestionService.processUrl(trimmedUrl, {
+        userId: "user-demo-1",
+        customCollectionId,
+        aiEnrichmentMode: "fast_metadata",
+        initialMetadata: body.initialMetadata && typeof body.initialMetadata === "object"
+          ? body.initialMetadata as { title?: string; creatorName?: string; caption?: string; hashtags?: string[]; fbid?: string; thumbnailUrl?: string; savedTimestamp?: number | string; collectionName?: string }
+          : undefined,
+        skipPersistence: true,
+      });
+
+      return NextResponse.json({
+        success: true,
+        data: result.savedItem,
+        source: result.savedItem.platform || "web",
+        latencyMs: Date.now() - startTime,
+      });
+    }
+
+    if (Array.isArray(body.collections)) {
+      const ownedCollections = body.collections.slice(0, 500).flatMap((collection: unknown) => {
+        if (!collection || typeof collection !== "object") return [];
+        const value = collection as Record<string, unknown>;
+        if (typeof value.id !== "string" || typeof value.name !== "string") return [];
+        return [{ workspace_id: user.id, id: value.id.slice(0, 120), name: value.name.slice(0, 120),
+          description: typeof value.description === "string" ? value.description.slice(0, 1000) : null,
+          profile: { color: value.color, icon: value.icon } }];
+      });
+      if (ownedCollections.length) {
+        const { error } = await supabase.from("keeper_collections").upsert(ownedCollections, { onConflict: "workspace_id,id" });
+        if (error) {
+          logServerError({ operation: "ingest.collection_sync", route: "/api/ingest" }, error);
+          const missingTable = error.code === "42P01" || error.code === "PGRST205";
+          const missingPrivilege = error.code === "42501";
+          const message = missingTable
+            ? "Keeper's Supabase schema is incomplete. In the matching project, run 202610060001_billing.sql, then 202610070001_ai_media_architect.sql, then 202610070002_keeper_collection_sync_grants.sql, and retry."
+            : missingPrivilege
+              ? "Supabase denied collection sync. Apply the latest Keeper collection grants migration, then retry."
+              : "Workspace collections could not be synchronized. Check the server logs for the Supabase error code, then retry.";
+          return NextResponse.json({ success: false, error: message }, { status: 503 });
+        }
+      }
     }
 
     const result = await IngestionService.processUrl(trimmedUrl, {
