@@ -1,5 +1,19 @@
 # Keeper — AI Development Changelog
 
+## 2026-11-01 — CI/CD Pipeline Dependency Security Audit Fix
+
+- **Problem**: Following push to `main`, CI and CD workflows failed on `Dependency Security Audit` in CI (`ci.yml`) and `Production quality gates` in CD (`deploy.yml`). Downstream build and deployment jobs were skipped.
+- **Root Cause**: Upstream vulnerability `GHSA-mrwp-f3q8-3g9p` (high severity) in `follow-redirects@1.16.1`, required transitively via `razorpay` -> `axios@1.20.0`. The `npm audit --omit=dev --audit-level=high` quality gate failed.
+- **Changes**:
+  - `package-lock.json`: safely updated `follow-redirects` from `1.16.1` to `1.16.2` (patched release conforming to `axios`'s `^1.16.0` dependency requirement).
+- **Validation**:
+  - `npm audit --omit=dev --audit-level=high`: 0 vulnerabilities.
+  - `npm run lint -- --max-warnings=262`: 0 errors, 239 warnings.
+  - `npm run type-check`: 0 errors.
+  - `npm run audit:design`: passed (60:30:10 palette and design rules intact).
+  - `npm test`: 262/262 passed across all 24 suites.
+  - `npm run build`: 28 routes compiled and optimized cleanly with Turbopack.
+
 ## 2026-11-01 — Cross-Device Data Synchronization & Multi-Device Isolation
 
 - **Root Cause**: Device state divergence stemmed from five architectural gaps: (1) `RecallContext.login()` and mount only read local browser cache, which was empty on new devices; (2) mutations (`toggleFavorite`, `archiveItem`, `createCollection`, etc.) only wrote to local `localStorage` without server RPCs; (3) `/api/media` had no `GET`, `POST`, `PATCH`, or `DELETE` handlers; (4) legacy unnamespaced and anonymous local items were never merged into authenticated accounts; (5) lack of window focus / online synchronization hooks.

@@ -1,6 +1,33 @@
 # AI Development Handoff
 
-## 2026-10-31 — Authentication implementation follow-up
+## 2026-11-01 — CI/CD Pipeline Audit & Production Dependency Vulnerability Fix
+
+- **Problem:** GitHub Actions failed on `main` branch push at:
+  - `CI — Continuous Integration Quality Gate / Dependency Security Audit`
+  - `CD — Verified Production Deployment / Production quality gates`
+- **Root Cause:** Upstream high-severity security advisory `GHSA-mrwp-f3q8-3g9p` on `follow-redirects` versions `1.16.0 - 1.16.1` (sensitiveHeaders discarded on cross-realm redirects). This was brought in transitively through production dependency `razorpay@2.9.8` -> `axios@1.20.0` -> `follow-redirects@1.16.1`. Both workflows execute `npm audit --omit=dev --audit-level=high`.
+- **Fix:** Safely updated `follow-redirects` to safe patch version `1.16.2` via npm, regenerating `package-lock.json`. Zero application changes and zero breaking upgrades.
+- **Validation:**
+  - `npm audit --omit=dev --audit-level=high`: 0 vulnerabilities (exit code 0).
+  - `npm run lint -- --max-warnings=262`: 0 errors, 239 warnings (below 262 ceiling).
+  - `npm run type-check`: 0 errors (exit code 0).
+  - `npm run audit:design`: 100% passed (exit code 0).
+  - `npm test`: 262/262 passed across all 24 suites (exit code 0).
+  - `npm run build`: Next.js 16.4.3 production bundle built cleanly with Turbopack (28 routes generated).
+- **GitHub Repository Settings Required for Deployment:**
+  - For `CD — Verified Production Deployment` to deploy to Vercel after the quality gates pass, ensure GitHub Environment `production` has the following secrets configured:
+    - `VERCEL_TOKEN`
+    - `VERCEL_ORG_ID`
+    - `VERCEL_PROJECT_ID`
+    - `VERCEL_AUTOMATION_BYPASS_SECRET`
+  - For the scheduled AI worker (`.github/workflows/ai-worker.yml`):
+    - Actions variable: `PRODUCTION_APP_URL`
+    - Actions secret: `AI_WORKER_SECRET`
+- **Next Steps:**
+  - Commit and push `package-lock.json` and documentation updates to `main`.
+  - Confirm GitHub Actions runs pass on both CI and CD quality gates.
+
+## 2026-11-01 — Authentication implementation follow-up
 
 - Supabase auth now runs through same-origin server endpoints; no provider token is returned to the browser. Provider cookies and a signed seven-day expiry marker are HttpOnly, SameSite=Lax, Secure in production. Proxy enforces expiry across protected pages and APIs. Active tabs poll session status and receive cross-tab logout signals.
 - `AUTH_SESSION_SECRET` is required (at least 32 characters). A local-only value was generated in ignored `.env.local`; configure a unique random value in each deployed environment. Never copy the local value or expose it.

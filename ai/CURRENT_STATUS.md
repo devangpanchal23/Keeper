@@ -1,5 +1,23 @@
 # Current Project Status
 
+## 2026-11-01 — CI/CD Pipeline Audit & Production Dependency Vulnerability Fix
+
+- **Problem:** GitHub Actions failed on push to `main` at:
+  - `CI — Continuous Integration Quality Gate / Dependency Security Audit`
+  - `CD — Verified Production Deployment / Production quality gates`
+  Downstream jobs (`Production Build Verification` and `Deploy to Vercel production`) were skipped.
+- **Root Cause:** Upstream advisory `GHSA-mrwp-f3q8-3g9p` (high severity) in `follow-redirects` (v1.16.0–1.16.1), pulled via production dependency `razorpay` -> `axios@1.20.0` -> `follow-redirects@1.16.1`. Both workflows enforce `npm audit --omit=dev --audit-level=high` as a blocking gate.
+- **Resolution:**
+  - Safely updated `follow-redirects` to `1.16.2` (patched release conforming to `axios`'s `^1.16.0` constraint) via npm package manager and regenerated `package-lock.json`.
+  - Zero application code changes; no breaking upgrades.
+- **Validation:**
+  - `npm audit --omit=dev --audit-level=high`: 0 vulnerabilities.
+  - `npm run lint -- --max-warnings=262`: 0 errors, 239 warnings (below 262 ceiling).
+  - `npm run type-check`: 0 errors.
+  - `npm run audit:design`: 100% design rules and 60:30:10 palette audit passed.
+  - `npm test`: 262/262 assertions passed across all test suites.
+  - `npm run build`: Clean Next.js 16.4.3 production bundle compiled successfully (all 28 routes generated).
+
 ## 2026-11-01 — Cross-Device Data Synchronization & Authoritative Cloud Storage
 
 - **Problem:** Accounts showed different content on different devices (e.g. desktop import showed empty on mobile after sign-in). Local browser storage was used as the single copy for mutations, initial mount never pulled server data into state, legacy items remained trapped in local storage, and server endpoints for item updates/deletions were missing.
