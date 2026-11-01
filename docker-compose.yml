@@ -1,0 +1,68 @@
+version: "3.8"
+
+services:
+  # ============================================================================
+  # Keeper Next.js Web Application
+  # ============================================================================
+  keeper-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: keeper-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_APP_URL=http://localhost:3000
+      # Choose backend: postgres or mongodb or leave empty for offline/demo
+      - DATABASE_PROVIDER=postgres
+      - DATABASE_URL=postgresql://keeper:keeper_secure_password@keeper-postgres:5432/keeper
+      - DATABASE_POOL_MAX=10
+      - AUTH_SESSION_SECRET=replace_with_a_secure_random_string_at_least_32_chars_long
+    depends_on:
+      keeper-postgres:
+        condition: service_healthy
+
+  # ============================================================================
+  # Standalone PostgreSQL 17 Database
+  # ============================================================================
+  keeper-postgres:
+    image: postgres:17-alpine
+    container_name: keeper-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=keeper
+      - POSTGRES_PASSWORD=keeper_secure_password
+      - POSTGRES_DB=keeper
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/postgres/001_keeper.sql:/docker-entrypoint-initdb.d/001_keeper.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keeper -d keeper"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # Optional: Standalone MongoDB 8 Replica Set (Profile: mongodb)
+  # Run with: docker compose --profile mongodb up -d
+  # ============================================================================
+  keeper-mongodb:
+    image: mongo:8
+    container_name: keeper-mongodb
+    restart: unless-stopped
+    profiles:
+      - mongodb
+    ports:
+      - "27017:27017"
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongodb_data:/data/db
+
+volumes:
+  postgres_data:
+  mongodb_data:
+

@@ -4,7 +4,39 @@
 
 An AI-powered universal bookmark and knowledge platform. Keeper combines a Next.js workspace, local library state, authenticated ingestion, durable AI processing, grounded search, and rich multi-device organization.
 
-This branch (`open_source_keeper`) is the **Free Open-Source Edition** of Keeper. All monetization, subscription plans, payment checkout gateways, and artificial usage quotas have been removed. All features are 100% free and unlocked for self-hosting.
+This branch (`open_source_keeper`) is the **Free Open-Source Edition** of Keeper. All monetization, subscription plans, payment checkout gateways, and artificial usage quotas have been removed. All features are 100% free and unlocked for self-hosting under the [MIT License](LICENSE).
+
+---
+
+## 📚 Technical Audit & Open-Source Documentation
+
+Comprehensive technical, architecture, and security reports are available in the repository root:
+
+- [**OPEN_SOURCE_AUDIT.md**](OPEN_SOURCE_AUDIT.md) — Comprehensive technical architecture, repository health, and performance audit.
+- [**OPEN_SOURCE_FEATURE_MATRIX.md**](OPEN_SOURCE_FEATURE_MATRIX.md) — Feature-by-feature operational status across all 13 core functional areas.
+- [**OPEN_SOURCE_SECURITY_AUDIT.md**](OPEN_SOURCE_SECURITY_AUDIT.md) — OWASP Top 10 evaluation, HMAC token security, and multi-tenant isolation audit.
+- [**OPEN_SOURCE_IMPLEMENTATION_PLAN.md**](OPEN_SOURCE_IMPLEMENTATION_PLAN.md) — Prioritized remediation roadmap and invariant safety.
+- [**OPEN_SOURCE_RELEASE_CHECKLIST.md**](OPEN_SOURCE_RELEASE_CHECKLIST.md) — Verification gate signoff and pre-release checklist.
+- [**CONTRIBUTING.md**](CONTRIBUTING.md) — Community contribution guidelines and development workflow.
+- [**SECURITY.md**](SECURITY.md) — Vulnerability reporting policy and responsible disclosure.
+
+---
+
+## 🚀 Quick Start with Docker Compose (Recommended)
+
+Start Keeper and a dedicated PostgreSQL database with a single command:
+
+```bash
+# Clone and enter directory
+git checkout open_source_keeper
+
+# Start Keeper and PostgreSQL
+docker compose up -d
+```
+
+Open [http://localhost:3000](http://localhost:3000) to access your self-hosted Keeper instance.
+
+---
 
 ## Database and self-hosting choices
 

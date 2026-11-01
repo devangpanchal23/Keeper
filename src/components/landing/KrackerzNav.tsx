@@ -62,7 +62,7 @@ export function KrackerzNav() {
           lastScrollYRef.current = currentScrollY;
 
           // 4. Lightweight scrollspy using offsetTop (avoids forced layout reflow of getBoundingClientRect)
-          const sections = ["features", "pricing", "partners", "faq", "stickers"];
+          const sections = ["features", "partners", "faq", "stickers"];
           let foundSection = "";
           for (const sectionId of sections) {
             const el = document.getElementById(sectionId);
@@ -92,7 +92,6 @@ export function KrackerzNav() {
 
   const navLinks = [
     { label: "FEATURES", id: "features", href: "#features" },
-    { label: "PRICING", id: "pricing", href: "#pricing" },
     { label: "PARTNERS", id: "partners", href: "#partners" },
     { label: "FAQ", id: "faq", href: "#faq" },
     { label: "STICKER LAB", id: "stickers", href: "#stickers" },

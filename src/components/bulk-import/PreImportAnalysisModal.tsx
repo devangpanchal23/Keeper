@@ -61,13 +61,6 @@ export const PreImportAnalysis: React.FC<PreImportAnalysisProps> = ({
   onConfirm,
   onCancel,
 }) => {
-  const { importLimits } = useRecall();
-  const totalLimit = importLimits?.total ?? 10;
-  const usedLimit = importLimits?.used ?? 2;
-  const remainingLimit = importLimits?.remaining ?? Math.max(0, totalLimit - usedLimit);
-  const isQuotaExhausted = remainingLimit <= 0;
-  const isLowQuota = remainingLimit > 0 && remainingLimit < readyCount;
-
   const [targetCollectionId, setTargetCollectionId] = useState<string>("");
   const [autoOrganize, setAutoOrganize] = useState<boolean>(true);
   const [duplicateStrategy, setDuplicateStrategy] = useState<DuplicateStrategy>("skip");
@@ -82,7 +75,6 @@ export const PreImportAnalysis: React.FC<PreImportAnalysisProps> = ({
     batchDuplicateCount !== undefined ? batchDuplicateCount : 0;
 
   const handleStart = () => {
-    if (isQuotaExhausted) return;
     const defaultTags = defaultTagsStr
       .split(/[, ]+/)
       .map((t) => t.trim().replace(/^#/, ""))
@@ -101,52 +93,26 @@ export const PreImportAnalysis: React.FC<PreImportAnalysisProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Import Limits Quota Banner */}
-      <div
-        className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
-          isQuotaExhausted
-            ? "border-rose-200 bg-rose-50/80 dark:border-rose-900/60 dark:bg-rose-950/30 text-rose-800 dark:text-rose-200"
-            : isLowQuota
-            ? "border-amber-200 bg-amber-50/80 dark:border-amber-900/60 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200"
-            : "border-indigo-100 bg-indigo-50/60 dark:border-indigo-900/40 dark:bg-indigo-950/20 text-indigo-900 dark:text-indigo-200"
-        }`}
-      >
+      {/* Open-Source Edition Unlimited Imports Banner */}
+      <div className="p-4 rounded-xl border border-emerald-100 bg-emerald-50/60 dark:border-emerald-900/40 dark:bg-emerald-950/20 text-emerald-900 dark:text-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
         <div className="flex items-center gap-2.5">
-          <Zap
-            className={`w-4 h-4 shrink-0 ${
-              isQuotaExhausted
-                ? "text-rose-500 fill-rose-500/20"
-                : isLowQuota
-                ? "text-amber-500 fill-amber-500/20"
-                : "text-indigo-500 fill-indigo-500/20"
-            }`}
-          />
+          <Zap className="w-4 h-4 shrink-0 text-emerald-500 fill-emerald-500/20" />
           <div>
-            <div className="font-semibold text-zinc-900 dark:text-zinc-100">
-              Import Quota: {totalLimit} total → {usedLimit} used →{" "}
-              <strong className={isQuotaExhausted ? "text-rose-600 font-bold" : "text-emerald-600 dark:text-emerald-400 font-bold"}>
-                {remainingLimit} remaining
-              </strong>
+            <div className="font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+              <span>Open-Source Edition</span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20">
+                Unlimited
+              </span>
             </div>
-            {isQuotaExhausted ? (
-              <p className="text-[11px] text-rose-600 dark:text-rose-400 mt-0.5">
-                Remaining import quota is 0. Imports cannot proceed until limits are reset or upgraded.
-              </p>
-            ) : isLowQuota ? (
-              <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
-                This batch has {readyCount} items, but you have {remainingLimit} limit credits left. Imports will stop when quota reaches 0.
-              </p>
-            ) : (
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
-                Every successful item imported will automatically deduct 1 limit credit.
-              </p>
-            )}
+            <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mt-0.5">
+              All imports are 100% free with no quotas, rate blocks, or paywalls.
+            </p>
           </div>
         </div>
 
         <div className="shrink-0 flex items-center gap-2 font-medium">
-          <span className="px-2.5 py-1 rounded-lg bg-white/90 dark:bg-zinc-900/90 border border-zinc-200 dark:border-zinc-800 shadow-2xs">
-            {remainingLimit} credits left
+          <span className="px-2.5 py-1 rounded-lg bg-white/90 dark:bg-zinc-900/90 border border-zinc-200 dark:border-zinc-800 shadow-2xs text-emerald-600 dark:text-emerald-400 font-semibold">
+            Ready to import
           </span>
         </div>
       </div>
@@ -360,13 +326,11 @@ export const PreImportAnalysis: React.FC<PreImportAnalysisProps> = ({
         <button
           type="button"
           onClick={handleStart}
-          disabled={isQuotaExhausted || (readyCount === 0 && duplicateStrategy === "skip")}
+          disabled={readyCount === 0 && duplicateStrategy === "skip"}
           className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold shadow-sm transition-all"
         >
           <Play className="w-3.5 h-3.5 fill-current" />
-          {isQuotaExhausted
-            ? "Limit Reached (0 Remaining)"
-            : `Start Import (${readyCount > 0 ? `${readyCount} Items` : "Run Import"})`}
+          {`Start Import (${readyCount > 0 ? `${readyCount} Items` : "Run Import"})`}
         </button>
       </div>
     </div>
