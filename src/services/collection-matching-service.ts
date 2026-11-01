@@ -28,8 +28,8 @@ const COLLECTION_SYNONYMS: Record<string, string[]> = {
   quiz: ["quiz", "quizzes", "trivia", "brain teaser", "brain teasers", "knowledge quiz", "knowledge test", "question game"],
   comedy: ["comedy", "comedian", "funny", "humor", "humour", "sketch", "standup", "parody", "satire"],
   entertainment: ["entertainment", "music", "movies", "gaming", "games", "celebrity", "series", "cinema"],
-  technology: ["technology", "tech", "programming", "coding", "software", "hardware", "macbook", "apple", "macos", "ios", "developer", "artificial intelligence", "machine learning"],
-  design: ["design", "ui", "ux", "graphic design", "web design", "typography", "figma"],
+  technology: ["technology", "tech", "programming", "coding", "software", "hardware", "macbook", "apple", "macos", "ios", "developer", "artificial intelligence", "machine learning", "react", "next.js", "nextjs", "javascript", "typescript", "python", "frontend", "backend", "web development", "github"],
+  design: ["design", "ui", "ux", "graphic design", "web design", "typography", "figma", "css", "framer motion", "motion", "animation"],
   education: ["education", "learning", "study", "lesson", "course", "tutorial", "explainer", "guide", "how to"],
   travel: ["travel", "trip", "destination", "tourism", "itinerary", "vacation", "transit guide", "flight", "hotel"],
   food: ["food", "cooking", "recipe", "recipes", "cuisine"],
@@ -196,7 +196,8 @@ export class CollectionMatchingService {
   }
 
   static match(text: string, tags: GeneratedTag[], collections: Collection[], limit = 3): CollectionMatchCandidate[] {
-    const relevantTags = tags.filter((tag) => !GENERIC_MATCH_TERMS.has(normalizedPhrase(tag.name)));
+    const nonGenericTags = tags.filter((tag) => !GENERIC_MATCH_TERMS.has(normalizedPhrase(tag.name)));
+    const relevantTags = nonGenericTags.length > 0 ? nonGenericTags : tags;
     const tagTerms = relevantTags.map((tag) => tag.name.trim()).filter(Boolean);
     const tagTokens = new Set(tagTerms.flatMap((term) => [...tokenize(term)]));
     const textTokens = tokenize(text);

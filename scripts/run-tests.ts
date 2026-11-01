@@ -95,6 +95,7 @@ import { getCheckoutBlockDecision } from "../src/lib/billing-checkout-policy";
 import { getRazorpayConfigurationError, getSafeRazorpayErrorCode } from "../src/lib/razorpay-config";
 import { createAuthSessionMarker, isAuthSessionMarkerValid, AUTH_SESSION_DURATION_SECONDS } from "../src/lib/supabase/auth-session";
 import { getCanonicalIdentityKey, getAuthoritativeCanonicalUrl, isSameContentItem } from "../src/lib/media-identity";
+import { compareSourceTextWithCaption, shouldShowSourceTextAnalysis } from "../src/lib/source-text-comparison";
 
 interface TestResult {
   name: string;
@@ -7277,6 +7278,216 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
 
       StorageService.clearUserData(userAlice);
       StorageService.clearUserData(userBob);
+    });
+
+    console.log("\n--- Section 24: Source Text Analysis Conditional Visibility & Redundancy Tests ---");
+
+    await test("Scenario 1: 100% identical text hides redundant Source Text Analysis", async () => {
+      const caption = "Your GitHub profile shouldn't look boring 👀\nComment ***GitHub*** and I'll send you the guide 🚀";
+      const source = "Your GitHub profile shouldn't look boring 👀\nComment ***GitHub*** and I'll send you the guide 🚀";
+
+      const result = compareSourceTextWithCaption(caption, source);
+      assertEqual(result.shouldShow, false, "100% identical text is hidden");
+      assertEqual(result.similarityScore, 1.0, "Similarity score is 1.0");
+      assertEqual(result.hasMeaningfulDifference, false, "No meaningful difference");
+      assertEqual(shouldShowSourceTextAnalysis(caption, { type: "source_text", text: source, source: "caption", extractionMethod: "platform_metadata_normalization", confidence: 0.85, status: "completed", generatedAt: new Date().toISOString() }), false, "Helper returns false");
+    });
+
+    await test("Scenario 2: 99% or higher similarity with no meaningful difference hides Source Text Analysis", async () => {
+      // 100+ words text with only a trailing dot or capitalization change
+      const caption = "Mastering TypeScript and Next.js full stack development requires consistent practice understanding type narrowing component lifecycle and server actions in production applications with real databases.";
+      const source = "Mastering typescript and Next.js full stack development requires consistent practice understanding type narrowing component lifecycle and server actions in production applications with real databases.";
+
+      const result = compareSourceTextWithCaption(caption, source);
+      assertEqual(result.shouldShow, false, "99%+ similarity with no novel info is hidden");
+      assertEqual(result.hasMeaningfulDifference, false, "No meaningful difference identified");
+      assert(result.similarityScore >= 0.99, "Similarity score is at least 99%");
+    });
+
+    await test("Scenario 3: Additional meaningful source information shows Source Text Analysis", async () => {
+      const caption = "10 tips to build your SaaS today.";
+      const source = "10 tips to build your SaaS today. Talk to twenty prospective enterprise customers and validate willingness to pay before writing any code.";
+
+      const result = compareSourceTextWithCaption(caption, source);
+      assertEqual(result.shouldShow, true, "Additional meaningful information is shown");
+      assertEqual(result.hasMeaningfulDifference, true, "Meaningful difference detected");
+      assert(result.novelTokenCount > 0, "Novel tokens detected");
+    });
+
+    await test("Scenario 4: Different emojis with meaningful context shows Source Text Analysis", async () => {
+      const caption = "Just shipped a major new update to our open source library";
+      const source = "Just shipped a major new update to our open source library 🚀 ⚡ 🏆";
+
+      const result = compareSourceTextWithCaption(caption, source);
+      assertEqual(result.shouldShow, true, "Novel emojis with context are shown");
+      assertEqual(result.hasMeaningfulDifference, true, "Meaningful emoji difference detected");
+      assert(result.novelEmojis.length >= 3, "All novel emojis captured");
+      assert(result.novelEmojis.includes("🚀"), "Rocket emoji captured");
+    });
+
+    await test("Scenario 5: Different language or meaningful multilingual phrases shows Source Text Analysis", async () => {
+      const caption = "Welcome to our design studio in Tokyo";
+      const source = "Welcome to our design studio in Tokyo 東京のデザインスタジオへようこそ";
+
+      const result = compareSourceTextWithCaption(caption, source);
+      assertEqual(result.shouldShow, true, "Multilingual content is shown");
+      assertEqual(result.hasMeaningfulDifference, true, "Meaningful Japanese phrase detected");
+    });
+
+    await test("Scenario 6: Only whitespace or line-break differences hides Source Text Analysis", async () => {
+      const caption = "Step 1: Install packages\n\n\nStep 2: Configure environment\n\n\nStep 3: Run dev server";
+      const source = "Step 1: Install packages\nStep 2: Configure environment\nStep 3: Run dev server";
+
+      const result = compareSourceTextWithCaption(caption, source);
+      assertEqual(result.shouldShow, false, "Whitespace/line-break only variation is hidden");
+      assertEqual(result.similarityScore, 1.0, "Normalized similarity is 1.0");
+    });
+
+    await test("Scenario 7: Only insignificant formatting differences hides Source Text Analysis", async () => {
+      const caption = "Comment ***GitHub*** and I'll send “The Guide” for free!";
+      const source = "Comment **GitHub** and I'll send \"The Guide\" for free!";
+
+      const result = compareSourceTextWithCaption(caption, source);
+      assertEqual(result.shouldShow, false, "Insignificant markdown/quote formatting difference is hidden");
+      assertEqual(result.similarityScore, 1.0, "Normalized similarity is 1.0");
+    });
+
+    await test("Scenario 8: Empty source analysis hides Source Text Analysis", async () => {
+      const caption = "Great video on frontend architecture";
+      const source = "   \n\t  ";
+
+      const result = compareSourceTextWithCaption(caption, source);
+      assertEqual(result.shouldShow, false, "Empty source text is hidden");
+      assertEqual(result.reason, "empty_source_analysis", "Reason is empty_source_analysis");
+    });
+
+    await test("Scenario 9: Missing caption but meaningful source analysis shows Source Text Analysis", async () => {
+      const caption = "";
+      const source = "Detailed transcription explaining zero-copy buffers in Node.js and performance tuning.";
+
+      const result = compareSourceTextWithCaption(caption, source);
+      assertEqual(result.shouldShow, true, "Meaningful source text is shown when caption is missing");
+      assertEqual(result.hasMeaningfulDifference, true, "Treated as meaningful difference");
+      assertEqual(result.reason, "missing_caption_with_source_content", "Reason is missing_caption_with_source_content");
+    });
+
+    await test("Scenario 10: Failed media extraction hides safely without errors", async () => {
+      const caption = "Instagram Reel about web design";
+      const failedRep = {
+        type: "unavailable" as const,
+        text: "",
+        source: "none" as const,
+        extractionMethod: "whisper:failed",
+        confidence: 0,
+        status: "failed" as const,
+        generatedAt: new Date().toISOString(),
+        failureReason: "Audio track could not be decoded",
+      };
+
+      const result = compareSourceTextWithCaption(caption, failedRep);
+      assertEqual(result.shouldShow, false, "Failed media extraction is safely hidden");
+      assertEqual(shouldShowSourceTextAnalysis(caption, failedRep), false, "Helper returns false for failed extraction");
+    });
+
+    await test("Scenario 11: Different OCR/transcription content shows Source Text Analysis", async () => {
+      const caption = "Check out this reel! Link in bio #coding #dev";
+      const transcript = "In this video we are demonstrating database indexing with B-Trees and Hash indexes in PostgreSQL.";
+
+      const result = compareSourceTextWithCaption(caption, transcript);
+      assertEqual(result.shouldShow, true, "Spoken transcription differing from brief caption is shown");
+      assertEqual(result.hasMeaningfulDifference, true, "Meaningful difference detected");
+      assert(result.similarityScore < 0.3, "Low similarity between caption and transcript");
+    });
+
+    await test("Real-World Case: User Screenshot Instagram Reel duplicate caption is eliminated", async () => {
+      const userCaption = `Your GitHub profile shouldn't look boring 👀
+Comment ***GitHub*** and I'll send you the complete guide to make it look clean, modern, and impressive 🚀
+
+[GitHub Profile, GitHub README, Developer Portfolio, GitHub Customization, Coding Profile, Software Engineer, Developer Branding]
+
+#github #githubprofile #githubtips #coding #developer softwareengineer programming webdevelopment tech developers`;
+
+      const sourceAnalyzed = `Your GitHub profile shouldn't look boring 👀
+Comment ***GitHub*** and I'll send you the complete guide to make it look clean, modern, and impressive 🚀
+
+[GitHub Profile, GitHub README, Developer Portfolio, GitHub Customization, Coding Profile, Software Engineer, Developer Branding]
+
+#github #githubprofile #githubtips #coding #developer softwareengineer programming webdevelopment tech developers`;
+
+      const rep = {
+        type: "source_text" as const,
+        text: sourceAnalyzed,
+        source: "post_body" as const,
+        extractionMethod: "platform_metadata_normalization",
+        confidence: 0.85,
+        status: "completed" as const,
+        generatedAt: new Date().toISOString(),
+        sourceSegments: [
+          { source: "post_body", text: sourceAnalyzed },
+          { source: "caption", text: sourceAnalyzed },
+          { source: "description", text: sourceAnalyzed },
+        ],
+      };
+
+      const shouldShow = shouldShowSourceTextAnalysis(userCaption, rep);
+      assertEqual(shouldShow, false, "Exact duplicate shown in user screenshot is eliminated from UI");
+    });
+
+    console.log("\n--- Section 25: Categorization, Tag Generation & Thumbnail Accuracy Regression Tests ---");
+
+    await test("Tag generation rejects shortcode hashes (De8uW1PTam9) and app stop words (Keeper)", async () => {
+      const mockRestrictedTitle = "Instagram Reel • De8uW1PTam9";
+      const mockRestrictedDesc = "Instagram Reel (De8uW1PTam9) saved to Keeper.";
+      const tags = ContentIntelligenceService.generateTags(`${mockRestrictedTitle}\n${mockRestrictedDesc}`);
+      const tagNames = tags.map((t) => t.name.toLowerCase());
+      assert(!tagNames.includes("de8uw1ptam9"), "Raw shortcode De8uW1PTam9 is rejected from generated tags");
+      assert(!tagNames.includes("keeper"), "Application stop word Keeper is rejected from generated tags");
+    });
+
+    await test("Tag generation extracts rich domain tags from social media captions", async () => {
+      const sampleCaption = "Your GitHub profile shouldn't look boring. Comment GitHub and I will send you the guide to make it clean and modern! #github #coding #developer #softwareengineer";
+      const tags = ContentIntelligenceService.generateTags(sampleCaption);
+      const tagNames = tags.map((t) => t.name);
+      assert(tagNames.includes("Github"), "Extracts Github tag");
+      assert(tagNames.includes("Coding"), "Extracts Coding tag");
+      assert(tagNames.includes("Developer"), "Extracts Developer tag");
+    });
+
+    await test("CollectionMatchingService matches 'Reels' collection for Reel items when only format tags exist", async () => {
+      const collections: Collection[] = [
+        { id: "col-reels", name: "Reels", color: "#6366f1", icon: "Folder", createdAt: "", updatedAt: "" },
+        { id: "col-tech", name: "Tech", color: "#6366f1", icon: "Folder", createdAt: "", updatedAt: "" },
+      ];
+      const tags = [
+        { name: "Instagram", normalizedName: "instagram", category: "Topic" as const, confidence: 1, source: "user" as const, evidence: "" },
+        { name: "Reel", normalizedName: "reel", category: "Topic" as const, confidence: 1, source: "user" as const, evidence: "" },
+      ];
+      const candidates = CollectionMatchingService.match("", tags, collections);
+      const best = CollectionMatchingService.selectBestMatch(candidates);
+      assertEqual(best?.collectionId, "col-reels", "Correctly matches user's Reels collection");
+      assert(best?.confidence !== undefined && best.confidence >= 0.8, "Confidence is high for exact format match");
+    });
+
+    await test("CollectionMatchingService matches 'Tech' collection for React and Web Development items", async () => {
+      const collections: Collection[] = [
+        { id: "col-reels", name: "Reels", color: "#6366f1", icon: "Folder", createdAt: "", updatedAt: "" },
+        { id: "col-tech", name: "Tech", color: "#6366f1", icon: "Folder", createdAt: "", updatedAt: "" },
+      ];
+      const tags = [
+        { name: "React", normalizedName: "react", category: "Technology" as const, confidence: 1, source: "ai" as const, evidence: "" },
+        { name: "Web Development", normalizedName: "web-development", category: "Skill" as const, confidence: 1, source: "ai" as const, evidence: "" },
+      ];
+      const candidates = CollectionMatchingService.match("", tags, collections);
+      const best = CollectionMatchingService.selectBestMatch(candidates);
+      assertEqual(best?.collectionId, "col-tech", "Correctly matches user's Tech collection");
+    });
+
+    await test("Ingestion retains platform title rather than generic 'Saved source'", async () => {
+      const res = await IngestionService.processUrl("https://www.instagram.com/reel/De8uW1PTam9/", {
+        aiEnrichmentMode: "fast_metadata",
+      });
+      assert(res.savedItem.title.includes("De8uW1PTam9"), "Title retains informative shortcode rather than generic 'Saved source'");
+      assertEqual(res.savedItem.contentType, "reel", "Correctly identifies as a reel");
     });
 
     // Summary

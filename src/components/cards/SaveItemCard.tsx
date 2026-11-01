@@ -65,13 +65,12 @@ export const SaveItemCard: React.FC<SaveItemCardProps> = ({
   return (
     <div
       onClick={handleCardClick}
-      className={`group relative flex flex-col rounded-2xl border bg-white dark:bg-zinc-900/60 shadow-sm transition-all duration-300 overflow-hidden glow-card ${
-        selectable
+      className={`group relative flex flex-col rounded-2xl border bg-white dark:bg-zinc-900/60 shadow-sm transition-all duration-300 overflow-hidden glow-card ${selectable
           ? selected
             ? "border-rose-500/80 ring-2 ring-rose-500/80 shadow-rose-500/10 cursor-pointer"
             : "border-zinc-200/80 dark:border-zinc-800/80 hover:border-zinc-400 dark:hover:border-zinc-600 cursor-pointer"
           : "border-zinc-200/80 dark:border-zinc-800/80 hover:bg-zinc-50/50 dark:hover:bg-zinc-900/90 hover:shadow-xl"
-      }`}
+        }`}
     >
       {/* Selection Checkbox (if selectable mode is on) */}
       {selectable && (
@@ -90,11 +89,10 @@ export const SaveItemCard: React.FC<SaveItemCardProps> = ({
               onToggleSelect?.();
             }
           }}
-          className={`absolute top-2.5 left-2.5 z-20 w-6 h-6 rounded-lg flex items-center justify-center transition-all cursor-pointer shadow-md ${
-            selected
+          className={`absolute top-2.5 left-2.5 z-20 w-6 h-6 rounded-lg flex items-center justify-center transition-all cursor-pointer shadow-md ${selected
               ? "bg-rose-600 text-white ring-2 ring-white dark:ring-zinc-900"
               : "bg-black/60 text-transparent border border-white/60 hover:bg-black/80"
-          }`}
+            }`}
           aria-label={`Select ${item.title}`}
         >
           <Check className={`w-3.5 h-3.5 ${selected ? "opacity-100" : "opacity-0"}`} />
@@ -141,11 +139,10 @@ export const SaveItemCard: React.FC<SaveItemCardProps> = ({
                 e.stopPropagation();
                 toggleFavorite(item.id);
               }}
-              className={`p-1.5 rounded-full backdrop-blur-md transition-all ${
-                item.favorite
+              className={`p-1.5 rounded-full backdrop-blur-md transition-all ${item.favorite
                   ? "bg-amber-500/90 text-white shadow-md shadow-amber-500/30 scale-105"
                   : "bg-black/40 text-zinc-300 hover:text-white hover:bg-black/60 opacity-0 group-hover:opacity-100"
-              }`}
+                }`}
               title={item.favorite ? "Favorited" : "Add to favorites"}
             >
               <Star className="w-3.5 h-3.5 fill-current" />
@@ -196,7 +193,7 @@ export const SaveItemCard: React.FC<SaveItemCardProps> = ({
                     ? "Deleted user"
                     : `u/${(item.creator.username || item.creator.name).replace(/^u\//i, "")}`
                   : item.platform === "x" || item.platform === "twitter"
-                  ? (() => {
+                    ? (() => {
                       const name = item.creator.displayName || item.creator.name || "";
                       const user = (item.creator.username || "").replace(/^@/, "").trim();
                       if (user && !name.includes(`@${user}`)) {
@@ -204,7 +201,7 @@ export const SaveItemCard: React.FC<SaveItemCardProps> = ({
                       }
                       return name;
                     })()
-                  : (item.creator.displayName || item.creator.name)}
+                    : (item.creator.displayName || item.creator.name)}
               </span>
               {item.isLimited && (
                 <span className="shrink-0 px-1.5 py-0.2 rounded text-[9px] font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20" title="Limited content available">
@@ -340,11 +337,10 @@ export const SaveItemCard: React.FC<SaveItemCardProps> = ({
                     className="w-full text-left flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
                   >
                     <Star
-                      className={`w-3.5 h-3.5 ${
-                        item.favorite
+                      className={`w-3.5 h-3.5 ${item.favorite
                           ? "text-amber-500 fill-amber-500"
                           : "text-zinc-400"
-                      }`}
+                        }`}
                     />
                     {item.favorite ? "Unfavorite" : "Favorite"}
                   </button>

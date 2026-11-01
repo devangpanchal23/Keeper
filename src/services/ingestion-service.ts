@@ -506,9 +506,31 @@ export class IngestionService {
       ? collections.find((c) => c.name.toLowerCase() === options.initialMetadata?.collectionName?.toLowerCase())
       : undefined;
 
+    // Run CollectionMatchingService to match existing collections if available
+    let autoMatchedColId: string | undefined = undefined;
+    if (collections && collections.length > 0) {
+      const candidates = CollectionMatchingService.match(
+        [sourceData.title, sourceData.caption, sourceData.description, sourceData.bodyText].filter(Boolean).join("\n"),
+        (enrichment.tags || []).map((name) => ({
+          name,
+          normalizedName: name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, ""),
+          category: "Topic" as const,
+          confidence: 1,
+          source: "ai" as const,
+          evidence: "Extracted from source metadata.",
+        })),
+        collections
+      );
+      const best = CollectionMatchingService.selectBestMatch(candidates);
+      if (best) {
+        autoMatchedColId = best.collectionId;
+      }
+    }
+
     const targetCollectionId =
       options.customCollectionId ||
       matchingCol?.id ||
+      autoMatchedColId ||
       enrichment.suggestedCollectionId ||
       undefined;
 
@@ -543,7 +565,7 @@ export class IngestionService {
 
     const rawSavedItem: SavedItem = {
       id: existing?.id || `save-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      title: sourceData.provenance.title?.source === "url_parse" ? "Saved source" : sourceData.title,
+      title: sourceData.title || (sourceData.contentType === "reel" ? "Instagram Reel" : "Saved source"),
       url: sourceData.canonicalUrl,
       thumbnail: sourceData.thumbnailUrl,
       platform: sourceData.platform,

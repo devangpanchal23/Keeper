@@ -200,6 +200,11 @@ export class ContentIntelligenceService {
     for (const raw of tokens) {
       const token = raw.replace(/^[.+#-]+|[.+#-]+$/g, "");
       if (token.length < 3 || STOP_WORDS.has(token) || /^\d+$/.test(token)) continue;
+      // Reject random alphanumeric shortcodes or hashes (e.g. De8uW1PTam9, C3x90ZaLkPq)
+      if (/^[a-z0-9_-]{8,30}$/.test(token) && /[0-9]/.test(token) && /[a-z]/.test(token) && !CATEGORY_TERMS[token]) {
+        continue;
+      }
+      if (token.length >= 6 && !/[aeiouy]/.test(token)) continue;
       tokenCounts.set(token, (tokenCounts.get(token) || 0) + 1);
     }
     for (const [token, count] of tokenCounts) {
@@ -244,6 +249,14 @@ export class ContentIntelligenceService {
 
     // Reject all-caps short noise (<=3 chars) that are not recognized acronyms
     if (/^[A-Z]{1,3}$/.test(cleanRaw) && !["AI", "UI", "UX", "JS", "TS", "API", "CSS", "SEO", "APP"].includes(cleanRaw)) {
+      return "";
+    }
+
+    // Reject random alphanumeric shortcodes or hashes (e.g. De8uW1PTam9, C3x90ZaLkPq)
+    if (/^[a-zA-Z0-9_-]{8,30}$/.test(cleanRaw) && /[0-9]/.test(cleanRaw) && /[a-zA-Z]/.test(cleanRaw) && !cleanRaw.includes(" ")) {
+      return "";
+    }
+    if (cleanRaw.length >= 6 && !/[aeiouy]/i.test(cleanRaw)) {
       return "";
     }
 

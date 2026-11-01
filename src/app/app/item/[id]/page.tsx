@@ -11,6 +11,7 @@ import { SaveItemCard } from "@/components/cards/SaveItemCard";
 import { EmptyState } from "@/components/common/EmptyState";
 import { formatFullDate, formatDate } from "@/lib/utils";
 import { AIProcessingState, SavedItem } from "@/types";
+import { shouldShowSourceTextAnalysis } from "@/lib/source-text-comparison";
 import {
   INSTAGRAM_REEL_PLACEHOLDER,
   INSTAGRAM_POST_PLACEHOLDER,
@@ -46,6 +47,9 @@ import {
   Volume2,
   FileText,
   Loader2,
+  Image as ImageIcon,
+  Upload,
+  X,
 } from "lucide-react";
 
 export default function ItemDetailPage({
@@ -177,6 +181,39 @@ export default function ItemDetailPage({
   // Tag editing state
   const [tagInput, setTagInput] = useState("");
 
+  // Thumbnail editing state
+  const [isEditingThumbnail, setIsEditingThumbnail] = useState(false);
+  const [customThumbnailUrl, setCustomThumbnailUrl] = useState("");
+  const [thumbnailError, setThumbnailError] = useState("");
+
+  const handleUpdateThumbnail = (newUrl: string) => {
+    if (!item) return;
+    const trimmed = newUrl.trim();
+    if (!trimmed || (!trimmed.startsWith("http://") && !trimmed.startsWith("https://") && !trimmed.startsWith("data:image/"))) {
+      setThumbnailError("Please enter a valid image URL starting with https://");
+      return;
+    }
+    updateItem(item.id, {
+      thumbnail: trimmed,
+      metadata: {
+        ...item.metadata,
+        thumbnailSource: "authentic",
+      },
+      provenance: {
+        ...(item.provenance || {}),
+        thumbnail: {
+          value: trimmed,
+          source: "user_provided",
+          retrievedAt: new Date().toISOString(),
+        },
+      },
+    });
+    setIsEditingThumbnail(false);
+    setCustomThumbnailUrl("");
+    setThumbnailError("");
+    addToast("Thumbnail updated", "Item thumbnail updated successfully.", "success");
+  };
+
   useEffect(() => {
     if (item) {
       setNotes(item.personalNotes || "");
@@ -252,6 +289,8 @@ export default function ItemDetailPage({
   }
 
   const contentRepresentation = item.metadata?.contentRepresentation;
+  const postCaption = (item.metadata?.caption || (typeof item.provenance?.caption?.value === "string" ? item.provenance.caption.value : null) || item.description || "") as string;
+  const showSourceTextAnalysis = shouldShowSourceTextAnalysis(postCaption, contentRepresentation);
   const assetClassification = item.metadata?.assetClassification;
   const generatedContent = item.metadata?.generatedContent as { detailedDescription?: string | null; topics?: string[]; collectionReason?: string | null } | undefined;
   const processingStatus = String(item.metadata?.aiProcessingStatus || "COMPLETED");
@@ -511,6 +550,13 @@ export default function ItemDetailPage({
         {/* Top Right Actions */}
         <div className="absolute top-4 right-4 flex items-center gap-2">
           <button
+            onClick={() => setIsEditingThumbnail(!isEditingThumbnail)}
+            className="p-2.5 rounded-full backdrop-blur-md bg-black/50 text-white hover:bg-black/70 transition-transform"
+            title="Set custom thumbnail"
+          >
+            <ImageIcon className="w-4 h-4" />
+          </button>
+          <button
             onClick={() => toggleFavorite(item.id)}
             className={`p-2.5 rounded-full backdrop-blur-md transition-transform ${
               item.favorite
@@ -558,6 +604,72 @@ export default function ItemDetailPage({
           </h1>
         </div>
       </div>
+
+      {/* Inline Thumbnail Editor */}
+      {isEditingThumbnail && (
+        <div className="p-4 rounded-2xl border border-indigo-200 dark:border-indigo-800/60 bg-indigo-50/50 dark:bg-indigo-950/20 space-y-3 text-xs animate-in fade-in duration-200">
+          <div className="flex items-center justify-between font-semibold text-zinc-900 dark:text-zinc-100">
+            <span className="flex items-center gap-2">
+              <ImageIcon className="w-4 h-4 text-indigo-500" />
+              Set Custom Thumbnail
+            </span>
+            <button
+              onClick={() => setIsEditingThumbnail(false)}
+              className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="url"
+              placeholder="Paste image URL (https://...)"
+              value={customThumbnailUrl}
+              onChange={(e) => {
+                setCustomThumbnailUrl(e.target.value);
+                setThumbnailError("");
+              }}
+              className="flex-1 px-3 py-2 rounded-xl text-xs border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleUpdateThumbnail(customThumbnailUrl)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-500 transition-colors shrink-0"
+              >
+                Save Thumbnail
+              </button>
+              <label className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 transition-colors">
+                <Upload className="w-3.5 h-3.5" />
+                <span>Upload</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      if (file.size > 5 * 1024 * 1024) {
+                        setThumbnailError("Image size must be less than 5 MB.");
+                        return;
+                      }
+                      const reader = new FileReader();
+                      reader.onload = (ev) => {
+                        if (typeof ev.target?.result === "string") {
+                          handleUpdateThumbnail(ev.target.result);
+                        }
+                      };
+                      reader.readAsDataURL(file);
+                    }
+                  }}
+                />
+              </label>
+            </div>
+          </div>
+          {thumbnailError && (
+            <p className="text-xs text-rose-600 dark:text-rose-400 font-medium">{thumbnailError}</p>
+          )}
+        </div>
+      )}
 
       {/* Limited Content Warning Banner */}
       {item.isLimited && (
@@ -690,8 +802,8 @@ export default function ItemDetailPage({
             </div>
           )}
 
-          {/* Normalized source representation used by the shared AI pipeline */}
-          {contentRepresentation && (
+          {/* Normalized source representation used by the shared AI pipeline (shown when containing meaningful information beyond post caption) */}
+          {contentRepresentation && showSourceTextAnalysis && (
             <section className="p-6 rounded-3xl border border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-zinc-900/60 shadow-xs space-y-3" aria-labelledby="content-representation-heading">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 id="content-representation-heading" className="text-sm font-bold text-zinc-900 dark:text-zinc-100">

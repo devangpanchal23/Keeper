@@ -1,5 +1,52 @@
 # AI Development Handoff
 
+## 2026-11-01 — Categorization, Tag Generation, and Thumbnail Setting Accuracy Fix
+
+- **Problem:**
+  - After recent changes, the Universal Add Content modal degraded when ingesting content (e.g. Instagram Reels, videos, posts):
+    1. **Tag Generation Degraded:** Produced raw shortcode hashes (e.g. `#De8uW1PTam9`) and the app name (`#Keeper`) instead of meaningful topic, technology, and domain tags.
+    2. **Categorization & Collection Matching Stopped Working:** Defaulted to `(None - General Library)` with "No clear tag match found" because tags were degraded and `IngestionService.processUrl` hardcoded empty tags and undefined collection suggestions during fast metadata enrichment.
+    3. **False "Limited content available" Alert:** Displayed yellow restricted warning banner even for accessible or valid media because `buildFastMetadataEnrichment` hardcoded `isSufficientContent = false`.
+    4. **Thumbnail Setting Missing:** Users had no way to set, upload, or customize authentic thumbnails when previewing before saving, or when editing bookmarks on the detail screen.
+- **Root Cause & Fix:**
+  - `src/services/content-intelligence.ts`: Filtered out random alphanumeric hashes and shortcodes (e.g. `De8uW1PTam9`, `C3x90ZaLkPq`) and consonant clusters without vowels from tokenization and tag normalization.
+  - `src/components/modals/AddContentModal.tsx`:
+    - Updated `TAG_STOP_WORDS` with comprehensive stop words (including app name `keeper`, system labels `source`, `untitled`, `library`, `general`, etc.) and shortcode rejection.
+    - Integrated `ContentIntelligenceService.generateTags` with category cues, key phrases, and creator handling.
+    - Added fallback to clean format/platform tags (e.g. `Instagram`, `Reel`, `Video`) when caption text is restricted.
+    - Enabled live "Set Thumbnail" editor in `AddContentModal.tsx` supporting custom image URLs and device image uploads (via FileReader data URL) with live preview and reset.
+    - Handled `isLimited` so the restricted banner only appears when content is genuinely restricted and lacks caption/body text.
+  - `src/services/collection-matching-service.ts`:
+    - Updated `match()` to fall back to tags when all tags are format-level, enabling high-confidence matching (0.96) for collections like "Reels" or "Instagram".
+    - Added technology/frontend synonyms (`react`, `next.js`, `javascript`, `typescript`, `python`, `frontend`, `backend`, `web development`, `github`) to `COLLECTION_SYNONYMS` for matching "Tech" / "Technology" collections.
+  - `src/services/ingestion-service.ts`:
+    - Preserved informative platform title instead of overwriting with generic `"Saved source"`.
+    - Integrated `CollectionMatchingService.match` on existing collections during ingestion.
+  - `src/app/app/item/[id]/page.tsx`:
+    - Added "Set Thumbnail" button and editor for updating thumbnails on existing saved items.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm run lint`: 0 errors, 241 warnings (below threshold).
+  - `npm test`: 284/284 assertions passed across all 25 test suites (all 5 new Section 25 tests passed).
+  - `npm run build`: Turbopack production build succeeded in 1675ms (all 28 routes compiled).
+
+## 2026-11-01 — Conditional Visibility for Source Text Analysis & Redundancy Elimination
+
+- **Problem:** When media lacked separate audio transcripts or OCR, "Post Caption" and "Source text analyzed" were rendered back-to-back with identical text, creating unnecessary visual duplication on the item detail page.
+- **Root Cause & Fix:**
+  - `src/app/app/item/[id]/page.tsx` unconditionally rendered the `contentRepresentation` card.
+  - Implemented `src/lib/source-text-comparison.ts` with `compareSourceTextWithCaption()` and `shouldShowSourceTextAnalysis()`.
+  - Normalizes text (Unicode NFC, HTML entity decoding, mojibake repair, markdown syntax stripping, smart quotes, whitespace/linebreak collapsing).
+  - Evaluates emoji awareness, token multiset overlap, numerical facts, and memory-optimized Levenshtein character distance.
+  - Hides "Source text analyzed" when 100% identical, when normalized similarity is >= 99% with no meaningful differences, when source analysis is empty, or when media extraction failed.
+  - Shows "Source text analyzed" when additional sentences/phrases/facts, novel emojis with context, different languages, or separate OCR/transcription content are present, or when the caption is missing.
+  - Refactored `src/app/app/item/[id]/page.tsx` to conditionally render the card only when `shouldShowSourceTextAnalysis(postCaption, contentRepresentation)` evaluates to true.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm run lint`: 0 errors, 240 warnings.
+  - `npm test`: 279/279 passed across all 24 suites (all 12 Section 24 tests passed).
+  - `npm run build`: Turbopack build passed in 1742ms (all 28 routes compiled).
+
 ## 2026-11-01 — Cross-Device Deduplication, Mobile Usability, Latency Optimization, & Folder Persistence Fix
 
 - **Problem:**
@@ -232,6 +279,53 @@ Read every Markdown file in `ai/`, then inspect `git status`, `git log -n 30 --s
 > The following notes are preserved from the prior handoff for historical context. They describe older states and must not override the current status above or current source code.
 
 # AI Development Handoff
+
+## 2026-11-01 — Categorization, Tag Generation, and Thumbnail Setting Accuracy Fix
+
+- **Problem:**
+  - After recent changes, the Universal Add Content modal degraded when ingesting content (e.g. Instagram Reels, videos, posts):
+    1. **Tag Generation Degraded:** Produced raw shortcode hashes (e.g. `#De8uW1PTam9`) and the app name (`#Keeper`) instead of meaningful topic, technology, and domain tags.
+    2. **Categorization & Collection Matching Stopped Working:** Defaulted to `(None - General Library)` with "No clear tag match found" because tags were degraded and `IngestionService.processUrl` hardcoded empty tags and undefined collection suggestions during fast metadata enrichment.
+    3. **False "Limited content available" Alert:** Displayed yellow restricted warning banner even for accessible or valid media because `buildFastMetadataEnrichment` hardcoded `isSufficientContent = false`.
+    4. **Thumbnail Setting Missing:** Users had no way to set, upload, or customize authentic thumbnails when previewing before saving, or when editing bookmarks on the detail screen.
+- **Root Cause & Fix:**
+  - `src/services/content-intelligence.ts`: Filtered out random alphanumeric hashes and shortcodes (e.g. `De8uW1PTam9`, `C3x90ZaLkPq`) and consonant clusters without vowels from tokenization and tag normalization.
+  - `src/components/modals/AddContentModal.tsx`:
+    - Updated `TAG_STOP_WORDS` with comprehensive stop words (including app name `keeper`, system labels `source`, `untitled`, `library`, `general`, etc.) and shortcode rejection.
+    - Integrated `ContentIntelligenceService.generateTags` with category cues, key phrases, and creator handling.
+    - Added fallback to clean format/platform tags (e.g. `Instagram`, `Reel`, `Video`) when caption text is restricted.
+    - Enabled live "Set Thumbnail" editor in `AddContentModal.tsx` supporting custom image URLs and device image uploads (via FileReader data URL) with live preview and reset.
+    - Handled `isLimited` so the restricted banner only appears when content is genuinely restricted and lacks caption/body text.
+  - `src/services/collection-matching-service.ts`:
+    - Updated `match()` to fall back to tags when all tags are format-level, enabling high-confidence matching (0.96) for collections like "Reels" or "Instagram".
+    - Added technology/frontend synonyms (`react`, `next.js`, `javascript`, `typescript`, `python`, `frontend`, `backend`, `web development`, `github`) to `COLLECTION_SYNONYMS` for matching "Tech" / "Technology" collections.
+  - `src/services/ingestion-service.ts`:
+    - Preserved informative platform title instead of overwriting with generic `"Saved source"`.
+    - Integrated `CollectionMatchingService.match` on existing collections during ingestion.
+  - `src/app/app/item/[id]/page.tsx`:
+    - Added "Set Thumbnail" button and editor for updating thumbnails on existing saved items.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm run lint`: 0 errors, 241 warnings (below threshold).
+  - `npm test`: 284/284 assertions passed across all 25 test suites (all 5 new Section 25 tests passed).
+  - `npm run build`: Turbopack production build succeeded in 1675ms (all 28 routes compiled).
+
+## 2026-11-01 — Conditional Visibility for Source Text Analysis & Redundancy Elimination
+
+- **Problem:** When media lacked separate audio transcripts or OCR, "Post Caption" and "Source text analyzed" were rendered back-to-back with identical text, creating unnecessary visual duplication on the item detail page.
+- **Root Cause & Fix:**
+  - `src/app/app/item/[id]/page.tsx` unconditionally rendered the `contentRepresentation` card.
+  - Implemented `src/lib/source-text-comparison.ts` with `compareSourceTextWithCaption()` and `shouldShowSourceTextAnalysis()`.
+  - Normalizes text (Unicode NFC, HTML entity decoding, mojibake repair, markdown syntax stripping, smart quotes, whitespace/linebreak collapsing).
+  - Evaluates emoji awareness, token multiset overlap, numerical facts, and memory-optimized Levenshtein character distance.
+  - Hides "Source text analyzed" when 100% identical, when normalized similarity is >= 99% with no meaningful differences, when source analysis is empty, or when media extraction failed.
+  - Shows "Source text analyzed" when additional sentences/phrases/facts, novel emojis with context, different languages, or separate OCR/transcription content are present, or when the caption is missing.
+  - Refactored `src/app/app/item/[id]/page.tsx` to conditionally render the card only when `shouldShowSourceTextAnalysis(postCaption, contentRepresentation)` evaluates to true.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm run lint`: 0 errors, 240 warnings.
+  - `npm test`: 279/279 passed across all 24 suites (all 12 Section 24 tests passed).
+  - `npm run build`: Turbopack build passed in 1742ms (all 28 routes compiled).
 
 ## 2026-11-01 — Cross-Device Deduplication, Mobile Usability, Latency Optimization, & Folder Persistence Fix
 

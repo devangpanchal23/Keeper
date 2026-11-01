@@ -1,5 +1,60 @@
 # Current Project Status
 
+## 2026-11-01 — Categorization, Tag Generation, and Thumbnail Setting Accuracy Fix
+
+- **Problem:**
+  - After recent changes, the Universal Add Content modal degraded when ingesting content (e.g. Instagram Reels, videos, posts):
+    1. **Tag Generation Degraded:** Outputted raw alphanumeric shortcode hashes (e.g. `#De8uW1PTam9`) and the app name (`#Keeper`) instead of meaningful topic, technology, and domain tags.
+    2. **Categorization & Collection Matching Stopped Working:** Defaulted to `(None - General Library)` with "No clear tag match found" because tags were degraded and `IngestionService.processUrl` hardcoded empty tags and undefined collection suggestions during fast metadata enrichment.
+    3. **False "Limited content available" Alert:** Displayed yellow restricted warning banner even for accessible or valid media because `buildFastMetadataEnrichment` hardcoded `isSufficientContent = false`.
+    4. **Thumbnail Setting Missing:** Users had no way to set, upload, or customize authentic thumbnails when previewing before saving, or when editing bookmarks on the detail screen.
+- **Root Cause:**
+  - `src/services/content-intelligence.ts`: Tokenization accepted alphanumeric hashes without validating against stop words or shortcode patterns, adding tokens like `de8uw1ptam9` twice (from title and description) as tags.
+  - `src/components/modals/AddContentModal.tsx`:
+    - `TAG_STOP_WORDS` was missing `"keeper"`, `"source"`, `"untitled"`, `"library"`, `"bookmark"`, etc.
+    - `suggestCaptureTags` tokenized all words including content shortcodes without filtering hashes or stop words.
+    - `matchCaptureCollection` stripped all format/platform tags via `GENERIC_MATCH_TERMS` even when the user had explicit collections like "Reels" or "Instagram", resulting in 0 candidates.
+    - No UI existed to change or set a custom thumbnail or upload an image file.
+  - `src/services/ingestion-service.ts`: Overwrote `sourceData.title` with generic `"Saved source"` when provenance was `url_parse`. Did not invoke `CollectionMatchingService.match` on available collections.
+- **Resolution:**
+  - **Tag Generation Hardening:**
+    - Updated `ContentIntelligenceService.ts` to filter out random alphanumeric hashes and shortcodes (e.g. `De8uW1PTam9`, `C3x90ZaLkPq`) and consonant clusters without vowels.
+    - Updated `AddContentModal.tsx` `suggestCaptureTags` with comprehensive `TAG_STOP_WORDS` (including app name, system labels, and generic identifiers) and shortcode rejection.
+    - Integrated `ContentIntelligenceService.generateTags` with category cues and key phrases.
+    - Added fallback to clean format/platform tags (e.g. `Instagram`, `Reel`, `Video`) when caption text is restricted.
+  - **Collection Categorization & Matching:**
+    - Updated `CollectionMatchingService.match` to fall back to tags when all tags are format-level, enabling high-confidence matching (0.96) for collections like "Reels" or "Instagram".
+    - Added technology/frontend synonyms (`react`, `next.js`, `javascript`, `typescript`, `python`, `frontend`, `backend`, `web development`, `github`) to `COLLECTION_SYNONYMS` for matching "Tech" / "Technology" collections.
+    - Updated `AddContentModal.tsx` to automatically suggest and pre-select matching collections or category creation (`__create__:${inferredCategory}`).
+    - Updated `IngestionService.processUrl` to match against collections and preserve informative platform titles.
+  - **Thumbnail Customization ("Thumbnail Set"):**
+    - Added live "Set Thumbnail" editor in `AddContentModal.tsx` supporting custom image URLs and device image uploads (via FileReader data URL) with live preview and reset.
+    - Persisted `customThumbnail` to `finalThumbnail` and recorded provenance (`source: "user_provided"`).
+    - Added "Set Thumbnail" button and editor in `src/app/app/item/[id]/page.tsx` for updating thumbnails on existing saved items.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm run lint`: 0 errors, 241 warnings (below threshold).
+  - `npm test`: 284/284 assertions passed across all 25 test suites (all 5 new Section 25 tests passed).
+  - `npm run build`: Turbopack production build succeeded in 1675ms (all 28 routes generated).
+
+## 2026-11-01 — Conditional Visibility for Source Text Analysis & Redundancy Elimination
+
+- **Problem:** When media items lacked a separate audio transcript or OCR (such as Instagram reels or video posts where `ContentIntelligenceService` fell back to `caption`/`post_body`), the item detail screen rendered two back-to-back cards with 100% identical text: "Post Caption" and "Source text analyzed".
+- **Root Cause:**
+  - `src/app/app/item/[id]/page.tsx` unconditionally rendered the `<section>` for `contentRepresentation` whenever `contentRepresentation` was non-null, regardless of whether `contentRepresentation.text` was identical to or duplicated from the Post Caption card above it.
+- **Resolution:**
+  - Implemented `src/lib/source-text-comparison.ts` with reusable comparison functions: `compareSourceTextWithCaption()` and `shouldShowSourceTextAnalysis()`.
+  - Normalizes text (Unicode NFC, HTML entity decoding, mojibake repair, markdown syntax stripping, smart quotes, whitespace/linebreak collapsing).
+  - Evaluates emoji awareness, token multiset overlap, numerical facts, and memory-optimized Levenshtein character distance.
+  - Hides "Source text analyzed" when 100% identical, when normalized similarity is >= 99% with no meaningful differences, when source analysis is empty, or when media extraction failed.
+  - Shows "Source text analyzed" when additional sentences/phrases/facts, novel emojis with context, different languages, or separate OCR/transcription content are present, or when the caption is missing.
+  - Refactored `src/app/app/item/[id]/page.tsx` to conditionally render the Source Text Analysis card only when `shouldShowSourceTextAnalysis(postCaption, contentRepresentation)` is true.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm run lint`: 0 errors, 240 warnings (below project limit).
+  - `npm test`: 279/279 assertions passed across all 24 suites (all 12 new Section 24 tests passed).
+  - `npm run build`: Turbopack production build succeeded in 1742ms (all 28 routes generated).
+
 ## 2026-11-01 — Cross-Device Deduplication, Mobile Usability, Latency Optimization, & Folder Persistence Fix
 
 - **Problem 1 (Duplicate Imports Across Devices):** Saving a URL across multiple devices produced duplicate records in the same collection.

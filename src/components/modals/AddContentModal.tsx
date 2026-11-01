@@ -8,6 +8,8 @@ import { ContentService } from "@/services/content-service";
 import { ProviderService } from "@/services/provider-service";
 import { AIAnalysisResult } from "@/services/ai-service";
 import { CollectionMatchingService } from "@/services/collection-matching-service";
+import { ContentIntelligenceService } from "@/services/content-intelligence";
+import { MetadataNormalizer } from "@/services/normalizer/metadata-normalizer";
 import { PlatformBadge } from "@/components/common/PlatformBadge";
 import { ContentTypeBadge } from "@/components/common/ContentTypeBadge";
 import { Collection, ExtractedContent, IngestionResult, SavedItem } from "@/types";
@@ -25,6 +27,8 @@ import {
   Link as LinkIcon,
   Plus,
   Check,
+  Image as ImageIcon,
+  Upload,
 } from "lucide-react";
 
 type ProcessStep =
@@ -60,57 +64,151 @@ const TEST_URLS = [
   { label: "Engineering Blog", url: "https://leerob.io/blog/next-caching-deep-dive" },
 ];
 
-const TAG_STOP_WORDS = new Set("about after all also and are because been before between but can comment could for from have into just more most other please that the this with your free my our how what when where who will with using use video reel post instagram youtube link save saved watch".split(" "));
+const TAG_STOP_WORDS = new Set(
+  ("about after all also and are because been before between but can comment could for from have into just more most other please that the this with your free my our how what when where who will with using use video reel post instagram youtube link save saved watch " +
+  "keeper source untitled library content media author creator none general bookmark bookmarks item items channel channels reddit twitter tiktok thread threads views likes following").split(" ")
+);
+
 const CATEGORY_TAGS: Record<string, string[]> = {
   Quiz: ["quiz", "quizzes", "trivia", "brain teaser", "brain teasers", "riddle", "riddles", "knowledge test", "question game"],
   Comedy: ["comedy", "comedian", "funny", "humor", "humour", "sketch", "standup", "parody", "satire", "ashish chanchlani", "bhuvan bam", "harsh beniwal", "bb ki vines", "zakir khan"],
   Entertainment: ["entertainment", "music", "movie", "movies", "gaming", "celebrity", "series", "cinema"],
-  Technology: ["technology", "programming", "coding", "software", "artificial intelligence", "machine learning"],
-  Design: ["design", "graphic design", "web design", "typography", "figma"],
-  Education: ["education", "learning", "study", "lesson", "course", "tutorial", "explainer"],
-  Travel: ["travel", "destination", "tourism", "itinerary"],
+  Technology: ["technology", "programming", "coding", "software", "artificial intelligence", "machine learning", "macbook", "developer", "frontend", "backend"],
+  Design: ["design", "graphic design", "web design", "typography", "figma", "ui", "ux", "animation"],
+  Education: ["education", "learning", "study", "lesson", "course", "tutorial", "explainer", "guide"],
+  Travel: ["travel", "destination", "tourism", "itinerary", "vacation"],
   Food: ["food", "cooking", "recipe", "recipes", "cuisine"],
   Fitness: ["fitness", "workout", "exercise", "health", "wellness"],
-  Business: ["business", "marketing", "startup", "entrepreneurship", "sales"],
+  Business: ["business", "marketing", "startup", "entrepreneurship", "sales", "freelance", "freelancing", "agency", "portfolio"],
   News: ["news", "current events", "politics", "breaking news"],
   Sports: ["sports", "cricket", "football", "basketball"],
 };
 
 function suggestCaptureTags(content: ExtractedContent, aiTags: string[] = []): string[] {
-  const sourceText = [content.title, content.caption, content.bodyText, content.description, ...(content.hashtags || []), ...(content.metadata.hashtags || [])]
+  const sourceText = [
+    content.title,
+    content.caption,
+    content.bodyText,
+    content.description,
+    content.creator?.displayName,
+    content.creator?.name,
+    ...(content.hashtags || []),
+    ...(content.metadata?.hashtags || []),
+  ]
     .filter((part): part is string => typeof part === "string" && Boolean(part.trim()))
     .join("\n");
-  const suggestions = [...aiTags];
+
+  const suggestions: string[] = [];
+
   const add = (raw: string) => {
+    if (!raw || typeof raw !== "string") return;
     const value = raw.replace(/^#+/, "").replace(/[_-]+/g, " ").trim();
     const normalized = value.toLocaleLowerCase();
-    if (value.length >= 3 && value.length <= 48 && !TAG_STOP_WORDS.has(normalized)
-      && !suggestions.some((tag) => tag.toLocaleLowerCase() === normalized)) suggestions.push(value);
+
+    // 1. Check stop words
+    if (TAG_STOP_WORDS.has(normalized)) return;
+
+    // 2. Exact match with content ID / shortcode
+    if (content.contentId && (normalized === content.contentId.toLocaleLowerCase() || value === content.contentId)) {
+      return;
+    }
+
+    // 3. Reject raw shortcodes / hashes: e.g. De8uW1PTam9, C3x90ZaLkPq, 3lZF8W_AaUo
+    // (8+ chars alphanumeric without spaces, containing both digits and letters)
+    if (/^[a-zA-Z0-9_-]{8,30}$/.test(raw) && /[0-9]/.test(raw) && /[a-zA-Z]/.test(raw) && !raw.includes(" ")) {
+      return;
+    }
+
+    // 4. Reject high-entropy tokens with no vowels of length >= 6
+    if (value.length >= 6 && !/[aeiouy]/i.test(value)) return;
+
+    // 5. Length constraints
+    if (value.length < 2 || value.length > 48) return;
+
+    // 6. Deduplicate
+    if (!suggestions.some((tag) => tag.toLocaleLowerCase() === normalized)) {
+      // Clean display format
+      const formatted = value.length <= 3 ? value.toUpperCase() : (value.charAt(0).toUpperCase() + value.slice(1));
+      suggestions.push(formatted);
+    }
   };
 
+  // Add existing AI tags first
+  for (const tag of aiTags) add(tag);
+
+  // Generate grounded tags via ContentIntelligenceService
+  try {
+    const intelligentTags = ContentIntelligenceService.generateTags(
+      sourceText,
+      [...(content.hashtags || []), ...(content.metadata?.hashtags || [])],
+      8
+    );
+    for (const t of intelligentTags) add(t.name);
+  } catch {}
+
+  // Explicit hashtags in caption/title
   for (const hashtag of sourceText.match(/#[\p{L}\p{N}_-]{2,}/gu) || []) add(hashtag);
+
+  // Category cues
   const normalizedSource = sourceText.replace(/([a-z])([A-Z])/g, "$1 $2").toLocaleLowerCase().replace(/[_-]+/g, " ");
   for (const [tag, cues] of Object.entries(CATEGORY_TAGS)) {
     if (cues.some((cue) => normalizedSource.includes(cue))) add(tag);
   }
-  const phrases = ["Claude Code", "After Effects", "Machine Learning", "Artificial Intelligence", "TypeScript", "JavaScript", "React", "Python", "Figma", "Premiere Pro", "Blender"];
-  for (const phrase of phrases) {
-    if (new RegExp(`\\b${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(sourceText)) add(phrase);
-  }
-  for (const token of sourceText.match(/[\p{L}][\p{L}\p{N}+#.-]{2,}/gu) || []) add(token.replace(/[.+#-]+$/g, ""));
 
-  // Always give the user usable, honest organization labels even when the
-  // source exposes no caption or hashtags. These describe format/platform only.
-  if (!suggestions.length) {
-    add(content.platform);
-    add(content.contentType);
+  // Key tech & product phrases
+  const phrases = [
+    "Claude Code", "After Effects", "Machine Learning", "Artificial Intelligence",
+    "TypeScript", "JavaScript", "React", "Next.js", "Python", "Figma", "Premiere Pro",
+    "Blender", "Tailwind CSS", "GitHub", "Web Development", "Web Design"
+  ];
+  for (const phrase of phrases) {
+    if (new RegExp(`\\b${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(sourceText)) {
+      add(phrase);
+    }
   }
+
+  // Author username / handle if meaningful
+  if (content.creator?.username && content.creator.username !== "instagram" && content.creator.username !== "deleted") {
+    const cleanUser = content.creator.username.replace(/^@/, "");
+    if (!TAG_STOP_WORDS.has(cleanUser.toLowerCase()) && cleanUser.length >= 3 && cleanUser.length <= 25) {
+      add(cleanUser);
+    }
+  }
+
+  // Word tokens from title / caption
+  for (const token of sourceText.match(/[\p{L}][\p{L}\p{N}+#.-]{2,}/gu) || []) {
+    add(token.replace(/[.+#-]+$/g, ""));
+  }
+
+  // Ensure every item has at least clean, recognizable format/platform organization tags
+  if (suggestions.length < 2) {
+    if (content.platform) {
+      const p = content.platform.charAt(0).toUpperCase() + content.platform.slice(1);
+      if (!suggestions.some((s) => s.toLowerCase() === p.toLowerCase())) suggestions.push(p);
+    }
+    if (content.contentType) {
+      const c = content.contentType.charAt(0).toUpperCase() + content.contentType.slice(1);
+      if (!suggestions.some((s) => s.toLowerCase() === c.toLowerCase())) suggestions.push(c);
+    }
+  }
+
   return suggestions.slice(0, 10);
 }
 
 function matchCaptureCollection(content: ExtractedContent, tags: string[], collections: Collection[]) {
+  const combinedText = [
+    content.title,
+    content.caption,
+    content.bodyText,
+    content.description,
+    content.creator?.displayName,
+    content.creator?.name,
+    content.platform,
+    content.contentType,
+  ].filter(Boolean).join("\n");
+
   const candidates = CollectionMatchingService.match(
-    [content.title, content.caption, content.bodyText, content.description].filter(Boolean).join("\n"),
+    combinedText,
     tags.map((name) => ({
       name,
       normalizedName: name.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, ""),
@@ -157,6 +255,12 @@ export const AddContentModal: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
 
+  // Thumbnail customization state
+  const [customThumbnail, setCustomThumbnail] = useState("");
+  const [isEditingThumbnail, setIsEditingThumbnail] = useState(false);
+  const [thumbnailInputUrl, setThumbnailInputUrl] = useState("");
+  const [thumbnailError, setThumbnailError] = useState("");
+
   // Inline collection creation state
   const [isCreatingCollection, setIsCreatingCollection] = useState(false);
   const [newColName, setNewColName] = useState("");
@@ -202,6 +306,10 @@ export const AddContentModal: React.FC = () => {
     setTagSuggestionNote("");
     setPersonalNotes("");
     setIsSaving(false);
+    setCustomThumbnail("");
+    setIsEditingThumbnail(false);
+    setThumbnailInputUrl("");
+    setThumbnailError("");
     setIsCreatingCollection(false);
     setNewColName("");
     setNewColColor(COLOR_PALETTE[2]);
@@ -314,7 +422,7 @@ export const AddContentModal: React.FC = () => {
               suggestedTags: data.aiEnrichment.tags,
               suggestedCollectionName: data.aiEnrichment.suggestedCollectionName || "Watch Later",
               status: data.aiEnrichment.status,
-              isLimited: !data.aiEnrichment.isSufficientContent,
+              isLimited: Boolean(data.sourceData.isRestricted && !data.sourceData.caption && !data.sourceData.bodyText),
               limitedReason: data.sourceData.restrictionReason,
               provenance: data.sourceData.provenance,
               bodyText: data.sourceData.bodyText,
@@ -367,20 +475,20 @@ export const AddContentModal: React.FC = () => {
       const inferredCategory = CollectionMatchingService.inferCollectionCategory(suggestedTags);
       const suggestedCollection = tagMatchedCollection
         ? tagMatchedResult?.collection
-        : inferredCategory
-        ? undefined
-        : serverMatchedCol;
+        : serverMatchedCol
+        ? serverMatchedCol
+        : undefined;
       const selectedSuggestionId = suggestedCollection?.id || (!suggestedCollection && inferredCategory ? `__create__:${inferredCategory}` : "");
       const analysis: AIAnalysisResult = {
         summary: serverEnrichment.summary,
         keyPoints: serverEnrichment.keyPoints || [],
-        tags: serverEnrichment.tags || [],
+        tags: suggestedTags,
         topics: serverEnrichment.topics || [],
         suggestedCollectionId: suggestedCollection?.id || "",
         suggestedCollectionName: suggestedCollection?.name || inferredCategory || serverEnrichment.suggestedCollectionName || "Uncategorized",
-        status: serverEnrichment.status,
-        isLimited: !serverEnrichment.isSufficientContent,
-        limitedReason: serverEnrichment.confidence < 0.6 ? "AI analysis is queued until verified content is available." : undefined,
+        status: extracted.isLimited ? "METADATA_ONLY" : serverEnrichment.status,
+        isLimited: Boolean(extracted.isLimited),
+        limitedReason: extracted.isLimited ? (extracted.limitedReason || "AI analysis is queued until verified content is available.") : undefined,
         provenance: serverEnrichment.provenance || {},
       };
 
@@ -474,7 +582,15 @@ export const AddContentModal: React.FC = () => {
       username: parsedUsername,
     };
 
+    const finalThumbnail = customThumbnail.trim() || extractedMeta.thumbnail;
     const finalProvenance = { ...aiResult.provenance };
+    if (customThumbnail.trim()) {
+      finalProvenance.thumbnail = {
+        value: customThumbnail.trim(),
+        source: "user_provided",
+        retrievedAt: new Date().toISOString(),
+      };
+    }
     if (title && title.trim() !== extractedMeta.title) {
       finalProvenance.title = {
         value: title.trim(),
@@ -496,7 +612,7 @@ export const AddContentModal: React.FC = () => {
     const savedItem = addItem({
       title: title || extractedMeta.title,
       url: originalUrl,
-      thumbnail: extractedMeta.thumbnail,
+      thumbnail: finalThumbnail,
       platform: extractedMeta.platform,
       contentType: extractedMeta.contentType,
       creator: finalCreator,
@@ -854,13 +970,22 @@ export const AddContentModal: React.FC = () => {
 
               {/* Title, Creator & Preview row */}
               <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
-                <div className="relative w-full sm:w-28 h-36 sm:h-24 rounded-xl overflow-hidden bg-zinc-100 dark:bg-zinc-800 shrink-0 border border-zinc-200 dark:border-zinc-700">
+                <div className="relative w-full sm:w-28 h-36 sm:h-24 rounded-xl overflow-hidden bg-zinc-100 dark:bg-zinc-800 shrink-0 border border-zinc-200 dark:border-zinc-700 group">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={extractedMeta.thumbnail}
+                    src={customThumbnail || extractedMeta.thumbnail}
                     alt={extractedMeta.title}
                     className="w-full h-full object-cover"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingThumbnail(!isEditingThumbnail)}
+                    className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white text-[11px] font-medium gap-1"
+                    title="Change Thumbnail"
+                  >
+                    <ImageIcon className="w-4 h-4" />
+                    <span>Set Thumbnail</span>
+                  </button>
                 </div>
                 <div className="flex-1 min-w-0 space-y-2">
                   <div>
@@ -884,6 +1009,109 @@ export const AddContentModal: React.FC = () => {
                   </div>
                 </div>
               </div>
+
+              {/* Set Thumbnail Action Button / Expandable Editor */}
+              <div className="flex items-center justify-between text-xs pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => setIsEditingThumbnail(!isEditingThumbnail)}
+                  className="inline-flex items-center gap-1.5 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors"
+                >
+                  <ImageIcon className="w-3.5 h-3.5" />
+                  {isEditingThumbnail ? "Close Thumbnail Editor" : "Set Custom Thumbnail"}
+                </button>
+                {customThumbnail && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomThumbnail("");
+                      setThumbnailInputUrl("");
+                      setThumbnailError("");
+                    }}
+                    className="text-[11px] text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                  >
+                    Reset to Default Thumbnail
+                  </button>
+                )}
+              </div>
+
+              {isEditingThumbnail && (
+                <div className="p-3.5 rounded-xl border border-indigo-200 dark:border-indigo-800/60 bg-indigo-50/50 dark:bg-indigo-950/20 space-y-2.5 text-xs">
+                  <div className="flex items-center justify-between font-semibold text-zinc-800 dark:text-zinc-200">
+                    <span className="flex items-center gap-1.5">
+                      <ImageIcon className="w-3.5 h-3.5 text-indigo-500" />
+                      Set Custom Thumbnail
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingThumbnail(false)}
+                      className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="url"
+                      placeholder="Paste image URL (https://...)"
+                      value={thumbnailInputUrl}
+                      onChange={(e) => {
+                        setThumbnailInputUrl(e.target.value);
+                        setThumbnailError("");
+                      }}
+                      className="flex-1 px-3 py-1.5 rounded-lg text-xs border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const trimmed = thumbnailInputUrl.trim();
+                        if (!trimmed || (!trimmed.startsWith("http://") && !trimmed.startsWith("https://") && !trimmed.startsWith("data:image/"))) {
+                          setThumbnailError("Please enter a valid image URL starting with https://");
+                          return;
+                        }
+                        setCustomThumbnail(trimmed);
+                        setThumbnailError("");
+                        setIsEditingThumbnail(false);
+                      }}
+                      className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-500 transition-colors shrink-0"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-zinc-500 pt-0.5">
+                    <label className="cursor-pointer inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 hover:underline font-medium">
+                      <Upload className="w-3 h-3" />
+                      <span>Upload image from device</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            if (file.size > 5 * 1024 * 1024) {
+                              setThumbnailError("Image size must be less than 5 MB.");
+                              return;
+                            }
+                            const reader = new FileReader();
+                            reader.onload = (ev) => {
+                              if (typeof ev.target?.result === "string") {
+                                setCustomThumbnail(ev.target.result);
+                                setThumbnailError("");
+                                setIsEditingThumbnail(false);
+                              }
+                            };
+                            reader.readAsDataURL(file);
+                          }
+                        }}
+                      />
+                    </label>
+                  </div>
+                  {thumbnailError && (
+                    <p className="text-[11px] text-rose-600 dark:text-rose-400">{thumbnailError}</p>
+                  )}
+                </div>
+              )}
 
               {/* Analysis state; actual AI runs in the background after the item is saved. */}
               <div className="p-3 rounded-xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30">
