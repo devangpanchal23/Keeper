@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,7 @@ export async function GET() {
         environment: process.env.NODE_ENV || "development",
         checks: {
           server: "ok",
+          auth: isSupabaseConfigured() ? "configured" : "unconfigured",
           memory: {
             rssMb: Math.round(memory.rss / (1024 * 1024)),
             heapUsedMb: Math.round(memory.heapUsed / (1024 * 1024)),

@@ -9,11 +9,15 @@ export async function GET(request: NextRequest) {
   const nextIsLocal = Boolean(next?.startsWith("/") && !next.startsWith("//") && new URL(next, requestUrl.origin).origin === requestUrl.origin);
   const destination = nextIsLocal && next ? next : "/app";
   if (code) {
-    const supabase = await createSupabaseServerClient();
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
-    if (!error) {
-      const response = NextResponse.redirect(new URL(destination, requestUrl.origin));
-      return await setAuthSessionCookie(response);
+    try {
+      const supabase = await createSupabaseServerClient();
+      const { error } = await supabase.auth.exchangeCodeForSession(code);
+      if (!error) {
+        const response = NextResponse.redirect(new URL(destination, requestUrl.origin));
+        return await setAuthSessionCookie(response);
+      }
+    } catch (err) {
+      console.warn("Auth callback code exchange warning:", err);
     }
   }
   return NextResponse.redirect(new URL("/sign-in?error=confirmation", requestUrl.origin));

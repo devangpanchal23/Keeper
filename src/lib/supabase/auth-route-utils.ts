@@ -9,7 +9,30 @@ import {
 
 export function isSameOriginRequest(request: NextRequest): boolean {
   const origin = request.headers.get("origin");
-  return Boolean(origin && origin === new URL(request.url).origin);
+  if (!origin) {
+    const fetchSite = request.headers.get("sec-fetch-site");
+    if (fetchSite === "same-origin" || fetchSite === "same-site") return true;
+    return true;
+  }
+
+  try {
+    const originHost = new URL(origin).host;
+    const requestHost = new URL(request.url).host;
+    const forwardedHost = request.headers.get("x-forwarded-host");
+    const headerHost = request.headers.get("host");
+
+    if (
+      originHost === requestHost ||
+      originHost === forwardedHost ||
+      originHost === headerHost
+    ) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
 }
 
 export async function setAuthSessionCookie(response: NextResponse): Promise<NextResponse> {

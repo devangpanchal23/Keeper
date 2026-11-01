@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { NextResponse, type NextRequest } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isSameOriginRequest } from "@/lib/supabase/auth-route-utils";
+import { getSupabaseConfig } from "@/lib/supabase/config";
 
 export async function POST(request: NextRequest) {
   if (!isSameOriginRequest(request)) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
@@ -12,9 +13,10 @@ export async function POST(request: NextRequest) {
     if (typeof currentPassword !== "string" || typeof newPassword !== "string" || newPassword.length < 6) {
       return NextResponse.json({ error: "New password must be at least 6 characters long." }, { status: 400 });
     }
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!url || !key) return NextResponse.json({ error: "Authentication service is not configured." }, { status: 503 });
+    const { url, key, isConfigured } = getSupabaseConfig();
+    if (!isConfigured || !url || !key) {
+      return NextResponse.json({ error: "Authentication service is not configured." }, { status: 503 });
+    }
     const supabase = await createSupabaseServerClient();
     const { data: auth, error: authError } = await supabase.auth.getUser();
     if (authError || !auth.user?.email) return NextResponse.json({ error: "Sign in to update your password." }, { status: 401 });
