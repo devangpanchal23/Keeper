@@ -1,5 +1,26 @@
 # AI Development Handoff
 
+## 2026-11-04 — Enterprise Toast Notification System & Permanent Sync Toast Resolution
+
+- **Work Completed:**
+  - Permanently resolved the persistent `"Updated on this device / Server synchronization may still be pending"` popup on the home screen/dashboard.
+  - Re-aligned system with Local-First Invariants: state updates in `RecallContext.updateItem()` are **silent by default**. Toasts only emit for explicit user actions (e.g. saving notes, tag updates).
+  - Built enterprise notification management into `RecallContext.tsx`:
+    - Central deduplication by key or `${type}:${title}:${description}` signature.
+    - 10-second cooldown window preventing redundant or rapid duplicate toasts.
+    - Maximum 3 visible toasts cap; new toasts cleanly evict the oldest notification.
+    - Ref-backed timer registry (`toastTimersRef`) with unmount cleanup to prevent memory leaks and orphaned timers.
+    - Sync errors collapse to key `"sync-failure"` and are auto-cleared when workspace sync recovers (`syncStatus === "synced"`).
+  - Maintained exact visual styling and layout in `ToastContainer.tsx` while adding accessibility markup (`role="region"`, `role="status"`/`"alert"`, `aria-live="polite"`/`"assertive"`, `motion-reduce:animate-none`).
+  - Added Rule 6 to `ai/DEVELOPMENT_RULES.md` and added Section 29 regression tests to `scripts/run-tests.ts`.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm test`: 309 / 309 tests passed (100%).
+  - `npm run lint`: 0 errors.
+  - `npm run build`: Clean Next.js 16.4.3 Turbopack build (28/28 routes).
+- **Next Steps:**
+  - Phase 1 persistence and local provider verification tasks remain as documented in `ai/CURRENT_STATUS.md`.
+
 ## 2026-11-02 — Phase 1C-6B Supabase Migration Hardening
 
 - The unapplied `202611020001_phase_1c_6_oss_import_entitlements.sql` now computes exact 604,800-second workspace cycles with millisecond anchor precision. SECURITY DEFINER path is `pg_catalog` only; pgcrypto namespace is discovered from trusted extension catalogs and digest is invoked schema-qualified with bound values.
@@ -353,6 +374,27 @@ Read every Markdown file in `ai/`, then inspect `git status`, `git log -n 30 --s
 > The following notes are preserved from the prior handoff for historical context. They describe older states and must not override the current status above or current source code.
 
 # AI Development Handoff
+
+## 2026-11-04 — Enterprise Toast Notification System & Permanent Sync Toast Resolution
+
+- **Work Completed:**
+  - Permanently resolved the persistent `"Updated on this device / Server synchronization may still be pending"` popup on the home screen/dashboard.
+  - Re-aligned system with Local-First Invariants: state updates in `RecallContext.updateItem()` are **silent by default**. Toasts only emit for explicit user actions (e.g. saving notes, tag updates).
+  - Built enterprise notification management into `RecallContext.tsx`:
+    - Central deduplication by key or `${type}:${title}:${description}` signature.
+    - 10-second cooldown window preventing redundant or rapid duplicate toasts.
+    - Maximum 3 visible toasts cap; new toasts cleanly evict the oldest notification.
+    - Ref-backed timer registry (`toastTimersRef`) with unmount cleanup to prevent memory leaks and orphaned timers.
+    - Sync errors collapse to key `"sync-failure"` and are auto-cleared when workspace sync recovers (`syncStatus === "synced"`).
+  - Maintained exact visual styling and layout in `ToastContainer.tsx` while adding accessibility markup (`role="region"`, `role="status"`/`"alert"`, `aria-live="polite"`/`"assertive"`, `motion-reduce:animate-none`).
+  - Added Rule 6 to `ai/DEVELOPMENT_RULES.md` and added Section 29 regression tests to `scripts/run-tests.ts`.
+- **Validation:**
+  - `npm run type-check`: 0 errors.
+  - `npm test`: 309 / 309 tests passed (100%).
+  - `npm run lint`: 0 errors.
+  - `npm run build`: Clean Next.js 16.4.3 Turbopack build (28/28 routes).
+- **Next Steps:**
+  - Phase 1 persistence and local provider verification tasks remain as documented in `ai/CURRENT_STATUS.md`.
 
 ## 2026-11-01 — Keeper Open-Source Edition Audit & Release Readiness Complete
 

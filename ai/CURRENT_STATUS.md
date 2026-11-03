@@ -1,5 +1,17 @@
 # Current Project Status
 
+## 2026-11-04 — Enterprise Toast Notification System & Permanent Sync Toast Resolution
+
+- Permanently resolved the recurring `"Updated on this device / Server synchronization may still be pending"` popup on the home screen/dashboard.
+- Enforced Enterprise Notification Discipline: local-first updates (`updateItem`) are **silent by default**. A toast notification is only fired for explicit, user-initiated actions that supply `options.toast` (e.g. saving notes, editing tags).
+- Centralized deduplication with a 10-second rolling cooldown window; redundant and rapid duplicate notifications are silently dropped.
+- Visible toasts are capped to a maximum of 3, evicting the oldest notification upon new arrivals.
+- Implemented a managed timer registry (`toastTimersRef`) with clean unmount handling, preventing orphaned timers and memory leaks.
+- Background sync failures collapse under `"sync-failure"` and are automatically dismissed upon successful workspace sync (`syncStatus === "synced"`).
+- Enhanced accessibility in `ToastContainer` (`role="region"`, `role="status"`/`"alert"`, `aria-live="polite"`/`"assertive"`, `motion-reduce:animate-none`) while strictly preserving existing styling, layout, and visual identity.
+- Added Section 29 regression tests in `scripts/run-tests.ts` (50 silent local updates emit 0 toasts, explicit action emits 1 toast, 10s cooldown deduplication, 3-toast capping, sync failure recovery).
+- Post-change validation: `npm run type-check` (0 errors), `npm test` (309/309 passed), `npm run lint` (0 errors), `npm run build` (clean Turbopack build, all 28 routes compiled).
+
 ## 2026-11-02 — Phase 1C-6B Migration Hardening (static only)
 
 - Hardened the unapplied Supabase OSS entitlement migration: cycle boundaries now use fixed epoch seconds (604,800 seconds) with millisecond anchor precision; SECURITY DEFINER search path is `pg_catalog` only; pgcrypto namespace is discovered from trusted extension catalogs and `digest` is invoked through a quoted schema-qualified name with bound arguments.

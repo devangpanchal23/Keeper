@@ -24,7 +24,7 @@ export const QuickNoteModal: React.FC = () => {
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
-    updateItem(quickNoteItem.id, { personalNotes: notes });
+    updateItem(quickNoteItem.id, { personalNotes: notes }, { toast: { title: "Note saved", description: "Personal note saved." } });
     closeQuickNoteModal();
   };
 

@@ -41,6 +41,11 @@ Every AI coding assistant working on the Keeper repository must strictly adhere 
    - A network failure or login-wall challenge during ingestion must NEVER cause a valid export bookmark to be rejected or discarded. The item must be stored with available export facts.
 5. **Multi-Tenant Isolation**:
    - Cross-user data mutation is strictly forbidden. Collections and items must remain scoped to `userId`.
+6. **Notification Discipline & Silent Local-First Operations**:
+   - Local-first state mutations (e.g. background polling, automated sync, metadata refresh, note autosave) are normal operational behavior, not news. They must NEVER trigger unsolicited toasts.
+   - `updateItem()` must remain silent by default. Toasts may ONLY fire when an explicit, user-initiated action passes `options.toast`.
+   - Never show repeating "Updated on this device" or "Server synchronization pending" notifications during normal operation.
+   - Notifications must strictly respect deduplication, 10s cooldown windows, and a maximum of 3 visible toasts.
 
 ---
 

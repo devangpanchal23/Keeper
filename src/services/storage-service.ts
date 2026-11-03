@@ -12,6 +12,7 @@ const STORAGE_KEYS = {
   LEGACY_RECENT_SEARCHES: "recall_recent_searches_v1",
   AI_CHAT_HISTORY: "recall_ai_chat_history_v1",
   IMPORT_LIMITS_PREFIX: "recall_import_limits_user_",
+  SYNC_NOTICE_PREFIX: "recall_sync_notice_user_",
 };
 
 export class StorageService {
@@ -129,8 +130,10 @@ export class StorageService {
   static clearUserData(userId?: string): void {
     const activeId = userId || this.getActiveUserId();
     const storageKey = `${STORAGE_KEYS.ITEMS_PREFIX}${activeId}`;
+    const noticeKey = `${STORAGE_KEYS.SYNC_NOTICE_PREFIX}${activeId}`;
     try {
       this.getStorage().removeItem(storageKey);
+      this.getStorage().removeItem(noticeKey);
       if (typeof window !== "undefined") {
         window.dispatchEvent(
           new CustomEvent("keeper:items-changed", { detail: { userId: activeId } })
@@ -235,6 +238,30 @@ export class StorageService {
     const activeId = userId || this.getActiveUserId();
     const storageKey = `${STORAGE_KEYS.RECENT_SEARCHES_PREFIX}${activeId}`;
     localStorage.removeItem(storageKey);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Device Sync Clarification Notice (One-time User Clarification)
+  // ---------------------------------------------------------------------------
+
+  static hasSeenDeviceSyncNotice(userId?: string): boolean {
+    const activeId = userId || this.getActiveUserId();
+    const storageKey = `${STORAGE_KEYS.SYNC_NOTICE_PREFIX}${activeId}`;
+    try {
+      return this.getStorage().getItem(storageKey) === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  static markDeviceSyncNoticeSeen(userId?: string): void {
+    const activeId = userId || this.getActiveUserId();
+    const storageKey = `${STORAGE_KEYS.SYNC_NOTICE_PREFIX}${activeId}`;
+    try {
+      this.getStorage().setItem(storageKey, "true");
+    } catch (err) {
+      console.error("StorageService.markDeviceSyncNoticeSeen error:", err);
+    }
   }
 
   // ---------------------------------------------------------------------------

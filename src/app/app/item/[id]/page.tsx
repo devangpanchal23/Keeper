@@ -207,7 +207,7 @@ export default function ItemDetailPage({
           retrievedAt: new Date().toISOString(),
         },
       },
-    });
+    }, { silent: true });
     setIsEditingThumbnail(false);
     setCustomThumbnailUrl("");
     setThumbnailError("");
@@ -247,7 +247,7 @@ export default function ItemDetailPage({
           collections: effectiveCols,
           metadata: { ...result.data.metadata, aiProcessingStatus: processingStatus, aiProcessingError: result.processingError || undefined },
         };
-        updateItem(itemId, updated);
+        updateItem(itemId, updated, { silent: true });
         if (processingStatus === "COMPLETED") void refreshWorkspaceCollections();
         if (!["COMPLETED", "FAILED", "EXTRACTION_FAILED", "TRANSCRIPTION_FAILED", "ANALYSIS_FAILED", "ORGANIZATION_FAILED", "INDEXING_FAILED"].includes(processingStatus || "")) timer = setTimeout(refresh, 5000);
       } catch {
@@ -307,7 +307,7 @@ export default function ItemDetailPage({
 
   // Save notes
   const handleSaveNotes = () => {
-    updateItem(item.id, { personalNotes: notes });
+    updateItem(item.id, { personalNotes: notes }, { toast: { title: "Note saved", description: "Personal notes updated." } });
     setNoteSaved(true);
     setTimeout(() => setNoteSaved(false), 2000);
   };
@@ -321,7 +321,7 @@ export default function ItemDetailPage({
         const tags = [...item.tags, clean];
         const userTags = [...new Set([...(item.metadata?.userTags || []), clean])];
         const suppressedAiTags = item.metadata?.suppressedAiTags || [];
-        updateItem(item.id, { tags, metadata: { ...item.metadata, userTags, suppressedAiTags } });
+        updateItem(item.id, { tags, metadata: { ...item.metadata, userTags, suppressedAiTags } }, { toast: { title: "Tags updated", description: "Item tags have been saved." } });
         void persistTagChanges(tags, userTags, suppressedAiTags);
         setTagInput("");
       }
@@ -335,7 +335,7 @@ export default function ItemDetailPage({
     const suppressedAiTags = wasAiGenerated
       ? [...new Set([...(item.metadata?.suppressedAiTags || []), tagToRemove])]
       : (item.metadata?.suppressedAiTags || []);
-    updateItem(item.id, { tags, metadata: { ...item.metadata, userTags, suppressedAiTags } });
+    updateItem(item.id, { tags, metadata: { ...item.metadata, userTags, suppressedAiTags } }, { toast: { title: "Tags updated", description: "Item tags have been saved." } });
     void persistTagChanges(tags, userTags, suppressedAiTags);
   };
 
@@ -357,7 +357,7 @@ export default function ItemDetailPage({
     updateItem(item.id, {
       collectionId: newColId || undefined,
       collections: newColId ? [newColId] : [],
-    });
+    }, { toast: { title: "Collection updated", description: "Item collection updated." } });
     const serverMediaId = item.metadata?.serverMediaId;
     if (typeof serverMediaId !== "string") return;
     try {

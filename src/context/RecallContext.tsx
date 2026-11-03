@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Collection, DeleteCollectionItemsResult, ImportLimits, SavedItem, SearchFilters, ToastMessage, User, ViewMode } from "@/types";
 import { StorageService } from "@/services/storage-service";
 import { ContentService } from "@/services/content-service";
@@ -10,6 +10,14 @@ import { AuthService } from "@/services/auth-service";
 import { MigrationService } from "@/services/migration-service";
 import { getCanonicalIdentityKey, isSameContentItem } from "@/lib/media-identity";
 import { readWorkspaceMedia } from "@/services/workspace-media-read";
+
+export interface UpdateItemOptions {
+  silent?: boolean;
+  toast?: {
+    title?: string;
+    description?: string;
+  };
+}
 
 export interface RecallContextType {
   // Auth State
@@ -43,7 +51,12 @@ export interface RecallContextType {
   addRecentSearch: (query: string) => void;
   clearRecentSearches: () => void;
   toasts: ToastMessage[];
-  addToast: (title: string, description?: string, type?: ToastMessage["type"]) => void;
+  addToast: (
+    title: string,
+    description?: string,
+    type?: ToastMessage["type"],
+    options?: { key?: string; duration?: number; isUserAction?: boolean }
+  ) => void;
   removeToast: (id: string) => void;
 
   // Auth Actions
@@ -79,7 +92,7 @@ export interface RecallContextType {
 
   // Content Actions
   addItem: (item: Omit<SavedItem, "id" | "savedDate"> & { id?: string; savedDate?: string }) => SavedItem;
-  updateItem: (id: string, updates: Partial<SavedItem>) => void;
+  updateItem: (id: string, updates: Partial<SavedItem>, options?: UpdateItemOptions) => void;
   toggleFavorite: (id: string) => void;
   archiveItem: (id: string) => void;
   unarchiveItem: (id: string) => void;
@@ -132,6 +145,10 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
   const [searchFilters, setSearchFilters] = useState<SearchFilters>(defaultSearchFilters);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const toastsRef = useRef<ToastMessage[]>([]);
+  useEffect(() => {
+    toastsRef.current = toasts;
+  }, [toasts]);
   const [importLimits, setImportLimits] = useState<ImportLimits>({ total: 30, used: 0, remaining: 30 });
 
   // Modals state
@@ -322,6 +339,7 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
       await Promise.all([syncCollections(), syncMedia()]);
       setSyncStatus("synced");
       setLastSyncTime(new Date().toISOString());
+      setToasts((prev) => prev.filter((t) => t.key !== "sync-failure"));
     } catch (err) {
       console.warn("Workspace synchronization finished with offline fallback:", err);
       setSyncStatus("offline");
@@ -623,31 +641,120 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Toast Helpers
-  const addToast = (title: string, description?: string, type: ToastMessage["type"] = "success") => {
-    const id = `toast-${Date.now()}-${Math.random()}`;
-    const newToast: ToastMessage = { id, title, description, type, duration: 4000 };
-    setToasts((prev) => [...prev, newToast]);
+  // Toast Notification System (Enterprise deduplication, max 3 limit, cooldown, timer management)
+  const toastHistoryRef = useRef<Map<string, number>>(new Map());
+  const toastTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
 
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4000);
-  };
+  // Clean up all active toast timers on unmount
+  useEffect(() => {
+    return () => {
+      toastTimersRef.current.forEach((timer) => clearTimeout(timer));
+      toastTimersRef.current.clear();
+    };
+  }, []);
 
-  const reportServerMutationFailure = () => {
+  const removeToast = useCallback((id: string) => {
+    const timer = toastTimersRef.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      toastTimersRef.current.delete(id);
+    }
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const addToast = useCallback((
+    title: string,
+    description?: string,
+    type: ToastMessage["type"] = "success",
+    options?: { key?: string; duration?: number; isUserAction?: boolean }
+  ) => {
+    const now = Date.now();
+    const dedupeKey = options?.key || `${type}:${title}:${description || ""}`;
+
+    // Determine whether this toast is a user-initiated action or system/error notification
+    const isUserAction = options?.isUserAction !== undefined
+      ? options.isUserAction
+      : !(type === "error" || type === "warning" || options?.key === "sync-failure");
+
+    if (isUserAction) {
+      // For USER_ACTION toasts: dedupe only if an identical toast is currently visible (or within 2s)
+      const isIdenticalVisible = toastsRef.current.some(
+        (t) => (t.key && t.key === dedupeKey) || (t.title === title && t.description === description)
+      );
+      const lastShown = toastHistoryRef.current.get(dedupeKey);
+      if (isIdenticalVisible || (lastShown && now - lastShown < 2000)) {
+        return;
+      }
+    } else {
+      // For system/error toasts: keep the 10s cooldown
+      const lastShown = toastHistoryRef.current.get(dedupeKey);
+      if (lastShown && now - lastShown < 10_000) {
+        return;
+      }
+    }
+
+    toastHistoryRef.current.set(dedupeKey, now);
+
+    // Garbage-collect old history keys beyond 60s
+    if (toastHistoryRef.current.size > 50) {
+      for (const [k, ts] of toastHistoryRef.current.entries()) {
+        if (now - ts > 60_000) {
+          toastHistoryRef.current.delete(k);
+        }
+      }
+    }
+
+    const duration = options?.duration || (type === "error" || type === "warning" ? 6000 : 3500);
+    const id = `toast-${now}-${Math.random().toString(36).substring(2, 9)}`;
+
+    const timer = setTimeout(() => {
+      removeToast(id);
+    }, duration);
+    toastTimersRef.current.set(id, timer);
+
+    setToasts((prev) => {
+      const next = [...prev];
+      // Keep maximum 3 visible notifications (evict oldest)
+      while (next.length >= 3) {
+        const oldest = next.shift();
+        if (oldest) {
+          const oldTimer = toastTimersRef.current.get(oldest.id);
+          if (oldTimer) {
+            clearTimeout(oldTimer);
+            toastTimersRef.current.delete(oldest.id);
+          }
+        }
+      }
+      return [
+        ...next,
+        {
+          id,
+          title,
+          description,
+          type,
+          duration,
+          key: dedupeKey,
+          timestamp: now,
+        },
+      ];
+    });
+  }, [removeToast]);
+
+  const reportServerMutationFailure = useCallback(() => {
     setSyncStatus("error");
-    addToast("Sync needs attention", "Your local change is retained, but the server did not confirm it. Check synchronization before using another device.", "warning");
-  };
+    addToast(
+      "Sync needs attention",
+      "Your local change is retained, but the server did not confirm it. Check synchronization before using another device.",
+      "warning",
+      { key: "sync-failure", duration: 7000, isUserAction: false }
+    );
+  }, [addToast]);
 
-  const observeServerMutation = (request: Promise<Response>) => {
+  const observeServerMutation = useCallback((request: Promise<Response>) => {
     void request.then((response) => {
       if (!response.ok) throw new Error("Server did not confirm the mutation.");
     }).catch(reportServerMutationFailure);
-  };
-
-  const removeToast = (id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  };
+  }, [reportServerMutationFailure]);
 
   const resetFilters = () => {
     setSearchFilters(defaultSearchFilters);
@@ -758,14 +865,15 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     }
 
     addToast(
-      "Saved on this device",
-      `"${created.title}" is available locally. Server synchronization may still be pending.`,
-      "success"
+      "Saved to Library",
+      `"${created.title}" was saved successfully.`,
+      "success",
+      { key: `item-add:${created.id}`, isUserAction: true }
     );
     return created;
   };
 
-  const updateItem = (id: string, updates: Partial<SavedItem>) => {
+  const updateItem = (id: string, updates: Partial<SavedItem>, options?: UpdateItemOptions) => {
     const activeUserId = user?.id || StorageService.getActiveUserId();
     const previousItem = items.find((item) => item.id === id);
     ContentService.updateItem(id, updates, activeUserId);
@@ -789,7 +897,20 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    addToast("Updated on this device", "Server synchronization may still be pending.", "info");
+    // Programmatic, background, or default updates are completely silent
+    if (options?.silent) {
+      return;
+    }
+
+    // If an explicit toast is requested by a user-initiated action, show it
+    if (options?.toast?.title) {
+      addToast(
+        options.toast.title,
+        options.toast.description,
+        "info",
+        { key: `item-update:${id}:${options.toast.title}`, isUserAction: true }
+      );
+    }
   };
 
   const toggleFavorite = (id: string) => {

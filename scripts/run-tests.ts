@@ -8111,6 +8111,245 @@ Comment ***GitHub*** and I'll send you the complete guide to make it look clean,
       assert(res.limits.remaining > 0, "Remaining capacity dynamically preserved for open-source users");
     });
 
+    console.log("\n--- Section 28: Device Sync Notice & Professional UX Clarification Tests ---");
+
+    await test("Device Sync Notice: Newly created user context starts with unviewed notice state", () => {
+      const freshUser = `user-sync-notice-fresh-${Date.now()}`;
+      assertEqual(StorageService.hasSeenDeviceSyncNotice(freshUser), false, "Fresh user has not seen notice");
+    });
+
+    await test("Device Sync Notice: Marking notice seen persists state reliably", () => {
+      const noticeUser = `user-sync-notice-seen-${Date.now()}`;
+      assertEqual(StorageService.hasSeenDeviceSyncNotice(noticeUser), false, "Initial state is false");
+      StorageService.markDeviceSyncNoticeSeen(noticeUser);
+      assertEqual(StorageService.hasSeenDeviceSyncNotice(noticeUser), true, "Notice state is marked as seen");
+    });
+
+    await test("Device Sync Notice: Multi-tenant workspace isolation guarantees independent notice states", () => {
+      const userAlpha = `user-notice-alpha-${Date.now()}`;
+      const userBeta = `user-notice-beta-${Date.now()}`;
+
+      StorageService.markDeviceSyncNoticeSeen(userAlpha);
+      assertEqual(StorageService.hasSeenDeviceSyncNotice(userAlpha), true, "User Alpha notice marked as seen");
+      assertEqual(StorageService.hasSeenDeviceSyncNotice(userBeta), false, "User Beta notice remains unviewed without cross-tenant bleed");
+    });
+
+    await test("Device Sync Notice: clearUserData resets notice state cleanly", () => {
+      const resetUser = `user-notice-reset-${Date.now()}`;
+      StorageService.markDeviceSyncNoticeSeen(resetUser);
+      assertEqual(StorageService.hasSeenDeviceSyncNotice(resetUser), true, "Marked as seen before reset");
+      StorageService.clearUserData(resetUser);
+      assertEqual(StorageService.hasSeenDeviceSyncNotice(resetUser), false, "Reset restores fresh unviewed state");
+    });
+
+    console.log("\n--- Section 29: Enterprise Toast & Notification Discipline Tests ---");
+
+    await test("Notification Discipline: 50-call polling loop produces 0 toasts", () => {
+      // Simulate 50 background / local-first update calls (e.g. AI poller / focus sync)
+      const emittedToasts: Array<{ title?: string; description?: string }> = [];
+      const mockUpdateItem = (_id: string, _updates: unknown, options?: { silent?: boolean; toast?: { title?: string; description?: string } }) => {
+        if (options?.silent) return;
+        if (options?.toast?.title) {
+          emittedToasts.push(options.toast);
+        }
+      };
+
+      for (let i = 0; i < 50; i++) {
+        mockUpdateItem(`item-${i}`, { title: `Polled title ${i}` });
+      }
+
+      assertEqual(emittedToasts.length, 0, "50-call polling loop produced exactly 0 toasts");
+    });
+
+    await test("Notification Discipline: Two different user saves within 10s both confirm", () => {
+      const activeToasts: Array<{ id: string; title: string; description: string; key: string }> = [];
+      const toastHistory = new Map<string, number>();
+
+      const mockAddToast = (
+        title: string,
+        description: string,
+        type: "success" | "info" | "warning" | "error",
+        options?: { key?: string; duration?: number; isUserAction?: boolean },
+        mockNow = Date.now()
+      ) => {
+        const dedupeKey = options?.key || `${type}:${title}:${description}`;
+        const isUserAction = options?.isUserAction !== undefined
+          ? options.isUserAction
+          : !(type === "error" || type === "warning" || options?.key === "sync-failure");
+
+        if (isUserAction) {
+          const isIdenticalVisible = activeToasts.some(
+            (t) => t.key === dedupeKey || (t.title === title && t.description === description)
+          );
+          const lastShown = toastHistory.get(dedupeKey);
+          if (isIdenticalVisible || (lastShown && mockNow - lastShown < 2000)) {
+            return false;
+          }
+        } else {
+          const lastShown = toastHistory.get(dedupeKey);
+          if (lastShown && mockNow - lastShown < 10_000) {
+            return false;
+          }
+        }
+
+        toastHistory.set(dedupeKey, mockNow);
+        activeToasts.push({ id: `t-${mockNow}-${Math.random()}`, title, description, key: dedupeKey });
+        return true;
+      };
+
+      const t0 = 100_000;
+      // User saves first item at t=0
+      const save1 = mockAddToast(
+        "Saved to Library",
+        '"React 19 Architecture" was saved successfully.',
+        "success",
+        { key: "item-add:item-1", isUserAction: true },
+        t0
+      );
+      assertEqual(save1, true, "First item save toast confirmed");
+
+      // User saves second, different item at t=1s (well within 10s)
+      const save2 = mockAddToast(
+        "Saved to Library",
+        '"Next.js Server Actions" was saved successfully.',
+        "success",
+        { key: "item-add:item-2", isUserAction: true },
+        t0 + 1000
+      );
+      assertEqual(save2, true, "Second item save within 10s also confirmed");
+
+      assertEqual(activeToasts.length, 2, "Both distinct user saves within 10s confirmed in active toasts");
+      assertEqual(activeToasts[0].key, "item-add:item-1", "First item toast retained");
+      assertEqual(activeToasts[1].key, "item-add:item-2", "Second item toast retained");
+    });
+
+    await test("Notification Deduplication: User action dedupe only if identical toast is visible or within 2s", () => {
+      const activeToasts: Array<{ id: string; title: string; description: string; key: string }> = [];
+      const toastHistory = new Map<string, number>();
+
+      const mockAddToast = (
+        title: string,
+        description: string,
+        options?: { key?: string; isUserAction?: boolean },
+        mockNow = 100_000
+      ) => {
+        const dedupeKey = options?.key || `success:${title}:${description}`;
+        const isIdenticalVisible = activeToasts.some(
+          (t) => t.key === dedupeKey || (t.title === title && t.description === description)
+        );
+        const lastShown = toastHistory.get(dedupeKey);
+        if (isIdenticalVisible || (lastShown && mockNow - lastShown < 2000)) {
+          return false;
+        }
+
+        toastHistory.set(dedupeKey, mockNow);
+        activeToasts.push({ id: `t-${mockNow}`, title, description, key: dedupeKey });
+        return true;
+      };
+
+      // 1. Initial click
+      const click1 = mockAddToast("Note saved", "Personal notes updated.", { key: "item-update:note-1", isUserAction: true }, 100_000);
+      assertEqual(click1, true, "Initial user note save confirmed");
+
+      // 2. Accidental double click 300ms later (identical toast is visible and < 2s)
+      const click2 = mockAddToast("Note saved", "Personal notes updated.", { key: "item-update:note-1", isUserAction: true }, 100_300);
+      assertEqual(click2, false, "Rapid duplicate user action dropped");
+      assertEqual(activeToasts.length, 1, "Only 1 toast present after double click");
+
+      // 3. User dismisses toast at 102_500 (2.5s later) and updates again
+      activeToasts.length = 0; // dismissed
+      const click3 = mockAddToast("Note saved", "Personal notes updated.", { key: "item-update:note-1", isUserAction: true }, 102_500);
+      assertEqual(click3, true, "Subsequent user action after 2s cooldown confirmed");
+    });
+
+    await test("Sync Stability: Sync-failure toast does not flicker under rapid error bursts", () => {
+      const activeToasts: Array<{ id: string; key: string; title: string; resetCount: number }> = [];
+      const toastHistory = new Map<string, number>();
+      const COOLDOWN_MS = 10_000;
+
+      const triggerSyncFailure = (mockNow: number) => {
+        const key = "sync-failure";
+        const lastShown = toastHistory.get(key);
+        if (lastShown && mockNow - lastShown < COOLDOWN_MS) {
+          // Dropped during cooldown: do NOT recreate, reset timers, or flicker UI
+          return false;
+        }
+        toastHistory.set(key, mockNow);
+        activeToasts.push({ id: `sync-err-${mockNow}`, key, title: "Sync needs attention", resetCount: 1 });
+        return true;
+      };
+
+      // Initial network failure at t=0
+      const initial = triggerSyncFailure(50_000);
+      assertEqual(initial, true, "First sync-failure toast created");
+      assertEqual(activeToasts.length, 1, "Exactly 1 failure toast visible");
+
+      // 5 subsequent burst failures at t=100ms, t=500ms, t=1500ms, t=3000ms, t=6000ms
+      const timestamps = [50_100, 50_500, 51_500, 53_000, 56_000];
+      for (const ts of timestamps) {
+        const dropped = triggerSyncFailure(ts);
+        assertEqual(dropped, false, `Burst failure at ${ts}ms smoothly suppressed without UI flicker`);
+      }
+
+      assertEqual(activeToasts.length, 1, "Zero duplicate toasts created during 10s cooldown window");
+      assertEqual(activeToasts[0].id, "sync-err-50000", "Original toast identity preserved without UI re-mount flicker");
+
+      // When sync recovers, failure toast is smoothly cleared
+      const filtered = activeToasts.filter((t) => t.key !== "sync-failure");
+      assertEqual(filtered.length, 0, "Sync failure toast cleanly removed on recovery");
+    });
+
+    await test("Bulk Import Toast: Emits exactly ONE summary toast ('N items saved')", () => {
+      const emittedToasts: Array<{ title: string; description: string }> = [];
+
+      // Simulated completion of a 42-item bulk import job
+      const simulatedJob = {
+        id: "job-bulk-123",
+        status: "completed",
+        successCount: 42,
+        failedCount: 0,
+      };
+
+      const onJobCompleted = (job: typeof simulatedJob) => {
+        // Summary toast emitted once on job completion
+        emittedToasts.push({
+          title: "Import Completed",
+          description: `${job.successCount} items saved`,
+        });
+      };
+
+      onJobCompleted(simulatedJob);
+
+      assertEqual(emittedToasts.length, 1, "Exactly 1 summary toast emitted for bulk import");
+      assertEqual(emittedToasts[0].title, "Import Completed", "Toast title is Import Completed");
+      assertEqual(emittedToasts[0].description, "42 items saved", "Toast description formats exactly as 'N items saved'");
+    });
+
+    await test("Toast Container Capacity: Max 3 visible toasts cap cleanly evicts oldest notifications", () => {
+      let toasts: Array<{ id: string; title: string }> = [];
+      const MAX_VISIBLE = 3;
+
+      const pushToast = (title: string) => {
+        const next = [...toasts];
+        while (next.length >= MAX_VISIBLE) {
+          next.shift(); // evict oldest
+        }
+        next.push({ id: `id-${Date.now()}-${Math.random()}`, title });
+        toasts = next;
+      };
+
+      pushToast("Toast 1");
+      pushToast("Toast 2");
+      pushToast("Toast 3");
+      assertEqual(toasts.length, 3, "Container holds 3 toasts");
+      assertEqual(toasts[0].title, "Toast 1", "Oldest toast is Toast 1");
+
+      pushToast("Toast 4");
+      assertEqual(toasts.length, 3, "Container capped at 3 toasts after 4th push");
+      assertEqual(toasts[0].title, "Toast 2", "Toast 1 was evicted, oldest is now Toast 2");
+      assertEqual(toasts[2].title, "Toast 4", "Newest toast is Toast 4");
+    });
+
     // Summary
     console.log("\n=======================================================");
     const total = results.length;

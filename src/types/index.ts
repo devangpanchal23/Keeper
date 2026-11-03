@@ -353,6 +353,8 @@ export interface ToastMessage {
   description?: string;
   type: "success" | "info" | "warning" | "error";
   duration?: number;
+  key?: string;
+  timestamp?: number;
 }
 
 // =============================================================================

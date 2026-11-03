@@ -11,8 +11,13 @@ export const ToastContainer: React.FC = () => {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">
+    <div
+      role="region"
+      aria-label="Notifications"
+      className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none"
+    >
       {toasts.map((toast) => {
+        const isAlert = toast.type === "error" || toast.type === "warning";
         const getIcon = () => {
           switch (toast.type) {
             case "success":
@@ -30,8 +35,10 @@ export const ToastContainer: React.FC = () => {
         return (
           <div
             key={toast.id}
+            role={isAlert ? "alert" : "status"}
+            aria-live={isAlert ? "assertive" : "polite"}
             className={cn(
-              "pointer-events-auto flex items-start gap-3 p-4 rounded-xl shadow-2xl border transition-all duration-300 animate-in fade-in slide-in-from-bottom-5",
+              "pointer-events-auto flex items-start gap-3 p-4 rounded-xl shadow-2xl border transition-all duration-300 animate-in fade-in slide-in-from-bottom-5 motion-reduce:animate-none",
               "bg-zinc-900/95 text-zinc-100 border-zinc-700/80 backdrop-blur-md"
             )}
           >

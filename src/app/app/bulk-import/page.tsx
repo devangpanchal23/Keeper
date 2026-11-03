@@ -87,8 +87,9 @@ export default function BulkImportPage() {
         setStep("report_view");
         addToast(
           "Import Completed",
-          `Successfully processed ${updatedJob.successCount} items from ${updatedJob.sourceName}.`,
-          "success"
+          `${updatedJob.successCount} items saved`,
+          "success",
+          { key: `bulk-import:${updatedJob.id}`, isUserAction: true }
         );
       }
     });

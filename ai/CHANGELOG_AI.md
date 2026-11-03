@@ -1,5 +1,31 @@
 # Keeper — AI Development Changelog
 
+## 2026-11-04 — Enterprise Toast Notification System & Permanent Sync Toast Resolution
+
+- **Problem:**
+  - The toast notification `"Updated on this device / Server synchronization may still be pending"` (and its variations) was persistently popping up on the home screen/dashboard, degrading perceived polish and user experience.
+  - Previous one-time notice attempt in `StorageService` did not permanently solve the issue because tenant switching on initial mount (`anonymous` -> authenticated user) caused repeated triggers, and normal local-first state updates in `updateItem()` (such as drag-and-drop, note autosave, tag updates, collection changes, background media polling) were treated as toast-worthy events by default without deduplication, cooldowns, or max-visible limits.
+- **Root Cause & Permanent Architectural Solution:**
+  - **Local-First Principle Restored**: Local-first state mutations are normal baseline behavior, not news. State updates in `updateItem()` are now **completely silent by default**. A notification is only emitted when a user-initiated action explicitly passes `options.toast` (e.g. clicking "Save note" in `QuickNoteModal` or updating tags in `ItemDetailPage`).
+  - **Central Deduplication & 10s Cooldown**: `addToast` computes a deduplication key (`options.key || `${type}:${title}:${description}``) and tracks a rolling 10-second history window. Duplicate requests within the cooldown are silently dropped.
+  - **Maximum 3 Visible Toasts**: `ToastContainer` never stacks endless toasts; when a 4th toast arrives, the oldest toast is smoothly evicted and its timeout cleared.
+  - **Managed Timer Registry**: Toasts use a ref-backed timer registry (`toastTimersRef`) that cancels timers upon manual dismissal, eviction, or component unmount, preventing React memory leaks.
+  - **Sync Error Collapsing & Auto-Clearing**: Background network sync failures collapse under key `"sync-failure"`. When `syncWorkspace()` successfully recovers (`syncStatus === "synced"`), any active `"sync-failure"` toast is automatically dismissed from the UI.
+  - **Accessibility**: Added standard a11y roles (`role="region"`, `role="status"`/`"alert"`, `aria-live="polite"`/`"assertive"`, `motion-reduce:animate-none`) to `ToastContainer` while strictly preserving existing styling and visual identity.
+- **Files Modified:**
+  - `src/types/index.ts`: Added optional `key?: string;` and `timestamp?: number;` to `ToastMessage`.
+  - `src/components/common/ToastContainer.tsx`: Added accessibility markup and reduced motion support while preserving exact CSS styling.
+  - `src/context/RecallContext.tsx`: Enterprise deduplication, 10s cooldown, max-3 visible cap, managed timer registry, silent `updateItem()` by default, and auto-dismiss of `"sync-failure"` on sync recovery.
+  - `src/components/modals/QuickNoteModal.tsx`: Passed explicit `{ toast: { title: "Note saved", description: "Personal note saved." } }` on user submit.
+  - `src/app/app/item/[id]/page.tsx`: Replaced unconditional/silent updates with explicit user-action toasts for note and tag saves; background poller is silent.
+  - `ai/DEVELOPMENT_RULES.md`: Added Invariant 6 ("Notification Discipline & Silent Local-First Operations").
+  - `scripts/run-tests.ts`: Added Section 29 regression tests for 50 silent updates, explicit toasts, 10s cooldown deduplication, 3-toast capping, and sync failure recovery.
+- **Validation Results:**
+  - `npm run type-check`: 0 errors.
+  - `npm test`: 309 / 309 assertions passed (100%).
+  - `npm run lint`: 0 errors.
+  - `npm run build`: Clean Next.js 16.4.3 Turbopack build (28/28 routes).
+
 ## 2026-11-02 — Phase 1C-6B Supabase Migration Hardening
 
 - Replaced timezone-sensitive `interval '7 days'` arithmetic in the unapplied OSS import RPC migration with fixed 604,800-second epoch calculations and millisecond anchor truncation.
