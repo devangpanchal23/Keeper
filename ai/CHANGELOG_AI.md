@@ -1,5 +1,53 @@
 # Keeper — AI Development Changelog
 
+## 2026-11-02 — Phase 1C-6B Supabase Migration Hardening
+
+- Replaced timezone-sensitive `interval '7 days'` arithmetic in the unapplied OSS import RPC migration with fixed 604,800-second epoch calculations and millisecond anchor truncation.
+- Narrowed the SECURITY DEFINER search path to `pg_catalog`; extension namespace is discovered from `pg_extension`/`pg_namespace`, and `digest` is schema-qualified using a quoted identifier plus bound values. No historical migrations, schema, grants, RLS or fingerprint semantics changed.
+- Added static regression assertions. No SQL/database/Supabase/Docker operation was run. Effective owner/ACL, extension permissions, SQL compilation and RLS remain unverified pending disposable Supabase testing.
+
+## 2026-11-02 — Phase 1C-6 Supabase OSS Import Entitlement (migration drafted)
+
+- Added `202611020001_phase_1c_6_oss_import_entitlements.sql`, a forward-only replacement for the latest Supabase `keeper_import_media`. It removes subscription-based quotas and writes one `FREE_IMPORT/free/1` event in the workspace-anchored weekly cycle while preserving auth, tenant scope, function security/grants and RPC return compatibility.
+- Added deterministic static migration-contract checks for unlimited entitlement, duplicates/failures, normalized usage, workspace authorization, caller compatibility, and no destructive or unrelated SQL.
+- Migration was not applied. No SQL/database/Supabase access occurred. Deployed function owner/ACL, SQL compatibility, Auth/RLS and transaction behavior still need disposable-project verification. See `ai/audits/phase-1c-6-supabase-oss-entitlement-2026-11-02.md`.
+
+## 2026-11-02 — Phase 1C-5 OSS Usage Entitlements (partial)
+
+- Removed subscription lookups and Free/Basic/Pro quota rejection from standalone PostgreSQL and MongoDB import paths. New imports use the shared normalized OSS ledger contract and workspace-anchored seven-day cycle; ledger/media/job writes remain in provider transactions.
+- `/api/usage` reports unlimited OSS entitlement, exact all-time event count when available, and explicit `usageAvailable=false` on missing/failed reads. `/api/ingest` returns a service error when the database RPC rejects an import rather than falsely reporting success.
+- Added regression coverage for normalized entries, cycle boundaries, duplicates/no-ops, >30/>300 usage, subscription-state independence, provider wiring, and unavailable usage reporting.
+- **Supabase remains unresolved:** existing SQL RPC migrations still enforce quotas and derive usage from subscription state. No migration/schema changes were made. See `ai/audits/phase-1c-5-oss-usage-entitlements-2026-11-02.md`.
+- Validation: `npm test` passed 299/299; type-check passed. Live providers and Supabase were not contacted.
+
+## 2026-11-02 — Local-Only Provider Verification Setup
+
+- Added `docker-compose.local-test.yml` with separate loopback-only test PostgreSQL and optional MongoDB 8 replica-set services, dedicated named volumes, test-only credentials, healthchecks, and explicit/manual schema or replica-set initialization. No destructive reset runs automatically.
+- Updated `ai/TESTING_GUIDE.md`, `ai/DATABASE_PROVIDER_MATRIX.md`, `ai/SECURITY_BASELINE.md`, `ai/AI_CONTEXT.md`, `ai/HANDOFF.md`, and `ai/CURRENT_STATUS.md` with exact service commands and verification boundaries.
+- Local provider tests were not run: Docker CLI could not reach its daemon and the Compose plugin is absent. This branch has no Supabase `config.toml` and no Supabase CLI; local Auth/RLS remain unsupported/unverified. No production DB, developer DB, migration, or volume was touched. Phase 1 remains open.
+
+## 2026-11-02 — Phase 1 Corrective Pass (partial)
+
+- `GET /api/media` now distinguishes a successful empty library from missing configuration, unauthenticated access, auth service failure, query failure, and backend exceptions. Client error bodies use safe generic messages/codes. Read no longer performs duplicate-row deletion as a side effect.
+- Added `readWorkspaceMedia` response classification. `syncWorkspace` now requires a successful media read before it repairs/migrates local records, uploads unmatched records, or replaces local item state. Backend read/upload/sync failures retain the current local library and leave sync in an offline/error state.
+- `/api/media/sync` now returns non-success on missing configuration/auth, query/write/final-read failures instead of presenting local input as successfully synced. `/api/media` write paths check workspace read/write errors to avoid false successful responses.
+- Collection reads now fail explicitly on configuration/auth/query errors instead of returning seed collections. Collection writes/deletes no longer report backend errors as local-only success; collection-delete partial unlink failures are reported. `syncWorkspace` preflights successful media and collection reads before legacy migration or cache replacement.
+- Asynchronous item and collection mutation failures now set sync error state and show a warning while retaining local state; this is visibility only and does not create durable retries. Save/update messaging clarifies the immediate local acknowledgment boundary.
+- Added deterministic tests for empty/populated/error read outcomes, safe network error handling, session cookie policy and controlled auth error path. Session verification was also checked in a separate Node process using the same configured secret. The opt-in RLS safety guards are source-checked. No live database or route integration was run.
+- Expanded persistence documentation with exact mutation failure behavior and an implementation-ready, provider-aware outbox/idempotency/revision/tombstone/conflict/backfill/export/rollback design. This is design only; no migration or schema change was made.
+- **Validation:** `npm test` passed 292/292; `npm run type-check -- --incremental false` passed; `npm run lint` exited 0 with 0 errors and 255 warnings; `git diff --check` passed. Supabase/PostgreSQL/Mongo live checks unavailable; Phase 1 remains open.
+
+## 2026-11-02 — Phase 1 Security and Persistence Foundation (in progress)
+
+- Removed the deterministic/HMAC fallback key in `src/lib/supabase/auth-session.ts`. Session signing now uses only independently configured `AUTH_SESSION_SECRET`, enforces a minimum of 32 UTF-8 bytes, rejects obvious placeholders, repeated-character and low-diversity secrets, and fails closed without logging secret/configuration values. Seven-day expiry and cookie attributes are preserved.
+- Added deterministic tests for missing/empty/weak/valid secrets, tampered/invalid/expired markers, rotation, same-secret cross-instance verification, and rejection of Supabase URL/public/service credentials as signing substitutes.
+- Separated the live Supabase RLS check from normal tests. `npm test` no longer reads `.env.local`; `npm run test:integration:supabase` explicitly opts in and requires dedicated `KEEPER_TEST_*` project and workspace fixtures. Default suite shows a skip reason.
+- Updated `.env.example`, Docker Compose and README setup for required independent session secret.
+- Added security baseline, persistence flow/contract, database provider matrix and testing guide. Updated AI context/current status/handoff.
+- **Persistence limitation:** no sync engine rewrite, migration, durable browser outbox, tombstone, or versioned conflict resolution was introduced. Existing optimistic local mutations can fail to reach server until later reconciliation; complete server-authoritative convergence requires a separate tested, resumable plan. No DB migrations were made.
+- **Validation:** `npm test` 289/289 passed (live RLS skipped); `npm run type-check -- --incremental false` passed; `npm run lint` exited 0 with 0 errors and 255 warnings. `git diff --check` passed and the final source/document diff was reviewed. Live provider tests and production build not run.
+- **Phase assessment:** Partial. The persistence sync/outbox/conflict foundation and isolated live provider verification remain open. This supersedes the 2026-11-01 entry below that added a Supabase/public-key signing fallback; that fallback is removed in this phase.
+
 ## 2026-11-01 — Keeper Open-Source Edition Technical Audit & Release Infrastructure
 
 - **Objective**: Complete technical and functional audit of Keeper Open-Source Edition (`open_source_keeper`), generate all 5 required audit deliverables, eliminate commercial remnants, and establish release readiness.

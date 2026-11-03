@@ -19,7 +19,7 @@ services:
       - DATABASE_PROVIDER=postgres
       - DATABASE_URL=postgresql://keeper:keeper_secure_password@keeper-postgres:5432/keeper
       - DATABASE_POOL_MAX=10
-      - AUTH_SESSION_SECRET=replace_with_a_secure_random_string_at_least_32_chars_long
+      - AUTH_SESSION_SECRET=${AUTH_SESSION_SECRET:?Set an independent AUTH_SESSION_SECRET before starting Keeper}
     depends_on:
       keeper-postgres:
         condition: service_healthy

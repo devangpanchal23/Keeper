@@ -1,35 +1,34 @@
-import { getSupabaseConfig } from "@/lib/supabase/config";
-
 export const AUTH_SESSION_COOKIE = "keeper_session_expiry";
 export const AUTH_SESSION_DURATION_SECONDS = 7 * 24 * 60 * 60;
-
-let runtimeFallbackSecret: string | null = null;
+const MIN_SESSION_SECRET_BYTES = 32;
+const WEAK_SESSION_SECRETS = new Set([
+  "change-me",
+  "changeme",
+  "secret",
+  "development-secret",
+  "your-secret-here",
+  "replace-with-a-secure-random-value",
+]);
 
 function sessionSecret(): string {
-  const secret = process.env.AUTH_SESSION_SECRET;
-  if (secret && secret.trim().length >= 32) return secret.trim();
-
-  // Resilient fallback: Use configured Supabase keys or service-role key
-  const config = getSupabaseConfig();
-  const candidates = [
-    config.serviceRoleKey,
-    config.key,
-    config.url,
-  ];
-
-  for (const candidate of candidates) {
-    if (candidate && candidate.trim().length >= 32) {
-      return candidate.trim();
-    }
+  const secret = process.env.AUTH_SESSION_SECRET?.trim();
+  if (!secret) throw new Error("AUTH_SESSION_SECRET is required to sign authentication sessions.");
+  if (new TextEncoder().encode(secret).byteLength < MIN_SESSION_SECRET_BYTES) {
+    throw new Error("AUTH_SESSION_SECRET must contain at least 32 bytes.");
   }
-
-  // Enterprise fallback: Ensure auth session signing never throws an unhandled
-  // exception that causes 503 errors during serverless cold starts.
-  if (!runtimeFallbackSecret) {
-    const seed = candidates.filter(Boolean).join(":") || "keeper-universal-auth-session-seed";
-    runtimeFallbackSecret = `kpr_auth_${seed.slice(0, 16)}_${"8f3a9b2c1d4e7f0a8f3a9b2c1d4e7f0a8f3a9b2c1d4e7f0a"}`;
+  const normalizedSecret = secret.toLowerCase();
+  const isPlaceholder = [...WEAK_SESSION_SECRETS].some((weak) => normalizedSecret === weak || normalizedSecret.startsWith(`${weak}-`) || normalizedSecret.startsWith(`${weak}_`));
+  const secretCharacters = [...secret];
+  const frequencies = new Map<string, number>();
+  for (const character of secretCharacters) frequencies.set(character, (frequencies.get(character) || 0) + 1);
+  const entropyPerCharacter = [...frequencies.values()].reduce((entropy, count) => {
+    const probability = count / secretCharacters.length;
+    return entropy - probability * Math.log2(probability);
+  }, 0);
+  if (isPlaceholder || /^(.)\1+$/.test(secret) || entropyPerCharacter < 3.5) {
+    throw new Error("AUTH_SESSION_SECRET must be a strong, independently generated value.");
   }
-  return runtimeFallbackSecret;
+  return secret;
 }
 
 function toBase64Url(bytes: Uint8Array): string {
@@ -67,8 +66,9 @@ export async function isAuthSessionMarkerValid(value: string | undefined, now = 
     let mismatch = 0;
     for (let index = 0; index < expected.length; index += 1) mismatch |= expected.charCodeAt(index) ^ suppliedSignature.charCodeAt(index);
     return mismatch === 0;
-  } catch (error) {
-    console.error("Could not validate the Keeper session expiry marker.", error);
+  } catch {
+    // Missing or invalid configuration must invalidate the marker without
+    // exposing configuration details in logs or responses.
     return false;
   }
 }

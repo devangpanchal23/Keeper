@@ -1,8 +1,12 @@
 import "server-only";
 import { MongoClient, type Collection, type Db, type Document, type Filter as MongoFilter, type Sort } from "mongodb";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { assertBackendConfiguration } from "./provider";
 import { asDatabaseRows, errorResult, type BackendStore, type DatabaseRow, type Filter, type QueryBuilder, type QueryOperation, type QueryResult } from "./query";
+import { persistWorkspaceAssignment } from "@/services/workspace-assignment-contract";
+import { AI_JOB_LEASE_MILLISECONDS, AI_JOB_PROCESSING_STAGES, MAX_AI_JOB_ATTEMPTS } from "@/services/ai-job-retry-policy";
+import { createContentFingerprint, createContentFingerprintCandidates, getContentFingerprintFields } from "@/services/content-fingerprint";
+import { createOssImportLedgerEntry, getOssImportCycle, getOssImportEntitlement } from "@/services/usage-ledger-contract";
 
 const COLLECTIONS = new Set([
   "billing_subscriptions", "billing_plan_catalog", "billing_payments", "razorpay_webhook_events", "billing_payment_failures",
@@ -44,6 +48,11 @@ async function ensureIndexes(db: Db): Promise<void> {
     db.collection("razorpay_webhook_events").createIndex({ event_id: 1 }, { unique: true, sparse: true, name: "razorpay_event_unique" }),
     db.collection("keeper_usage_ledger").createIndex({ workspace_id: 1, cycle_start: 1, cycle_end: 1 }, { name: "usage_cycle_idx" }),
   ]);
+}
+
+function withMediaFingerprint(table: string, row: DatabaseRow): DatabaseRow {
+  if (table !== "keeper_media" || !Object.prototype.hasOwnProperty.call(row, "payload")) return row;
+  return { ...row, content_fingerprint: createContentFingerprint(getContentFingerprintFields(row.payload)) };
 }
 
 class MongoQuery implements QueryBuilder {
@@ -96,7 +105,7 @@ class MongoQuery implements QueryBuilder {
         return { data, error: null, count: count ?? null };
       }
       if (this.operation === "insert") {
-        const docs = this.rows.map((row) => ({ ...row, id: row.id ?? randomUUID() }));
+        const docs = this.rows.map((row) => ({ ...withMediaFingerprint(this.table, row), id: row.id ?? randomUUID() }));
         if (!docs.length) return { data: [], error: null };
         await collection.insertMany(docs);
         return { data: docs, error: null };
@@ -105,7 +114,7 @@ class MongoQuery implements QueryBuilder {
         const result: DatabaseRow[] = [];
         for (const row of this.rows) {
           const identity = Object.fromEntries(this.conflictColumns.map((column) => [column, row[column]]));
-          const document: DatabaseRow = { ...row, id: row.id ?? randomUUID() };
+          const document: DatabaseRow = { ...withMediaFingerprint(this.table, row), id: row.id ?? randomUUID() };
           const { created_at: createdAt, ...mutable } = document;
           await collection.updateOne(identity, { $set: mutable, $setOnInsert: { created_at: createdAt ?? new Date().toISOString() } }, { upsert: true });
           const saved = await collection.findOne(identity);
@@ -114,7 +123,7 @@ class MongoQuery implements QueryBuilder {
         return { data: result, error: null };
       }
       if (this.operation === "update") {
-        await collection.updateMany(filter, { $set: this.values });
+        await collection.updateMany(filter, { $set: withMediaFingerprint(this.table, this.values) });
         return { data: null, error: null };
       }
       await collection.deleteMany(filter);
@@ -156,44 +165,84 @@ export class MongoStore implements BackendStore {
         const metadata = payloadRecord.metadata as DatabaseRow || {};
         const sourcePlatform = String(payloadRecord.platform || metadata.sourcePlatform || "");
         const sourceIdentifier = String(metadata.sourceIdentifier || metadata.shortcode || metadata.fbid || ((metadata.rawPlatformMetadata as DatabaseRow | undefined)?.id) || "");
-        const fingerprintText = [payloadRecord.title, payloadRecord.description, metadata.caption, metadata.bodyText].filter((part): part is string => typeof part === "string").join(" ").trim().toLowerCase();
-        const fingerprint = fingerprintText.length >= 80 ? createHash("sha256").update(fingerprintText).digest("hex") : "";
-        const duplicateQuery: MongoFilter<Document> = { workspace_id: workspaceId, $or: [{ canonical_url: canonicalUrl }, ...(sourcePlatform && sourceIdentifier ? [{ source_platform: sourcePlatform, source_identifier: sourceIdentifier }] : []), ...(fingerprint ? [{ content_fingerprint: fingerprint }] : [])] };
+        const fingerprintFields = getContentFingerprintFields(payloadRecord);
+        const fingerprint = createContentFingerprint(fingerprintFields);
+        const fingerprintCandidates = createContentFingerprintCandidates(fingerprintFields);
+        const duplicateQuery: MongoFilter<Document> = { workspace_id: workspaceId, $or: [{ canonical_url: canonicalUrl }, ...(sourcePlatform && sourceIdentifier ? [{ source_platform: sourcePlatform, source_identifier: sourceIdentifier }] : []), ...fingerprintCandidates.map((candidate) => ({ content_fingerprint: candidate }))] };
         const existing = await media.findOne(duplicateQuery, { session });
         if (existing) { response = { media_id: String(existing.id || existing._id), duplicate: true, status: existing.processing_status }; return; }
         const now = new Date();
-        const subscription = await db.collection("billing_subscriptions").findOne({ user_id: workspaceId, $or: [
-          { status: { $in: ["active", "trialing", "authenticated"] }, $or: [{ current_period_end: { $gt: now.toISOString() } }, { current_period_end: null, trial_ends_at: { $gt: now.toISOString() } }, { current_period_end: { $exists: false }, trial_ends_at: { $gt: now.toISOString() } }] },
-          { status: { $in: ["cancelled", "canceled"] }, trial_ends_at: { $gt: now.toISOString() } },
-          { status: { $in: ["cancelled", "canceled"] }, cancel_at_cycle_end: true, current_period_end: { $gt: now.toISOString() } },
-        ] }, { sort: { current_period_end: -1 }, session });
         const memoryResult = await db.collection("keeper_workspace_memory").findOneAndUpdate({ workspace_id: workspaceId }, { $setOnInsert: { free_cycle_anchor: now.toISOString(), media_count: 0 }, $inc: { import_lock_version: 1 } }, { upsert: true, returnDocument: "after", session });
         const anchor = new Date(String(memoryResult?.free_cycle_anchor || now.toISOString()));
-        const cycleStart = subscription ? new Date(String(subscription.current_period_start || subscription.created_at || now.toISOString())) : new Date(anchor.getTime() + Math.floor((now.getTime() - anchor.getTime()) / 604800000) * 604800000);
-        const cycleEnd = subscription ? new Date(String(subscription.current_period_end || subscription.trial_ends_at || new Date(cycleStart.getTime() + 30 * 86400000).toISOString())) : new Date(cycleStart.getTime() + 7 * 86400000);
+        const cycle = getOssImportCycle(now, anchor);
+        const cycleStart = cycle.cycleStart;
+        const cycleEnd = cycle.cycleEnd;
         const used = await ledger.countDocuments({ workspace_id: workspaceId, cycle_start: cycleStart.toISOString(), cycle_end: cycleEnd.toISOString() }, { session });
-        const tier = subscription?.plan;
-        const limit = tier === "pro" ? (subscription?.billing_cycle === "yearly" ? 6000 : 500) : tier === "basic" ? (subscription?.billing_cycle === "yearly" ? 3600 : 300) : 30;
-        if (limit >= 0 && used >= limit) throw new Error("CREDIT_LIMIT_REACHED");
         const mediaId = randomUUID();
         const jobId = randomUUID();
         const idempotencyKey = String(args.p_idempotency_key || randomUUID());
-        await media.insertOne({ id: mediaId, workspace_id: workspaceId, canonical_url: canonicalUrl, source_platform: sourcePlatform || null, source_identifier: sourceIdentifier || null, content_fingerprint: fingerprint || null, payload, processing_status: "QUEUED", created_at: now.toISOString(), updated_at: now.toISOString() }, { session });
-        await ledger.insertOne({ id: randomUUID(), workspace_id: workspaceId, media_id: mediaId, event_type: "import", plan: tier || "free", cycle_start: cycleStart.toISOString(), cycle_end: cycleEnd.toISOString(), created_at: now.toISOString() }, { session });
+        await media.insertOne({ id: mediaId, workspace_id: workspaceId, canonical_url: canonicalUrl, source_platform: sourcePlatform || null, source_identifier: sourceIdentifier || null, content_fingerprint: fingerprint, payload, processing_status: "QUEUED", created_at: now.toISOString(), updated_at: now.toISOString() }, { session });
+        const ledgerEntry = createOssImportLedgerEntry("created", cycle)!;
+        const entitlement = getOssImportEntitlement();
+        await ledger.insertOne({ id: randomUUID(), workspace_id: workspaceId, media_id: mediaId, ...ledgerEntry, created_at: now.toISOString() }, { session });
         await jobs.insertOne({ id: jobId, workspace_id: workspaceId, media_id: mediaId, status: "QUEUED", attempts: 0, available_at: now.toISOString(), locked_until: null, idempotency_key: idempotencyKey, created_at: now.toISOString(), updated_at: now.toISOString() }, { session });
-        response = { media_id: mediaId, job_id: jobId, status: "QUEUED", duplicate: false };
+        response = { media_id: mediaId, job_id: jobId, status: "QUEUED", duplicate: false, plan: entitlement.plan, used: used + 1, remaining: entitlement.limit, unlimited: entitlement.unlimited, cycle_end: cycleEnd.toISOString() };
       });
       return response;
     } finally { await session.endSession(); }
   }
   private async claimJob(): Promise<DatabaseRow[]> {
     const db = await getDatabase();
-    const now = new Date();
-    const result = await db.collection("keeper_ai_jobs").findOneAndUpdate(
-      { status: { $in: ["QUEUED", "PENDING", "EXTRACTING", "TRANSCRIBING", "ANALYZING", "GENERATING_TAGS", "MATCHING_COLLECTION", "ORGANIZING", "INDEXING"] }, attempts: { $lt: 5 }, available_at: { $lte: now.toISOString() }, $or: [{ locked_until: null }, { locked_until: { $lt: now.toISOString() } }] },
-      { $set: { status: "TRANSCRIBING", locked_until: new Date(now.getTime() + 5 * 60_000).toISOString(), updated_at: now.toISOString() }, $inc: { attempts: 1 } },
-      { sort: { available_at: 1, created_at: 1 }, returnDocument: "after" },
-    );
+    const client = await clientPromise!;
+    const session = client.startSession();
+    const claimResult: { job: Document | null } = { job: null };
+    try {
+      await session.withTransaction(async () => {
+        const jobs = db.collection("keeper_ai_jobs");
+        const now = new Date();
+        const dueOrExpiredLease = { $or: [{ locked_until: null }, { locked_until: { $lte: now.toISOString() } }] };
+        const exhaustedFilter: MongoFilter<Document> = {
+          status: { $in: [...AI_JOB_PROCESSING_STAGES] },
+          attempts: { $gte: MAX_AI_JOB_ATTEMPTS },
+          ...dueOrExpiredLease,
+        };
+        const exhausted = await jobs.find(exhaustedFilter, {
+          session,
+          projection: { _id: 0, workspace_id: 1, media_id: 1 },
+        }).toArray();
+        if (exhausted.length > 0) {
+          await jobs.updateMany(exhaustedFilter, [{ $set: {
+            status: "FAILED",
+            locked_until: null,
+            last_error: { $ifNull: ["$last_error", "Worker lease expired after the retry limit."] },
+            failure_code: { $ifNull: ["$failure_code", "RETRY_EXHAUSTED"] },
+            updated_at: now.toISOString(),
+          } }], { session });
+          const mediaOwners = exhausted
+            .filter((job) => typeof job.workspace_id === "string" && typeof job.media_id === "string")
+            .map((job) => ({ id: job.media_id, workspace_id: job.workspace_id }));
+          if (mediaOwners.length > 0) {
+            await db.collection("keeper_media").updateMany(
+              { $or: mediaOwners },
+              { $set: { processing_status: "FAILED", updated_at: now.toISOString() } },
+              { session },
+            );
+          }
+        }
+
+        claimResult.job = await jobs.findOneAndUpdate(
+          {
+            status: { $in: [...AI_JOB_PROCESSING_STAGES] },
+            attempts: { $lt: MAX_AI_JOB_ATTEMPTS },
+            available_at: { $lte: now.toISOString() },
+            ...dueOrExpiredLease,
+          },
+          { $set: { status: "EXTRACTING", locked_until: new Date(now.getTime() + AI_JOB_LEASE_MILLISECONDS).toISOString(), updated_at: now.toISOString() }, $inc: { attempts: 1 } },
+          { session, sort: { available_at: 1, created_at: 1, id: 1, _id: 1 }, returnDocument: "after" },
+        );
+      });
+    } finally { await session.endSession(); }
+    const result = claimResult.job;
     if (!result) return [];
     const { _id, ...job } = result;
     return [{ ...job, ...(job.id === undefined && _id ? { id: String(_id) } : {}) } as DatabaseRow];
@@ -205,7 +254,7 @@ export class MongoStore implements BackendStore {
     if (collectionId && !await db.collection("keeper_collections").findOne({ workspace_id: workspace, id: collectionId })) throw Object.assign(new Error("COLLECTION_NOT_FOUND"), { code: "P0002" });
     const payload = row.payload as DatabaseRow; const metadata = payload.metadata as DatabaseRow || {}; const collections = collectionId ? [collectionId] : [];
     const next = { ...payload, collectionId, collections, metadata: { ...metadata, aiOrganization: { ...(metadata.aiOrganization as DatabaseRow || {}), aiAssignedCollectionIds: [], manualCollectionIds: collections, autoOrganizationDisabled: !collectionId } } };
-    await media.updateOne({ id, workspace_id: workspace }, { $set: { payload: next, updated_at: new Date().toISOString() } });
+    await media.updateOne({ id, workspace_id: workspace }, { $set: { payload: next, content_fingerprint: createContentFingerprint(getContentFingerprintFields(next)), updated_at: new Date().toISOString() } });
     await db.collection("keeper_media_analyses").updateOne({ media_id: id, workspace_id: workspace }, { $set: { collection_id: collectionId, updated_at: new Date().toISOString() } });
     await db.collection("keeper_organization_corrections").insertOne({ id: randomUUID(), workspace_id: workspace, media_id: id, from_collection_id: payload.collectionId ?? null, to_collection_id: collectionId, media_tags: payload.tags || [], media_topic: Array.isArray(payload.topics) ? payload.topics[0] || null : null, created_at: new Date().toISOString() });
     return null;
@@ -217,7 +266,8 @@ export class MongoStore implements BackendStore {
     const row = await db.collection("keeper_media").findOne({ id, workspace_id: workspace });
     if (!row) throw Object.assign(new Error("MEDIA_NOT_FOUND"), { code: "P0002" });
     const payload = row.payload as DatabaseRow; const metadata = payload.metadata as DatabaseRow || {};
-    await db.collection("keeper_media").updateOne({ id, workspace_id: workspace }, { $set: { payload: { ...payload, tags, metadata: { ...metadata, userTags, suppressedAiTags: suppressed } }, updated_at: new Date().toISOString() } }); return null;
+    const next = { ...payload, tags, metadata: { ...metadata, userTags, suppressedAiTags: suppressed } };
+    await db.collection("keeper_media").updateOne({ id, workspace_id: workspace }, { $set: { payload: next, content_fingerprint: createContentFingerprint(getContentFingerprintFields(next)), updated_at: new Date().toISOString() } }); return null;
   }
   private async reprocess(args: DatabaseRow): Promise<DatabaseRow> {
     const db = await getDatabase(); const workspace = String(args.p_workspace_id || ""); const id = String(args.p_media_id || ""); const payload = args.p_payload;
@@ -226,7 +276,7 @@ export class MongoStore implements BackendStore {
     if (!row) throw Object.assign(new Error("MEDIA_NOT_FOUND"), { code: "P0002" });
     if ((payload as DatabaseRow).url !== row.canonical_url) throw Object.assign(new Error("CANONICAL_URL_IMMUTABLE"), { code: "22023" });
     const now = new Date().toISOString();
-    await media.updateOne({ id, workspace_id: workspace }, { $set: { payload, processing_status: "QUEUED", updated_at: now } });
+    await media.updateOne({ id, workspace_id: workspace }, { $set: { payload, content_fingerprint: createContentFingerprint(getContentFingerprintFields(payload)), processing_status: "QUEUED", updated_at: now } });
     const transcript = await db.collection("keeper_media_transcripts").findOne({ media_id: id, workspace_id: workspace });
     if (transcript) { const { _id, ...previous } = transcript; await db.collection("keeper_media_transcript_history").insertOne({ ...previous, id: randomUUID(), transcript_updated_at: transcript.updated_at, created_at: now }); await db.collection("keeper_media_transcripts").deleteOne({ media_id: id, workspace_id: workspace }); }
     const jobId = randomUUID(); const key = `reprocess:${id}:${jobId}`;
@@ -244,9 +294,37 @@ export class MongoStore implements BackendStore {
     return { id, name, description, created: true };
   }
   private async recordAssignment(args: DatabaseRow): Promise<null> {
-    const db = await getDatabase(); const workspace = String(args.p_workspace_id || ""); const mediaId = String(args.p_media_id || ""); const now = new Date().toISOString();
-    await db.collection("keeper_workspace_assignments").updateOne({ workspace_id: workspace, media_id: mediaId }, { $set: { collection_id: args.p_collection_id ?? null, topic: args.p_topic ?? null, tags: Array.isArray(args.p_tags) ? args.p_tags : [], assigned_at: now }, $setOnInsert: { workspace_id: workspace, media_id: mediaId } }, { upsert: true });
-    return null;
+    if (typeof args.p_workspace_id !== "string" || typeof args.p_media_id !== "string") throw Object.assign(new Error("INVALID_ASSIGNMENT"), { code: "22023" });
+    const workspace = args.p_workspace_id;
+    const mediaId = args.p_media_id;
+    if (args.p_collection_id != null && typeof args.p_collection_id !== "string") throw Object.assign(new Error("INVALID_ASSIGNMENT"), { code: "22023" });
+    const collectionId = args.p_collection_id == null ? null : args.p_collection_id;
+    if (!workspace || !mediaId || collectionId === "") throw Object.assign(new Error("INVALID_ASSIGNMENT"), { code: "22023" });
+    const db = await getDatabase();
+    const client = await clientPromise!;
+    const session = client.startSession();
+    try {
+      await persistWorkspaceAssignment({ workspaceId: workspace, mediaId, collectionId }, {
+        transaction: (operation) => session.withTransaction(operation),
+        findMediaWorkspaceId: async (id) => {
+          const media = await db.collection("keeper_media").findOne({ id }, { session, projection: { workspace_id: 1 } });
+          return typeof media?.workspace_id === "string" ? media.workspace_id : null;
+        },
+        findCollectionWorkspaceId: async (workspaceId, id) => {
+          const collection = await db.collection("keeper_collections").findOne({ workspace_id: workspaceId, id }, { session, projection: { workspace_id: 1 } });
+          return typeof collection?.workspace_id === "string" ? collection.workspace_id : null;
+        },
+        writeAssignment: async () => {
+          const now = new Date().toISOString();
+          await db.collection("keeper_workspace_assignments").updateOne(
+            { workspace_id: workspace, media_id: mediaId },
+            { $set: { collection_id: collectionId, topic: args.p_topic ?? null, tags: Array.isArray(args.p_tags) ? args.p_tags : [], assigned_at: now }, $setOnInsert: { workspace_id: workspace, media_id: mediaId } },
+            { upsert: true, session },
+          );
+        },
+      });
+      return null;
+    } finally { await session.endSession(); }
   }
 }
 

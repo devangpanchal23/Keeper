@@ -3,6 +3,7 @@ import { createBackendAdminClient, createBackendServerClient } from "@/lib/datab
 import { ContentService } from "@/services/content-service";
 import { getCanonicalIdentityKey, getAuthoritativeCanonicalUrl } from "@/lib/media-identity";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
+import { assertBackendConfiguration } from "@/lib/database/provider";
 import { SavedItem } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -17,14 +18,20 @@ export async function POST(req: NextRequest) {
   const localItems = Array.isArray(body.localItems) ? body.localItems : [];
 
   if (!isSupabaseConfigured()) {
-    return NextResponse.json({ items: localItems, synced: true, localOnly: true });
+    return NextResponse.json({ code: "BACKEND_NOT_CONFIGURED", error: "Workspace media storage is not configured." }, { status: 503 });
+  }
+  try {
+    assertBackendConfiguration();
+  } catch {
+    return NextResponse.json({ code: "BACKEND_NOT_CONFIGURED", error: "Workspace media storage is not configured." }, { status: 503 });
   }
 
   try {
     const supabase = await createBackendServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError) return NextResponse.json({ code: "AUTH_SERVICE_UNAVAILABLE", error: "Could not verify your workspace session." }, { status: 503 });
     if (!user) {
-      return NextResponse.json({ items: localItems, synced: true, localOnly: true });
+      return NextResponse.json({ code: "AUTH_REQUIRED", error: "Sign in to sync workspace media." }, { status: 401 });
     }
 
     const admin = createBackendAdminClient();
@@ -41,7 +48,6 @@ export async function POST(req: NextRequest) {
     }
 
     const serverByKey = new Map<string, { id: string; payload: SavedItem; status: string; canonical_url: string }>();
-    const duplicateIdsToDelete: string[] = [];
 
     for (const row of existingRows || []) {
       if (row.payload && typeof row.payload === "object") {
@@ -52,7 +58,6 @@ export async function POST(req: NextRequest) {
         if (existing) {
           // Merge duplicate row and queue redundant row for deletion
           existing.payload = ContentService.safeMerge(existing.payload, row.payload as SavedItem);
-          duplicateIdsToDelete.push(row.id);
         } else {
           serverByKey.set(key, {
             id: row.id,
@@ -61,13 +66,6 @@ export async function POST(req: NextRequest) {
             canonical_url: row.canonical_url,
           });
         }
-      }
-    }
-
-    // Clean up historical duplicate rows asynchronously
-    if (duplicateIdsToDelete.length > 0) {
-      for (const dupId of duplicateIdsToDelete) {
-        void admin.from("keeper_media").delete().eq("id", dupId).eq("workspace_id", user.id);
       }
     }
 
@@ -98,7 +96,7 @@ export async function POST(req: NextRequest) {
         };
 
         if (JSON.stringify(mergedPayload) !== JSON.stringify(existing.payload)) {
-          await admin
+          const { error: updateError } = await admin
             .from("keeper_media")
             .update({
               canonical_url: authoritativeUrl,
@@ -107,6 +105,7 @@ export async function POST(req: NextRequest) {
             })
             .eq("id", existing.id)
             .eq("workspace_id", user.id);
+          if (updateError) throw new Error("Workspace media update failed.");
           existing.payload = mergedPayload;
         }
       } else {
@@ -130,16 +129,44 @@ export async function POST(req: NextRequest) {
             status: processingStatus,
             canonical_url: authoritativeUrl,
           });
+        } else if (insertError.code === "23505") {
+          const { data: conflictRows, error: conflictReadError } = await admin
+            .from("keeper_media")
+            .select("id,payload,processing_status,canonical_url")
+            .eq("workspace_id", user.id)
+            .eq("canonical_url", authoritativeUrl)
+            .limit(1);
+          const conflictRow = conflictRows?.[0];
+          if (conflictReadError || !conflictRow?.payload) throw new Error("Workspace media conflict could not be reconciled.");
+          const mergedPayload = ContentService.safeMerge(conflictRow.payload as SavedItem, localItem);
+          const { error: conflictUpdateError } = await admin
+            .from("keeper_media")
+            .update({ payload: mergedPayload, updated_at: new Date().toISOString() })
+            .eq("id", conflictRow.id)
+            .eq("workspace_id", user.id);
+          if (conflictUpdateError) throw new Error("Workspace media conflict could not be saved.");
+          serverByKey.set(key, {
+            id: conflictRow.id,
+            payload: mergedPayload,
+            status: conflictRow.processing_status,
+            canonical_url: conflictRow.canonical_url,
+          });
+        } else {
+          throw new Error("Workspace media insert failed.");
         }
       }
     }
 
     // Final authoritative server library
-    const { data: finalRows } = await admin
+    const { data: finalRows, error: finalReadError } = await admin
       .from("keeper_media")
       .select("id,payload,processing_status,canonical_url,created_at,updated_at")
       .eq("workspace_id", user.id)
       .order("created_at", { ascending: false });
+
+    if (finalReadError) {
+      return NextResponse.json({ code: "MEDIA_READ_FAILED", error: "Workspace media is temporarily unavailable." }, { status: 503 });
+    }
 
     const seenFinalKeys = new Set<string>();
     const items: SavedItem[] = [];
@@ -167,8 +194,7 @@ export async function POST(req: NextRequest) {
       count: items.length,
       syncedAt: new Date().toISOString(),
     }, { headers: { "Cache-Control": "no-store" } });
-  } catch (error: unknown) {
-    console.warn("Media sync database notice, falling back to local items:", error);
-    return NextResponse.json({ items: localItems, synced: true, localOnly: true });
+  } catch {
+    return NextResponse.json({ code: "MEDIA_SYNC_FAILED", error: "Workspace media could not be synchronized." }, { status: 503 });
   }
 }

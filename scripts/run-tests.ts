@@ -29,6 +29,7 @@
 import { hashPassword, verifyPassword, generateInitialsAvatar } from "../src/services/auth-service";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { ProviderService } from "../src/services/provider-service";
 import { YouTubeProvider } from "../src/services/providers/youtube-provider";
 import { InstagramProvider } from "../src/services/providers/instagram-provider";
@@ -84,7 +85,10 @@ import { ContentAnalysisService, validateCollectionCandidateDecision } from "../
 import { CollectionMatchingService } from "../src/services/collection-matching-service";
 import { AssetClassificationService } from "../src/services/asset-classification-service";
 import { VisualTextService } from "../src/services/media/visual-text-service";
-import { aiJobRetryDelaySeconds, MAX_AI_JOB_ATTEMPTS, processingFailureCode, shouldRetryAiJob } from "../src/services/ai-job-retry-policy";
+import { AI_JOB_LEASE_SECONDS, AI_JOB_PROCESSING_STAGES, aiJobRetryDelaySeconds, MAX_AI_JOB_ATTEMPTS, processingFailureCode, shouldRetryAiJob } from "../src/services/ai-job-retry-policy";
+import { createContentFingerprint, createContentFingerprintCandidates, createLegacyContentFingerprint, getContentFingerprintFields } from "../src/services/content-fingerprint";
+import { createOssImportLedgerEntry, getOssImportCycle, getOssImportEntitlement } from "../src/services/usage-ledger-contract";
+import { persistWorkspaceAssignment } from "../src/services/workspace-assignment-contract";
 import { createHmac } from "node:crypto";
 import { handleRazorpayWebhook, type RazorpayWebhookStore } from "../src/lib/razorpay-webhook-handler";
 import { verifyRazorpaySubscriptionSignature, verifyRazorpayWebhookSignature } from "../src/lib/razorpay-signatures";
@@ -93,7 +97,8 @@ import { KEEPER_BILLING_PLANS } from "../src/lib/billing-plans";
 import { getMissingBillingServerVariables } from "../src/lib/billing-config";
 import { getCheckoutBlockDecision } from "../src/lib/billing-checkout-policy";
 import { getRazorpayConfigurationError, getSafeRazorpayErrorCode } from "../src/lib/razorpay-config";
-import { createAuthSessionMarker, isAuthSessionMarkerValid, AUTH_SESSION_DURATION_SECONDS } from "../src/lib/supabase/auth-session";
+import { createAuthSessionMarker, isAuthSessionMarkerValid, AUTH_SESSION_DURATION_SECONDS, authSessionCookieOptions } from "../src/lib/supabase/auth-session";
+import { readWorkspaceMedia } from "../src/services/workspace-media-read";
 import { getCanonicalIdentityKey, getAuthoritativeCanonicalUrl, isSameContentItem } from "../src/lib/media-identity";
 import { compareSourceTextWithCaption, shouldShowSourceTextAnalysis } from "../src/lib/source-text-comparison";
 
@@ -157,21 +162,137 @@ async function runSuite() {
   // ---------------------------------------------------------------------------
   console.log("1. Authentication & Cryptography Tests:");
 
-  await test("Signed session expiry markers reject tampering and expire after seven days", async () => {
+  await test("Session signing fails closed when the independent secret is missing, empty, or weak", async () => {
     const priorSecret = process.env.AUTH_SESSION_SECRET;
-    process.env.AUTH_SESSION_SECRET = "test-only-session-secret-with-more-than-32-characters";
+    const priorSupabaseValues = {
+      url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+      anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+      publishableKey: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+      serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    };
+    try {
+      delete process.env.AUTH_SESSION_SECRET;
+      process.env.NEXT_PUBLIC_SUPABASE_URL = "https://unit-test-project.supabase.co";
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "unit-test-public-key-not-a-signing-secret";
+      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = "unit-test-publishable-key-not-a-signing-secret";
+      process.env.SUPABASE_SERVICE_ROLE_KEY = "unit-test-service-role-key-not-a-signing-secret";
+      await assertRejects(() => createAuthSessionMarker(), "AUTH_SESSION_SECRET is required", "Missing session secret");
+      assert(!(await isAuthSessionMarkerValid("1798761600.invalid")), "Missing secret must invalidate existing markers.");
+
+      process.env.AUTH_SESSION_SECRET = "   ";
+      await assertRejects(() => createAuthSessionMarker(), "AUTH_SESSION_SECRET is required", "Empty session secret");
+      process.env.AUTH_SESSION_SECRET = "too-short";
+      await assertRejects(() => createAuthSessionMarker(), "at least 32 bytes", "Short session secret");
+      process.env.AUTH_SESSION_SECRET = "a".repeat(48);
+      await assertRejects(() => createAuthSessionMarker(), "strong, independently generated", "Repeated-character session secret");
+      process.env.AUTH_SESSION_SECRET = "password".repeat(5);
+      await assertRejects(() => createAuthSessionMarker(), "strong, independently generated", "Low-entropy session secret");
+      process.env.AUTH_SESSION_SECRET = `change-me-${"a".repeat(32)}`;
+      await assertRejects(() => createAuthSessionMarker(), "strong, independently generated", "Weak placeholder session secret");
+    } finally {
+      if (priorSecret === undefined) delete process.env.AUTH_SESSION_SECRET;
+      else process.env.AUTH_SESSION_SECRET = priorSecret;
+      if (priorSupabaseValues.url === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+      else process.env.NEXT_PUBLIC_SUPABASE_URL = priorSupabaseValues.url;
+      if (priorSupabaseValues.anonKey === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      else process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = priorSupabaseValues.anonKey;
+      if (priorSupabaseValues.publishableKey === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+      else process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = priorSupabaseValues.publishableKey;
+      if (priorSupabaseValues.serviceRoleKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+      else process.env.SUPABASE_SERVICE_ROLE_KEY = priorSupabaseValues.serviceRoleKey;
+    }
+  });
+
+  await test("Session markers validate, expire, reject tampering, rotate, and verify across instances", async () => {
+    const priorSecret = process.env.AUTH_SESSION_SECRET;
     try {
       const now = Date.UTC(2026, 0, 1);
+      process.env.AUTH_SESSION_SECRET = "K8p!wQ2m#L5vR9x@N4cT7zB1?fH6jD3s";
       const marker = await createAuthSessionMarker(now);
       assert(marker.expiresAt === Math.floor(now / 1000) + AUTH_SESSION_DURATION_SECONDS, "Session marker should have an exact seven-day expiry.");
       assert(await isAuthSessionMarkerValid(marker.value, now), "Fresh signed marker should validate.");
       assert(!(await isAuthSessionMarkerValid(marker.value, now + AUTH_SESSION_DURATION_SECONDS * 1000)), "Expired marker must be rejected.");
       const tampered = `${marker.value.slice(0, -1)}${marker.value.endsWith("A") ? "B" : "A"}`;
       assert(!(await isAuthSessionMarkerValid(tampered, now)), "Tampered marker must be rejected.");
+      const [expiration, suppliedSignature] = marker.value.split(".");
+      const invalidSignature = `${expiration}.${suppliedSignature.slice(0, -1)}${suppliedSignature.endsWith("A") ? "B" : "A"}`;
+      assert(!(await isAuthSessionMarkerValid(invalidSignature, now)), "Invalid signature must be rejected.");
+
+      process.env.AUTH_SESSION_SECRET = "M4z@cT9p!W2h#R7kV5x?Q1nB8sD6jF3!";
+      assert(!(await isAuthSessionMarkerValid(marker.value, now)), "Rotating the secret invalidates markers signed with the prior secret.");
+      process.env.AUTH_SESSION_SECRET = "K8p!wQ2m#L5vR9x@N4cT7zB1?fH6jD3s";
+      const multiInstanceMarker = await createAuthSessionMarker();
+      assert(await isAuthSessionMarkerValid(multiInstanceMarker.value), "A separate verifier with the same configured secret can verify a fresh marker.");
+      const childEnv = { ...process.env, AUTH_SESSION_SECRET: process.env.AUTH_SESSION_SECRET, KEEPER_TEST_SESSION_MARKER: multiInstanceMarker.value };
+      const childResult = execFileSync(process.execPath, [
+        "--import", "tsx", "--input-type=module", "-e",
+        'import authSession from "./src/lib/supabase/auth-session.ts"; console.log(await authSession.isAuthSessionMarkerValid(process.env.KEEPER_TEST_SESSION_MARKER));',
+      ], { cwd: process.cwd(), env: childEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+      assertEqual(childResult, "true", "A separate Node process verifies the same marker with the same configured secret.");
     } finally {
       if (priorSecret === undefined) delete process.env.AUTH_SESSION_SECRET;
       else process.env.AUTH_SESSION_SECRET = priorSecret;
     }
+  });
+
+  await test("Session cookie security attributes and controlled auth failures remain enforced", () => {
+    assert(authSessionCookieOptions.httpOnly, "Session cookie must remain HttpOnly.");
+    assertEqual(authSessionCookieOptions.sameSite, "lax", "Session cookie SameSite policy");
+    assertEqual(authSessionCookieOptions.path, "/", "Session cookie path");
+    assertEqual(AUTH_SESSION_DURATION_SECONDS, 7 * 24 * 60 * 60, "Session maximum lifetime");
+    const loginRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/auth/login/route.ts"), "utf8");
+    const signupRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/auth/signup/route.ts"), "utf8");
+    assert(loginRoute.includes('"Sign-in failed. Check your connection and try again."') && loginRoute.includes("{ status: 503 }"), "Login converts session configuration errors into a controlled response.");
+    assert(signupRoute.includes('"Sign-up failed. Check your connection and try again."') && signupRoute.includes("{ status: 503 }"), "Signup converts session configuration errors into a controlled response.");
+  });
+
+  await test("Workspace media reads distinguish empty, populated, auth, configuration, and backend failures", async () => {
+    const makeResponse = (status: number, payload: unknown) => ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => payload,
+    });
+    const empty = await readWorkspaceMedia(async () => makeResponse(200, { items: [] }));
+    assert(empty.kind === "success" && empty.items.length === 0, "A successful empty workspace is a valid empty library.");
+    const populated = await readWorkspaceMedia(async () => makeResponse(200, { items: [{ id: "media-a", url: "https://example.com/a" }] }));
+    assert(populated.kind === "success" && populated.items.length === 1, "A successful populated workspace returns its records.");
+    const auth = await readWorkspaceMedia(async () => makeResponse(401, { code: "AUTH_REQUIRED" }));
+    assert(auth.kind === "authentication", "Authentication failure is not interpreted as an empty library.");
+    const configuration = await readWorkspaceMedia(async () => makeResponse(503, { code: "BACKEND_NOT_CONFIGURED" }));
+    assert(configuration.kind === "configuration", "Backend configuration failure is distinguished.");
+    const backend = await readWorkspaceMedia(async () => makeResponse(503, { code: "MEDIA_READ_FAILED" }));
+    assert(backend.kind === "unavailable", "Backend query failure is distinguished from an empty library.");
+    const network = await readWorkspaceMedia(async () => { throw new Error("private transport details"); });
+    assert(network.kind === "unavailable" && !network.message.includes("private"), "Transport errors return a safe generic result.");
+
+    const mediaRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/media/route.ts"), "utf8");
+    const collectionsRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/collections/sync/route.ts"), "utf8");
+    const syncContext = fs.readFileSync(path.join(process.cwd(), "src/context/RecallContext.tsx"), "utf8");
+    const readPosition = syncContext.indexOf("const serverRead = await readWorkspaceMedia()");
+    const collectionsReadPosition = syncContext.indexOf("const collectionsPreflight = await fetch");
+    const migrationPosition = syncContext.indexOf("MigrationService.migrateLegacyData(activeId)");
+    assert(mediaRoute.includes('status: 401') && mediaRoute.includes('status: 503') && mediaRoute.includes("{ items }"), "Media GET exposes explicit auth/backend failure statuses and successful items payloads.");
+    assert(!mediaRoute.includes("{ items: [] }"), "Media GET never encodes backend failure as an empty library.");
+    assert(readPosition >= 0 && collectionsReadPosition > readPosition && migrationPosition > collectionsReadPosition
+      && syncContext.includes("if (serverRead.kind !== \"success\")"), "Workspace sync validates media and collection reads before local migration and reconciliation.");
+    assert(collectionsRoute.includes('status: 401') && collectionsRoute.includes('status: 503')
+      && !collectionsRoute.includes("localOnly: true"), "Collection sync does not report auth or backend failures as successful local-only operations.");
+  });
+
+  await test("Opt-in Supabase isolation test requires disposable config and protects production before network access", () => {
+    const runner = fs.readFileSync(path.join(process.cwd(), "scripts/run-tests.ts"), "utf8");
+    const liveTestStart = runner.lastIndexOf('await test("Opt-in dedicated Supabase project RLS tenant-isolation verification"');
+    const missingConfigGuard = runner.indexOf("assert(missing.length === 0", liveTestStart);
+    const disposableGuard = runner.indexOf("assert(disposableConfirmation === \"true\"", liveTestStart);
+    const productionGuard = runner.indexOf("assert(projectRef !== productionProjectRef", liveTestStart);
+    const clientImport = runner.indexOf('await import("@supabase/supabase-js")', liveTestStart);
+    const preflightSource = runner.slice(liveTestStart, clientImport);
+    assert(missingConfigGuard >= 0 && disposableGuard > missingConfigGuard && productionGuard > disposableGuard && clientImport > productionGuard, "All isolated-project guards run before Supabase client/network initialization.");
+    assert(runner.includes("KEEPER_TEST_SUPABASE_IS_DISPOSABLE") && runner.includes("KEEPER_PRODUCTION_SUPABASE_PROJECT_REF")
+      && preflightSource.includes("NEXT_PUBLIC_SUPABASE_URL") && !preflightSource.includes(".env.local"), "The live test requires explicit disposable and production refs without loading developer environment files.");
+    assert(runner.includes('"Workspace A cannot read Workspace B media."')
+      && runner.includes('"Workspace A cannot modify Workspace B media."')
+      && runner.includes('"Workspace A cannot delete Workspace B media."'), "Cross-workspace read, update, and delete assertions remain present.");
   });
 
   await test("hashPassword produces salted hex digest", async () => {
@@ -3533,6 +3654,8 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       const conversationRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/ai/conversations/[conversationId]/route.ts"), "utf8");
       const messageRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/ai/conversations/[conversationId]/messages/route.ts"), "utf8");
       const assistantRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/ai/assistant-answer/route.ts"), "utf8");
+      const workerRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/ai/worker/route.ts"), "utf8");
+      const mediaRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/media/route.ts"), "utf8");
       assert(migration.includes("workspace_id = auth.uid()") && migration.includes("enable row level security"), "Both history tables are protected by workspace RLS");
       assert(conversationRoute.includes(`eq("workspace_id", user.id)`), "Conversation mutations are scoped to the authenticated account");
       assert(messageRoute.includes(`eq("workspace_id", user.id)`) && messageRoute.includes("input.content.length > 12_000"), "Messages are checked against the authenticated workspace; limits are enforced by the API");
@@ -3541,6 +3664,10 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
         && assistantRoute.includes(`.eq("workspace_id", user.id).in("id", requestedMediaIds)`)
         && assistantRoute.includes(`.eq("workspace_id", user.id).eq("id", input.collectionId)`)
         && assistantRoute.includes("memberships.includes(input.collectionId)"), "External synthesis is policy-gated and candidate rows and selected collection memberships are checked against the authenticated workspace");
+      const workerWorkspaceScopedMediaAccesses = workerRoute.split(`.eq("id", job.media_id).eq("workspace_id", job.workspace_id)`).length - 1;
+      assert(workerWorkspaceScopedMediaAccesses >= 2, "Background processing reads and updates media using both job media ID and workspace ID");
+      assert((mediaRoute.match(/\.eq\("workspace_id", user\.id\)/g) || []).length >= 6
+        && mediaRoute.includes("ContentService.safeMerge(existingPayload, updates)"), "Media CRUD and synchronization API operations scope records to the authenticated workspace and preserve safe merge rules");
     });
 
     await test("Assistant model output accepts only known item IDs with exact source quotes", async () => {
@@ -5568,6 +5695,364 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
     });
 
     console.log("Universal Content Intelligence Tests:");
+    await test("shares a typed AI-job lifecycle with distinct media failure states", () => {
+      for (const stage of ["MEDIA_FOUND", "EXTRACTING_AUDIO", "TRANSCRIPT_READY"] as const) {
+        assert(AI_JOB_PROCESSING_STAGES.includes(stage), `${stage} is a recognized processing stage`);
+      }
+      assert(!AI_JOB_PROCESSING_STAGES.includes("COMPLETED" as never), "Terminal completion is not an active stage");
+      assert(!AI_JOB_PROCESSING_STAGES.includes("FAILED" as never), "Terminal failure is not an active stage");
+      const types = fs.readFileSync(path.join(process.cwd(), "src/types/index.ts"), "utf8");
+      assert(types.includes('export type AIJobStatus = AIJobProcessingStage | "COMPLETED" | "FAILED";'), "AI jobs expose only generic terminal states");
+      assert(types.includes('export type MediaProcessingFailureStatus ='), "Stage-specific failure status is media-specific");
+    });
+
+    await test("applies table-driven AI job retry, lease, exhaustion, and delay rules", () => {
+      const retryCases = [
+        { attempts: 1, error: new Error("Provider returned HTTP 503"), expected: true },
+        { attempts: 4, error: new Error("Request timed out"), expected: true },
+        { attempts: 5, error: new Error("Provider returned HTTP 503"), expected: false },
+        { attempts: 1, error: new Error("Unsupported media format"), expected: false },
+        { attempts: 1, error: new Error("Provider returned HTTP 401"), expected: false },
+      ];
+      for (const scenario of retryCases) {
+        assertEqual(shouldRetryAiJob(scenario.attempts, scenario.error), scenario.expected, `Retry eligibility at attempt ${scenario.attempts} for ${scenario.error.message}`);
+      }
+      const delays = [[1, 15], [2, 30], [3, 60], [4, 120], [5, 240], [20, 3600]] as const;
+      for (const [attempts, seconds] of delays) assertEqual(aiJobRetryDelaySeconds(attempts), seconds, `Delay for attempt ${attempts}`);
+      assertEqual(MAX_AI_JOB_ATTEMPTS, 5, "Five total claims are allowed");
+      assertEqual(AI_JOB_LEASE_SECONDS, 300, "A claim lease is five minutes");
+      assertEqual(processingFailureCode(new Error("Unsupported media format")), "UNSUPPORTED_MEDIA", "Terminal media errors keep a normalized failure code");
+    });
+
+    await test("matches versioned fingerprint v1 golden vectors", () => {
+      const fingerprint = (title: string, other: Partial<{ description: string; caption: string; bodyText: string }> = {}) => createContentFingerprint({ title, ...other });
+      assertEqual(createContentFingerprint({}), null, "Empty evidence has no fingerprint");
+      assertEqual(fingerprint("a".repeat(79)), null, "79 Unicode scalar values are below threshold");
+      assertEqual(fingerprint("a".repeat(80)), "v1:0f45e858fbc4176cdf4e411f88281edefc390ae5afe7df0f44cd9297f0a64580", "80 scalar values match the ASCII golden vector");
+      assert(fingerprint("a".repeat(81))?.startsWith("v1:") === true, "81 scalar values produce a versioned fingerprint");
+      assertEqual(fingerprint("😀".repeat(79)), null, "Emoji threshold counts Unicode scalar values, not UTF-16 code units");
+      assertEqual(fingerprint("😀".repeat(80)), "v1:f84978389fab1f970b5a96465440c9355994ed70679be290f277c3f1b317e962", "Emoji golden vector is stable");
+      assertEqual(fingerprint("नमस्ते世界".repeat(12)), "v1:872be1d7514644b79036f8aa2bb90902969cfa59113cf595a87743dae6c3d737", "Multilingual golden vector is stable");
+      assertEqual(fingerprint("e\u0301".repeat(80)), fingerprint("é".repeat(80)), "NFC-equivalent strings match");
+      assertEqual(fingerprint("é".repeat(80)), "v1:4d214f0a32f98694c3360b22dc7c8a83b21f839fe7516c67b1ffffc629125e18", "NFC text matches its golden vector");
+      assertEqual(fingerprint("A".repeat(80)), fingerprint("a".repeat(80)), "Case normalization is deterministic and locale independent");
+      assertEqual(fingerprint("Keeper\t   makes\nknowledge   useful ".repeat(8)), "v1:e5b4ffd28885d208c860240f2d9b1aa546bd7714c3672210a8549802aa924545", "Whitespace runs collapse to one ASCII space");
+      const left = createContentFingerprint({ title: "a".repeat(40), description: "b".repeat(40) });
+      const right = createContentFingerprint({ title: "a".repeat(39), description: "b".repeat(41) });
+      assertEqual(left, "v1:04d25a78e94b819795564bae033c5e18af561f41bbbb55db30459d3e99b22aae", "Field boundary golden vector uses the stable separator");
+      assertEqual(right, "v1:b2c98adca09f31cf8034008b1f605f888c8c1431e42bab12cd6e56f9f5f36366", "Different field boundaries produce a different digest");
+      assert(left !== right, "Fingerprint preserves field boundaries");
+    });
+
+    await test("supports legacy fingerprint dual-read and v1 recomputation on payload writes", () => {
+      const fields = { title: "a".repeat(40), description: "b".repeat(40) };
+      assertEqual(createLegacyContentFingerprint(fields), "f39f39b37e9d0fca58f17b9acbfc0d1cb55859c2ec85d6c384f968a510b46282", "Legacy candidate exactly matches the historical space-joined TypeScript/Mongo digest");
+      const candidates = createContentFingerprintCandidates(fields, ["f39f39b37e9d0fca58f17b9acbfc0d1cb55859c2ec85d6c384f968a510b46282"]);
+      assert(candidates.includes("v1:04d25a78e94b819795564bae033c5e18af561f41bbbb55db30459d3e99b22aae"), "Dual-read includes the versioned v1 candidate");
+      assert(candidates.includes("f39f39b37e9d0fca58f17b9acbfc0d1cb55859c2ec85d6c384f968a510b46282"), "Dual-read includes the bare legacy digest");
+      assert(/^[0-9a-f]{64}$/u.test(createLegacyContentFingerprint(fields) || ""), "Legacy values retain the lowercase bare SHA-256 format");
+
+      const originalPayload = {
+        title: "a".repeat(40), description: "b".repeat(40),
+        metadata: { caption: "source caption", bodyText: "source body" },
+        aiSummary: { standard: "AI-generated summary" }, tags: ["generated-tag"], transcript: "derived transcript",
+        provenance: { caption: "official export" },
+      };
+      const before = structuredClone(originalPayload);
+      const insertedFingerprint = createContentFingerprint(getContentFingerprintFields(originalPayload));
+      const userEditedPayload = { ...originalPayload, metadata: { ...originalPayload.metadata, personalNotes: "User note" } };
+      const updateFingerprint = createContentFingerprint(getContentFingerprintFields(userEditedPayload));
+      assertEqual(updateFingerprint, insertedFingerprint, "Insert and payload update produce the same fingerprint when source evidence is unchanged");
+      assertEqual(JSON.stringify(originalPayload), JSON.stringify(before), "Fingerprint creation preserves source payload and provenance");
+
+      const shortUpdate = { ...userEditedPayload, description: "short" };
+      assertEqual(createContentFingerprint(getContentFingerprintFields(shortUpdate)), null, "Long-to-short update clears the fingerprint");
+      const emptyUpdate = { title: "  \t\n", description: "", metadata: { caption: "  ", bodyText: "" } };
+      assertEqual(createContentFingerprint(getContentFingerprintFields(emptyUpdate)), null, "Nonempty-to-whitespace/empty update clears the fingerprint");
+      const withChangedAiOutputs = { ...originalPayload, aiSummary: { standard: "different output" }, tags: ["different"], transcript: "another derived transcript" };
+      assertEqual(createContentFingerprint(getContentFingerprintFields(withChangedAiOutputs)), insertedFingerprint, "AI summaries, tags, and transcripts do not affect source fingerprinting");
+
+      const postgres = fs.readFileSync(path.join(process.cwd(), "src/lib/database/postgres-store.ts"), "utf8");
+      const mongo = fs.readFileSync(path.join(process.cwd(), "src/lib/database/mongodb-store.ts"), "utf8");
+      const postgresImport = postgres.slice(postgres.indexOf("private async importMedia"), postgres.indexOf("private async claimJob"));
+      const mongoImport = mongo.slice(mongo.indexOf("private async importMedia"), mongo.indexOf("private async claimJob"));
+      assert(postgresImport.includes("createContentFingerprintCandidates") && postgresImport.includes("content_fingerprint=ANY($5::text[])"), "PostgreSQL dual-read searches v1 and legacy candidates");
+      assert(postgresImport.includes("WHERE workspace_id=$1") && postgresImport.includes("legacyPostgresFingerprint") && postgresImport.includes("SET content_fingerprint=$1"), "PostgreSQL search is workspace-scoped and reapplies v1 after its legacy trigger");
+      assert(mongoImport.includes("createContentFingerprintCandidates") && mongoImport.includes("workspace_id: workspaceId") && mongoImport.includes("fingerprintCandidates.map"), "Mongo duplicate lookup is workspace-scoped and searches both formats");
+      assert(mongoImport.includes("content_fingerprint: fingerprint || null") === false && mongoImport.includes("content_fingerprint: fingerprint"), "Mongo inserts the v1 fingerprint, including null to clear short content");
+      assert(postgres.includes("writesPayload") && postgres.includes("getContentFingerprintFields(row.payload)"), "PostgreSQL generic media inserts, upserts, and payload updates recompute fingerprints");
+      assert(mongo.includes("withMediaFingerprint") && mongo.includes("withMediaFingerprint(this.table, this.values)"), "Mongo generic media payload writes recompute fingerprints without adding fields to other collections");
+      assert(postgres.includes("SET content_fingerprint=$1 WHERE id=$2 AND workspace_id=$3") && mongo.includes("content_fingerprint: createContentFingerprint(getContentFingerprintFields(next))"), "Custom payload update paths explicitly recompute or clear fingerprints");
+      assert(postgresImport.includes("if (duplicate.rows[0]) { await client.query(\"COMMIT\")") && mongoImport.includes("if (existing) { response = { media_id:"), "Fingerprint duplicates are reported without automatic merge writes");
+    });
+
+    await test("normalizes OSS usage ledger entries only for successful new imports", () => {
+      const cycle = getOssImportCycle(new Date("2026-11-12T00:00:00.000Z"), new Date("2026-11-01T00:00:00.000Z"));
+      const entry = createOssImportLedgerEntry("created", cycle);
+      assertEqual(JSON.stringify(entry), JSON.stringify({ event_type: "FREE_IMPORT", plan: "free", amount: 1, cycle_start: "2026-11-08T00:00:00.000Z", cycle_end: "2026-11-15T00:00:00.000Z" }), "New successful imports use the canonical ledger shape and workspace-anchored weekly cycle");
+      assertEqual(createOssImportLedgerEntry("duplicate"), null, "Duplicates do not generate usage entries");
+      assertEqual(createOssImportLedgerEntry("noop"), null, "No-op imports do not generate usage entries");
+      assertEqual(JSON.stringify(getOssImportEntitlement()), JSON.stringify({ plan: "free", unlimited: true, limit: null }), "OSS entitlement is unlimited independently of subscription and usage records");
+      for (const used of [31, 301, 1000]) {
+        assertEqual(getOssImportEntitlement().limit, null, `Usage ${used} does not impose a product quota`);
+      }
+      for (const status of ["active", "cancelled", "expired"]) {
+        assertEqual(getOssImportEntitlement().unlimited, true, `${status} historical subscription status does not restrict OSS imports`);
+      }
+
+      const postgres = fs.readFileSync(path.join(process.cwd(), "src/lib/database/postgres-store.ts"), "utf8");
+      const mongo = fs.readFileSync(path.join(process.cwd(), "src/lib/database/mongodb-store.ts"), "utf8");
+      const postgresImport = postgres.slice(postgres.indexOf("private async importMedia"), postgres.indexOf("private async claimJob"));
+      const mongoImport = mongo.slice(mongo.indexOf("private async importMedia"), mongo.indexOf("private async claimJob"));
+      assert(!postgresImport.includes("billing_subscriptions") && !postgresImport.includes("CREDIT_LIMIT_REACHED"), "PostgreSQL import no longer reads subscriptions or applies legacy quotas");
+      assert(!mongoImport.includes("billing_subscriptions") && !mongoImport.includes("CREDIT_LIMIT_REACHED"), "MongoDB import no longer reads subscriptions or applies legacy quotas");
+      assert(postgresImport.includes("ledgerEntry.event_type") && postgresImport.includes("ledgerEntry.amount") && postgresImport.includes("BEGIN") && postgresImport.includes("ROLLBACK"), "PostgreSQL writes normalized usage in its import transaction");
+      assert(mongoImport.includes("...ledgerEntry") && mongoImport.includes("session") && mongoImport.includes("withTransaction"), "MongoDB writes normalized usage in its import transaction");
+      assertEqual((postgresImport.match(/INSERT INTO public\.keeper_usage_ledger/g) || []).length, 1, "PostgreSQL new-import path has one ledger insert site");
+      assertEqual((mongoImport.match(/ledger\.insertOne/g) || []).length, 1, "MongoDB new-import path has one ledger insert site");
+      assert(postgresImport.indexOf("if (duplicate.rows[0])") < postgresImport.indexOf("INSERT INTO public.keeper_usage_ledger"), "PostgreSQL duplicate returns before usage is recorded");
+      assert(mongoImport.indexOf("if (existing)") < mongoImport.indexOf("ledger.insertOne"), "MongoDB duplicate returns before usage is recorded");
+      assert(postgresImport.includes("catch (error) { await client.query(\"ROLLBACK\")") && mongoImport.includes("await session.withTransaction"), "Failed media/job/ledger work remains enclosed by provider transaction rollback boundaries");
+
+      const usageRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/usage/route.ts"), "utf8");
+      assert(usageRoute.includes("usageAvailable: true") && usageRoute.includes("usageAvailable: false") && usageRoute.includes("used: null"), "Usage API distinguishes accurate totals from unavailable reads");
+      assert(usageRoute.includes("remaining: null") && usageRoute.includes("unlimited: true"), "Usage API always reports the OSS unlimited entitlement");
+      const ingestRoute = fs.readFileSync(path.join(process.cwd(), "src/app/api/ingest/route.ts"), "utf8");
+      assert(ingestRoute.includes("if (importError)") && ingestRoute.includes("status: 503") && !ingestRoute.includes("quotaReached"), "Failed Supabase import RPCs are not reported as successful imports");
+    });
+
+    await test("Supabase OSS import migration preserves auth, tenant scope, RPC shape, and normalized usage", () => {
+      const migrationPath = "supabase/migrations/202611020001_phase_1c_6_oss_import_entitlements.sql";
+      const migration = fs.readFileSync(path.join(process.cwd(), migrationPath), "utf8");
+      const fn = migration.slice(migration.indexOf("create or replace function public.keeper_import_media"), migration.indexOf("-- CREATE OR REPLACE preserves"));
+      assert(migration.startsWith("begin;") && migration.trimEnd().endsWith("commit;"), "Forward migration is wrapped in a transaction");
+      assert(fn.includes("security definer") && fn.includes("set search_path = pg_catalog"), "Function retains security-definer with a catalog-only trusted search path");
+      assert(fn.includes("v_workspace uuid := auth.uid()") && fn.includes("if v_workspace is null"), "Function retains authenticated workspace derivation and rejection");
+      assert(fn.includes("where workspace_id = v_workspace") && fn.includes("workspace_id = v_workspace"), "Duplicate and usage reads stay workspace-scoped");
+      assert(!/billing_subscriptions|CREDIT_LIMIT_REACHED|v_limit|v_sub|IMPORT_CREDIT/iu.test(fn), "No subscription-derived import quota or paid usage event remains");
+      assertEqual((fn.match(/insert into public\.keeper_usage_ledger/giu) || []).length, 1, "Function has exactly one new-import ledger insertion site");
+      assert(/event_type, plan, amount, cycle_start, cycle_end[\s\S]*?'FREE_IMPORT', 'free', 1, v_cycle_start, v_cycle_end/iu.test(fn), "Ledger event matches shared OSS event, plan, amount, and weekly cycle contract");
+      assert(fn.includes("pg_catalog.date_trunc('milliseconds', free_cycle_anchor)"), "Supabase cycle anchor precision matches JavaScript Date precision in PostgreSQL and MongoDB providers");
+      assert(fn.includes("pg_catalog.floor(extract(epoch from (v_now - v_cycle_anchor)) / 604800) * 604800"), "Cycle starts use fixed 604800-second elapsed-time arithmetic");
+      assert(fn.includes("pg_catalog.to_timestamp(extract(epoch from v_cycle_start) + 604800)"), "Cycle end advances by a fixed 604800 seconds");
+      assert(fn.includes("v_now := pg_catalog.clock_timestamp()"), "Cycle time is sampled after workspace locking rather than using transaction-start time");
+      const cycleSql = fn.slice(fn.indexOf("v_cycle_start := pg_catalog.to_timestamp"), fn.indexOf("select count(*)::integer into v_used"));
+      assert(cycleSql.includes("extract(epoch") && cycleSql.includes("to_timestamp") && !/interval\s+'7 days'|\+\s*interval\s+/iu.test(cycleSql), "Cycle logic is epoch-based and independent of calendar/DST arithmetic");
+      assert(fn.includes("from pg_catalog.pg_extension as e") && fn.includes("join pg_catalog.pg_namespace as n"), "The pgcrypto namespace is resolved from extension catalogs rather than guessed");
+      assert(fn.includes("pg_catalog.format(") && fn.includes("%I.digest($1::text, $2::text)") && fn.includes("using v_fingerprint_text, 'sha256'"), "Digest invocation schema-qualifies a quoted extension namespace and binds values");
+      assert(fn.includes("pg_catalog.encode(") && !fn.includes("v_fingerprint := encode(digest("), "Sensitive digest/encode resolution cannot be shadowed through public search_path");
+      assert(fn.includes("if found then\n    return jsonb_build_object('duplicate'") && fn.indexOf("if found then\n    return jsonb_build_object('duplicate'") < fn.indexOf("insert into public.keeper_usage_ledger"), "Duplicate handling returns before ledger insertion");
+      assert(fn.indexOf("insert into public.keeper_media(") < fn.indexOf("insert into public.keeper_usage_ledger") && fn.indexOf("insert into public.keeper_usage_ledger") < fn.indexOf("insert into public.keeper_ai_jobs"), "Media, usage and job writes are ordered within one transaction");
+      assert(fn.includes("'media_id', v_media.id") && fn.includes("'status', 'QUEUED'") && fn.includes("'duplicate', false") && fn.includes("'remaining', null") && fn.includes("'cycle_end', v_cycle_end"), "New-import RPC response preserves caller fields and unlimited remaining semantics");
+      assert(fn.includes("public.keeper_import_media(") && /p_canonical_url text,\s*p_payload jsonb,\s*p_idempotency_key text\s*\) returns jsonb/iu.test(fn), "RPC signature remains compatible with the existing caller");
+      assert(migration.includes("from public, anon") && migration.includes("to authenticated"), "Function execute grant remains restricted to authenticated role");
+      assert(!/\b(drop|truncate)\b|delete\s+from|update\s+public\./iu.test(migration) && (migration.match(/create or replace function/giu) || []).length === 1, "Migration changes only this function and its existing narrow grant, with no destructive statements");
+
+      const caller = fs.readFileSync(path.join(process.cwd(), "src/app/api/ingest/route.ts"), "utf8");
+      assert(caller.includes('supabase.rpc("keeper_import_media"') && caller.includes("media_id?: string; status?: string; duplicate?: boolean"), "Application caller continues using the existing RPC name and response fields");
+      for (const used of [31, 301, 1000]) assertEqual(getOssImportEntitlement().limit, null, `OSS imports remain unlimited above ${used} prior events`);
+      for (const status of ["active", "cancelled", "expired"]) assertEqual(getOssImportEntitlement().unlimited, true, `${status} legacy subscription state is ignored by OSS entitlement`);
+    });
+
+    await test("validates assignment parents and rolls back failed writes without cross-workspace leakage", async () => {
+      interface MockAssignment {
+        workspaceId: string;
+        mediaId: string;
+        collectionId: string | null;
+        topic: string | null;
+      }
+      const mediaOwners = new Map([["media-a", "workspace-a"], ["media-b", "workspace-b"]]);
+      const collectionOwners = new Map([["collection-a", "workspace-a"], ["collection-b", "workspace-b"]]);
+      let assignments: MockAssignment[] = [{ workspaceId: "workspace-b", mediaId: "media-b", collectionId: "collection-b", topic: "private" }];
+      const transactionEvents: string[] = [];
+      const persistMock = async (workspaceId: string, mediaId: string, collectionId: string | null, topic: string | null) => {
+        await persistWorkspaceAssignment({ workspaceId, mediaId, collectionId }, {
+          transaction: async (operation) => {
+            const before = structuredClone(assignments);
+            transactionEvents.push("begin");
+            try {
+              const result = await operation();
+              transactionEvents.push("commit");
+              return result;
+            } catch (error) {
+              assignments = before;
+              transactionEvents.push("rollback");
+              throw error;
+            }
+          },
+          findMediaWorkspaceId: async (id) => mediaOwners.get(id) || null,
+          findCollectionWorkspaceId: async (_workspaceId, id) => collectionOwners.get(id) || null,
+          writeAssignment: async () => {
+            assignments = assignments.filter((assignment) => !(assignment.workspaceId === workspaceId && assignment.mediaId === mediaId));
+            assignments.push({ workspaceId, mediaId, collectionId, topic });
+          },
+        });
+      };
+
+      await persistMock("workspace-a", "media-a", "collection-a", "valid");
+      assert(assignments.some((assignment) => assignment.workspaceId === "workspace-a" && assignment.mediaId === "media-a" && assignment.collectionId === "collection-a"), "Same-workspace media and collection assignment succeeds");
+
+      const cases = [
+        { name: "media from another workspace", mediaId: "media-b", collectionId: null, message: "MEDIA_NOT_FOUND" },
+        { name: "collection from another workspace", mediaId: "media-a", collectionId: "collection-b", message: "COLLECTION_NOT_FOUND" },
+        { name: "missing media", mediaId: "missing-media", collectionId: null, message: "MEDIA_NOT_FOUND" },
+        { name: "missing collection", mediaId: "media-a", collectionId: "missing-collection", message: "COLLECTION_NOT_FOUND" },
+      ] as const;
+      for (const scenario of cases) {
+        const before = JSON.stringify(assignments);
+        let errorMessage = "";
+        try { await persistMock("workspace-a", scenario.mediaId, scenario.collectionId, "invalid"); }
+        catch (error) { errorMessage = error instanceof Error ? error.message : String(error); }
+        assertEqual(errorMessage, scenario.message, `Rejects ${scenario.name} with a non-disclosing error`);
+        assertEqual(JSON.stringify(assignments), before, `${scenario.name} does not change assignment records`);
+      }
+
+      const beforeInvalidUpdate = JSON.stringify(assignments);
+      let updateRejected = false;
+      try { await persistMock("workspace-a", "media-b", "collection-a", "attempted overwrite"); }
+      catch { updateRejected = true; }
+      assert(updateRejected, "An assignment update with an invalid media parent is rejected");
+      assertEqual(JSON.stringify(assignments), beforeInvalidUpdate, "Invalid assignment update preserves prior records");
+      assert(transactionEvents.includes("rollback"), "Validation failure triggers transaction rollback");
+      assert(transactionEvents.filter((event) => event === "commit").length === 1, "Only the valid assignment commits");
+      assert(assignments.some((assignment) => assignment.workspaceId === "workspace-b" && assignment.mediaId === "media-b" && assignment.topic === "private"), "Workspace A cannot read or overwrite Workspace B assignment data");
+
+      const postgres = fs.readFileSync(path.join(process.cwd(), "src/lib/database/postgres-store.ts"), "utf8");
+      const mongo = fs.readFileSync(path.join(process.cwd(), "src/lib/database/mongodb-store.ts"), "utf8");
+      assert(postgres.includes("persistWorkspaceAssignment") && postgres.includes("FOR KEY SHARE") && postgres.includes("ROLLBACK"), "PostgreSQL uses shared validation, parent row locks, and rollback");
+      assert(mongo.includes("persistWorkspaceAssignment") && mongo.includes("session.withTransaction(operation)"), "MongoDB uses shared validation inside its replica-set transaction");
+    });
+
+    await test("simulates canonical AI-job claims, lease recovery, exhaustion, ordering, and concurrent workers", async () => {
+      interface SimulatedJob {
+        id: string;
+        status: string;
+        attempts: number;
+        availableAt: string;
+        lockedUntil: string | null;
+        createdAt: string;
+        lastError: string | null;
+        failureCode: string | null;
+        mediaStatus: string;
+      }
+      const simulateClaim = (jobs: SimulatedJob[], nowValue: string): SimulatedJob | null => {
+        const now = Date.parse(nowValue);
+        for (const job of jobs) {
+          const leaseExpired = job.lockedUntil === null || Date.parse(job.lockedUntil) <= now;
+          if (AI_JOB_PROCESSING_STAGES.includes(job.status as typeof AI_JOB_PROCESSING_STAGES[number])
+            && job.attempts >= MAX_AI_JOB_ATTEMPTS && leaseExpired) {
+            job.status = "FAILED";
+            job.lockedUntil = null;
+            job.lastError ??= "Worker lease expired after the retry limit.";
+            job.failureCode ??= "RETRY_EXHAUSTED";
+            job.mediaStatus = "FAILED";
+          }
+        }
+        const candidates = jobs.filter((job) =>
+          AI_JOB_PROCESSING_STAGES.includes(job.status as typeof AI_JOB_PROCESSING_STAGES[number])
+          && job.attempts < MAX_AI_JOB_ATTEMPTS
+          && Date.parse(job.availableAt) <= now
+          && (job.lockedUntil === null || Date.parse(job.lockedUntil) <= now),
+        ).sort((left, right) => left.availableAt.localeCompare(right.availableAt)
+          || left.createdAt.localeCompare(right.createdAt)
+          || left.id.localeCompare(right.id));
+        const claimed = candidates[0];
+        if (!claimed) return null;
+        claimed.status = "EXTRACTING";
+        claimed.attempts += 1;
+        claimed.lockedUntil = new Date(now + AI_JOB_LEASE_SECONDS * 1000).toISOString();
+        return claimed;
+      };
+      const now = "2026-11-02T00:10:00.000Z";
+      const retryCases = [
+        { attempts: 1, error: new Error("HTTP 503 provider unavailable"), retry: true, status: "QUEUED" },
+        { attempts: 1, error: new Error("HTTP 401 unauthorized"), retry: false, status: "FAILED" },
+        { attempts: MAX_AI_JOB_ATTEMPTS, error: new Error("HTTP 503 provider unavailable"), retry: false, status: "FAILED" },
+      ] as const;
+      for (const scenario of retryCases) {
+        const retry = shouldRetryAiJob(scenario.attempts, scenario.error);
+        assertEqual(retry, scenario.retry, `Retry policy classifies ${scenario.error.message}`);
+        assertEqual(retry ? "QUEUED" : "FAILED", scenario.status, `Failure transition for ${scenario.error.message}`);
+      }
+      const delayCases = [[1, 15], [2, 30], [3, 60], [4, 120], [5, 240], [9, 3600], [100, 3600]] as const;
+      for (const [attempts, expectedSeconds] of delayCases) {
+        assertEqual(aiJobRetryDelaySeconds(attempts), expectedSeconds, `Retry delay for claim ${attempts}`);
+      }
+      const makeJob = (status: string, id = `job-${status}`): SimulatedJob => ({
+        id, status, attempts: 2, availableAt: "2026-11-02T00:00:00.000Z", lockedUntil: null,
+        createdAt: "2026-11-01T00:00:00.000Z", lastError: null, failureCode: null, mediaStatus: status,
+      });
+
+      for (const stage of AI_JOB_PROCESSING_STAGES) {
+        const job = makeJob(stage);
+        const claimed = simulateClaim([job], now);
+        assertEqual(claimed?.status, "EXTRACTING", `${stage} is claimable and transitions to EXTRACTING`);
+        assertEqual(claimed?.attempts, 3, `${stage} claim increments attempts exactly once`);
+        assertEqual(claimed?.lockedUntil, "2026-11-02T00:15:00.000Z", `${stage} receives a five-minute lease`);
+      }
+
+      const futureJob = makeJob("QUEUED", "future");
+      futureJob.availableAt = "2026-11-02T00:11:00.000Z";
+      assertEqual(simulateClaim([futureJob], now), null, "A retry is not claimable before available_at");
+      const lockedJob = makeJob("MEDIA_FOUND", "live-lock");
+      lockedJob.lockedUntil = "2026-11-02T00:11:00.000Z";
+      assertEqual(simulateClaim([lockedJob], now), null, "An unexpired worker lease prevents another claim");
+
+      const recoverable = makeJob("TRANSCRIPT_READY", "recoverable-fifth-claim");
+      recoverable.attempts = 4;
+      recoverable.lockedUntil = "2026-11-02T00:09:59.000Z";
+      assertEqual(simulateClaim([recoverable], now)?.attempts, 5, "An expired fourth claim is recoverable as the fifth claim");
+      recoverable.lockedUntil = "2026-11-02T00:09:59.000Z";
+      const afterExhaustion = simulateClaim([recoverable], now);
+      assertEqual(afterExhaustion, null, "An expired fifth attempt is terminalized and not claimed again");
+      assertEqual(recoverable.status, "FAILED", "Exhausted job has a generic terminal job status");
+      assertEqual(recoverable.mediaStatus, "FAILED", "Expired-worker media is terminalized separately");
+      assertEqual(recoverable.failureCode, "RETRY_EXHAUSTED", "Exhaustion receives the canonical failure code");
+      assertEqual(recoverable.lockedUntil, null, "Terminal exhaustion clears the lease");
+
+      const historical = makeJob("INDEXING", "historical-code");
+      historical.attempts = 5;
+      historical.lockedUntil = "2026-11-02T00:09:59.000Z";
+      historical.failureCode = "LEGACY_UNKNOWN_CODE";
+      simulateClaim([historical], now);
+      assertEqual(historical.failureCode, "LEGACY_UNKNOWN_CODE", "Exhaustion preserves a historical failure code");
+
+      const ordering = [
+        { ...makeJob("QUEUED", "z-tie"), createdAt: "2026-11-02T00:01:00.000Z" },
+        { ...makeJob("PENDING", "a-tie"), createdAt: "2026-11-02T00:01:00.000Z" },
+        { ...makeJob("EXTRACTING", "earlier"), availableAt: "2026-11-01T23:59:00.000Z" },
+      ];
+      assertEqual(simulateClaim(ordering, now)?.id, "earlier", "Claims sort by available_at before created_at and ID");
+      const idTie = [makeJob("QUEUED", "z-id"), makeJob("PENDING", "a-id")];
+      idTie[0].createdAt = idTie[1].createdAt;
+      assertEqual(simulateClaim(idTie, now)?.id, "a-id", "Stable ID resolves equal available_at and created_at values");
+
+      const concurrentJobs = [makeJob("QUEUED", "concurrent-a"), makeJob("PENDING", "concurrent-b")];
+      const concurrentClaims = await Promise.all([
+        Promise.resolve().then(() => simulateClaim(concurrentJobs, now)),
+        Promise.resolve().then(() => simulateClaim(concurrentJobs, now)),
+      ]);
+      assertEqual(new Set(concurrentClaims.map((job) => job?.id)).size, 2, "Simulated atomic claim workers acquire distinct jobs");
+      assert(concurrentJobs.every((job) => job.attempts === 3 && job.lockedUntil === "2026-11-02T00:15:00.000Z"), "Each simulated concurrent claim increments once and holds a lease");
+
+      const postgres = fs.readFileSync(path.join(process.cwd(), "src/lib/database/postgres-store.ts"), "utf8");
+      const mongo = fs.readFileSync(path.join(process.cwd(), "src/lib/database/mongodb-store.ts"), "utf8");
+      const types = fs.readFileSync(path.join(process.cwd(), "src/types/index.ts"), "utf8");
+      const worker = fs.readFileSync(path.join(process.cwd(), "src/app/api/ai/worker/route.ts"), "utf8");
+      assert(postgres.includes("FOR UPDATE SKIP LOCKED") && postgres.includes("ORDER BY available_at ASC,created_at ASC,id ASC"), "PostgreSQL retains skip-locked claims and deterministic ordering");
+      assert(postgres.includes("MAX_AI_JOB_ATTEMPTS") && postgres.includes("AI_JOB_LEASE_SECONDS") && postgres.includes("RETRY_EXHAUSTED"), "PostgreSQL uses shared attempt/lease policy and exhaustion handling");
+      assert(mongo.includes("findOneAndUpdate") && mongo.includes("session.withTransaction") && mongo.includes("RETRY_EXHAUSTED"), "MongoDB terminalization and atomic claim run in a replica-set transaction");
+      assert(mongo.includes("AI_JOB_PROCESSING_STAGES") && mongo.includes('status: "EXTRACTING"') && mongo.includes("available_at: 1, created_at: 1, id: 1"), "MongoDB uses shared stages, claim transition, and deterministic ordering");
+      assert(types.includes('export type AIJobStatus = AIJobProcessingStage | "COMPLETED" | "FAILED";') && types.includes("export type MediaProcessingFailureStatus"), "Job terminal states and media-specific failures are distinct types");
+      assert(worker.includes("let failureStatus: MediaProcessingFailureStatus") && worker.includes("const nextStatus: AIJobStatus"), "Worker writes generic job terminal status and media-specific failure status");
+      assert(worker.includes("locked_until: null") && worker.includes("shouldRetryAiJob(job.attempts, error)"), "Worker clears terminal/retry locks and applies permanent versus retryable policy");
+
+      const postgresReprocess = postgres.slice(postgres.indexOf("private async reprocess"), postgres.indexOf("private async getOrCreateCollection"));
+      const mongoReprocess = mongo.slice(mongo.indexOf("private async reprocess"), mongo.indexOf("private async getOrCreateCollection"));
+      assert(postgresReprocess.includes("attempts=0") && postgresReprocess.includes("locked_until=null") && postgresReprocess.includes("last_error=null") && postgresReprocess.includes("failure_code=null"), "PostgreSQL reprocessing resets attempts, lock, error, and failure code");
+      assert(mongoReprocess.includes("attempts: 0") && mongoReprocess.includes("locked_until: null") && mongoReprocess.includes("last_error: null") && mongoReprocess.includes("failure_code: null"), "MongoDB reprocessing resets attempts, lock, error, and failure code");
+    });
+
     await test("retries transient worker failures and dead-letters crashed jobs at the configured attempt limit", () => {
       assertEqual(processingFailureCode(new Error("Provider returned HTTP 429")), "RATE_LIMITED", "Normalizes rate-limit failures");
       assertEqual(shouldRetryAiJob(1, new Error("Provider returned HTTP 503")), true, "Retries provider outages");
@@ -7026,71 +7511,70 @@ dQw4w9WgXcQ,2024-02-16T12:00:00Z
       StorageService.clearUserData("anonymous");
     });
 
-    await test("Cross-Device Sync 9: Configured database multi-tenant isolation verification", async () => {
-      // Read environment variables directly to verify actual configured database
-      let supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      let serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!process.argv.includes("--live-db")) {
+      console.log("  ↷ SKIP live Supabase RLS test (run npm run test:integration:supabase with dedicated KEEPER_TEST_* configuration to opt in).");
+    } else {
+      await test("Opt-in dedicated Supabase project RLS tenant-isolation verification", async () => {
+        const required = [
+          "KEEPER_TEST_SUPABASE_URL",
+          "KEEPER_TEST_SUPABASE_ANON_KEY",
+          "KEEPER_TEST_SUPABASE_PROJECT_REF",
+          "KEEPER_TEST_SUPABASE_IS_DISPOSABLE",
+          "KEEPER_PRODUCTION_SUPABASE_PROJECT_REF",
+          "KEEPER_TEST_WORKSPACE_A_ACCESS_TOKEN",
+          "KEEPER_TEST_WORKSPACE_B_ACCESS_TOKEN",
+          "KEEPER_TEST_WORKSPACE_A_MEDIA_ID",
+          "KEEPER_TEST_WORKSPACE_B_MEDIA_ID",
+        ] as const;
+        const missing = required.filter((name) => !process.env[name]?.trim());
+        assert(missing.length === 0, `Live test configuration is incomplete (${missing.join(", ")}); no database request was made.`);
 
-      if (!supabaseUrl || !serviceKey) {
-        const envPath = path.resolve(__dirname, "../.env.local");
-        if (fs.existsSync(envPath)) {
-          const content = fs.readFileSync(envPath, "utf-8");
-          for (const line of content.split("\n")) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith("#")) continue;
-            const idx = trimmed.indexOf("=");
-            if (idx !== -1) {
-              const k = trimmed.slice(0, idx).trim();
-              const v = trimmed.slice(idx + 1).trim().replace(/^["']|["']$/g, "");
-              if (k === "NEXT_PUBLIC_SUPABASE_URL") supabaseUrl = v;
-              if (k === "SUPABASE_SERVICE_ROLE_KEY") serviceKey = v;
-            }
-          }
-        }
-      }
+        const supabaseUrl = process.env.KEEPER_TEST_SUPABASE_URL!.trim();
+        const projectRef = process.env.KEEPER_TEST_SUPABASE_PROJECT_REF!.trim();
+        const disposableConfirmation = process.env.KEEPER_TEST_SUPABASE_IS_DISPOSABLE!.trim();
+        const productionProjectRef = process.env.KEEPER_PRODUCTION_SUPABASE_PROJECT_REF!.trim();
+        assert(disposableConfirmation === "true", "Set KEEPER_TEST_SUPABASE_IS_DISPOSABLE=true only for a disposable test project.");
+        assert(projectRef !== productionProjectRef, "Refusing to test the configured production Supabase project.");
+        const parsedUrl = new URL(supabaseUrl);
+        assert(parsedUrl.protocol === "https:" && parsedUrl.hostname === `${projectRef}.supabase.co`, "Live test requires the explicit dedicated Supabase project URL.");
+        const appUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+        assert(!appUrl || new URL(appUrl).origin !== parsedUrl.origin, "Refusing to test the application-configured Supabase project.");
 
-      if (supabaseUrl && serviceKey && supabaseUrl.startsWith("http")) {
         const { createClient } = await import("@supabase/supabase-js");
-        const admin = createClient(supabaseUrl, serviceKey, {
+        const makeWorkspaceClient = (token: string) => createClient(supabaseUrl, process.env.KEEPER_TEST_SUPABASE_ANON_KEY!.trim(), {
           auth: { persistSession: false, autoRefreshToken: false },
+          global: { headers: { Authorization: `Bearer ${token.trim()}` } },
         });
+        const tokenA = process.env.KEEPER_TEST_WORKSPACE_A_ACCESS_TOKEN!.trim();
+        const tokenB = process.env.KEEPER_TEST_WORKSPACE_B_ACCESS_TOKEN!.trim();
+        const workspaceA = makeWorkspaceClient(tokenA);
+        const workspaceB = makeWorkspaceClient(tokenB);
+        const [{ data: authA, error: authErrorA }, { data: authB, error: authErrorB }] = await Promise.all([
+          workspaceA.auth.getUser(tokenA), workspaceB.auth.getUser(tokenB),
+        ]);
+        assert(!authErrorA && Boolean(authA.user), "Workspace A test identity authenticates.");
+        assert(!authErrorB && Boolean(authB.user), "Workspace B test identity authenticates.");
+        assert(authA.user.id !== authB.user.id, "Test identities must belong to separate workspaces.");
 
-        const workspaceAlice = "6c52b344-15c2-41f9-902c-8a7df79c110b";
-        const workspaceBob = "11111111-2222-3333-4444-555555555555";
+        const mediaAId = process.env.KEEPER_TEST_WORKSPACE_A_MEDIA_ID!.trim();
+        const mediaBId = process.env.KEEPER_TEST_WORKSPACE_B_MEDIA_ID!.trim();
+        const [{ data: ownA, error: ownAError }, { data: ownB, error: ownBError }] = await Promise.all([
+          workspaceA.from("keeper_media").select("id,workspace_id").eq("id", mediaAId),
+          workspaceB.from("keeper_media").select("id,workspace_id").eq("id", mediaBId),
+        ]);
+        assert(!ownAError && ownA?.length === 1 && ownA[0].workspace_id === authA.user.id, "Workspace A can read its own media.");
+        assert(!ownBError && ownB?.length === 1 && ownB[0].workspace_id === authB.user.id, "Workspace B can read its own media.");
 
-        const { data: aliceRows, error: aliceError } = await admin
-          .from("keeper_media")
-          .select("id,workspace_id")
-          .eq("workspace_id", workspaceAlice)
-          .limit(3);
-
-        assert(!aliceError, "Alice workspace query executes without error");
-        assert(Array.isArray(aliceRows), "Alice workspace returns rows");
-
-        const { data: bobRows, error: bobError } = await admin
-          .from("keeper_media")
-          .select("id,workspace_id")
-          .eq("workspace_id", workspaceBob);
-
-        assert(!bobError, "Bob workspace query executes without error");
-        assertEqual(bobRows?.length || 0, 0, "Bob workspace returns 0 rows (strict isolation from Alice)");
-
-        const { data: aliceCols } = await admin
-          .from("keeper_collections")
-          .select("id,workspace_id")
-          .eq("workspace_id", workspaceAlice)
-          .limit(3);
-
-        assert(Array.isArray(aliceCols), "Alice collections return rows");
-
-        const { data: bobCols } = await admin
-          .from("keeper_collections")
-          .select("id,workspace_id")
-          .eq("workspace_id", workspaceBob);
-
-        assertEqual(bobCols?.length || 0, 0, "Bob collections return 0 rows (strict isolation from Alice)");
-      }
-    });
+        const { data: crossRows, error: crossReadError } = await workspaceA.from("keeper_media").select("id").eq("id", mediaBId);
+        assert(!crossReadError && crossRows?.length === 0, "Workspace A cannot read Workspace B media.");
+        const { data: updateRows, error: updateError } = await workspaceA.from("keeper_media")
+          .update({ updated_at: new Date().toISOString() }).eq("id", mediaBId).select("id");
+        assert(!updateRows?.length && (!updateError || updateError.code === "42501"), "Workspace A cannot modify Workspace B media.");
+        const { data: deleteRows, error: deleteError } = await workspaceA.from("keeper_media")
+          .delete().eq("id", mediaBId).select("id");
+        assert(!deleteRows?.length && (!deleteError || deleteError.code === "42501"), "Workspace A cannot delete Workspace B media.");
+      });
+    }
 
     console.log("\n--- Section 23: Cross-Device Canonical Identity & Folder Assignment Regression Tests ---");
 

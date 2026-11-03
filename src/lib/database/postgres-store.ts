@@ -1,8 +1,12 @@
 import "server-only";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { assertBackendConfiguration } from "./provider";
 import { asDatabaseRows, errorResult, type BackendStore, type DatabaseRow, type Filter, type QueryBuilder, type QueryOperation, type QueryResult } from "./query";
+import { persistWorkspaceAssignment } from "@/services/workspace-assignment-contract";
+import { AI_JOB_LEASE_SECONDS, AI_JOB_PROCESSING_STAGES, MAX_AI_JOB_ATTEMPTS } from "@/services/ai-job-retry-policy";
+import { createContentFingerprint, createContentFingerprintCandidates, getContentFingerprintFields } from "@/services/content-fingerprint";
+import { createOssImportLedgerEntry, getOssImportCycle, getOssImportEntitlement } from "@/services/usage-ledger-contract";
 
 const TABLES = new Set([
   "billing_subscriptions", "billing_plan_catalog", "billing_payments", "razorpay_webhook_events", "billing_payment_failures",
@@ -15,6 +19,16 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: Number(
 function quoteIdentifier(value: string): string {
   if (!/^[a-z_][a-z0-9_]*$/i.test(value)) throw new Error("Unsupported SQL identifier.");
   return `"${value}"`;
+}
+
+async function legacyPostgresFingerprint(client: PoolClient, payload: unknown): Promise<string | null> {
+  const result = await client.query(`
+    SELECT CASE WHEN length(v_text) >= 80 THEN encode(digest(v_text,'sha256'),'hex') END AS fingerprint
+      FROM (SELECT lower(trim(concat_ws(' ',
+        $1::jsonb->>'title', $1::jsonb->>'description',
+        $1::jsonb#>>'{metadata,caption}', $1::jsonb#>>'{metadata,bodyText}'
+      ))) AS v_text) AS legacy_text`, [payload]);
+  return typeof result.rows[0]?.fingerprint === "string" ? result.rows[0].fingerprint : null;
 }
 
 class PostgresQuery implements QueryBuilder {
@@ -54,7 +68,25 @@ class PostgresQuery implements QueryBuilder {
   private async execute(): Promise<QueryResult> {
     assertBackendConfiguration("postgres");
     const client = await pool.connect();
-    try { return await this.executeWith(client); } catch (error) { return { data: null, error: errorResult(error) }; } finally { client.release(); }
+    try {
+      const writesPayload = this.table === "keeper_media" && (
+        ((this.operation === "insert" || this.operation === "upsert") && this.rows.some((row) => Object.prototype.hasOwnProperty.call(row, "payload")))
+        || (this.operation === "update" && Object.prototype.hasOwnProperty.call(this.values, "payload"))
+      );
+      if (!writesPayload) return await this.executeWith(client);
+      await client.query("BEGIN");
+      try {
+        const result = await this.executeWith(client);
+        for (const row of result.data || []) {
+          if (typeof row.id !== "string" || typeof row.workspace_id !== "string") continue;
+          const fingerprint = createContentFingerprint(getContentFingerprintFields(row.payload));
+          await client.query("UPDATE public.keeper_media SET content_fingerprint=$1 WHERE id=$2 AND workspace_id=$3", [fingerprint, row.id, row.workspace_id]);
+          row.content_fingerprint = fingerprint;
+        }
+        await client.query("COMMIT");
+        return result;
+      } catch (error) { await client.query("ROLLBACK"); throw error; }
+    } catch (error) { return { data: null, error: errorResult(error) }; } finally { client.release(); }
   }
   private async executeWith(client: PoolClient): Promise<QueryResult> {
     const values: unknown[] = [];
@@ -127,43 +159,60 @@ export class PostgresStore implements BackendStore {
       const sourcePlatform = String(payloadRecord.platform || metadata.sourcePlatform || "");
       const rawMetadata = metadata.rawPlatformMetadata as DatabaseRow | undefined;
       const sourceIdentifier = String(metadata.sourceIdentifier || metadata.shortcode || metadata.fbid || rawMetadata?.id || "");
-      const fingerprintText = [payloadRecord.title, payloadRecord.description, metadata.caption, metadata.bodyText].filter((part): part is string => typeof part === "string").join(" ").trim().toLowerCase();
-      const fingerprint = fingerprintText.length >= 80 ? createHash("sha256").update(fingerprintText).digest("hex") : null;
-      const duplicate = await client.query("SELECT id, processing_status FROM public.keeper_media WHERE workspace_id=$1 AND (canonical_url=$2 OR ($3::text IS NOT NULL AND source_platform=$4 AND source_identifier=$3) OR ($5::text IS NOT NULL AND content_fingerprint=$5)) FOR UPDATE", [workspaceId, canonicalUrl, sourceIdentifier || null, sourcePlatform || null, fingerprint]);
+      const fingerprintFields = getContentFingerprintFields(payloadRecord);
+      const fingerprint = createContentFingerprint(fingerprintFields);
+      const legacyTriggerFingerprint = await legacyPostgresFingerprint(client, payload);
+      const fingerprintCandidates = createContentFingerprintCandidates(fingerprintFields, [legacyTriggerFingerprint]);
+      const duplicate = await client.query("SELECT id, processing_status FROM public.keeper_media WHERE workspace_id=$1 AND (canonical_url=$2 OR ($3::text IS NOT NULL AND source_platform=$4 AND source_identifier=$3) OR content_fingerprint=ANY($5::text[])) FOR UPDATE", [workspaceId, canonicalUrl, sourceIdentifier || null, sourcePlatform || null, fingerprintCandidates]);
       if (duplicate.rows[0]) { await client.query("COMMIT"); return { duplicate: true, media_id: duplicate.rows[0].id, status: duplicate.rows[0].processing_status }; }
-      const subResult = await client.query("SELECT * FROM public.billing_subscriptions WHERE user_id=$1 AND (status IN ('trialing','authenticated','active') OR (status IN ('cancelled','canceled') AND (cancel_at_cycle_end OR trial_ends_at IS NOT NULL))) AND coalesce(current_period_end,trial_ends_at,'infinity'::timestamptz)>now() ORDER BY coalesce(current_period_end,trial_ends_at) DESC LIMIT 1", [workspaceId]);
-      const sub = subResult.rows[0] as DatabaseRow | undefined;
-      const plan = String(sub?.plan || "free");
-      let cycleStart: Date;
-      let cycleEnd: Date;
-      let limit = 30;
-      if (sub) {
-        cycleStart = new Date(String(sub.current_period_start || sub.created_at));
-        cycleEnd = new Date(String(sub.current_period_end || sub.trial_ends_at || new Date(cycleStart.getTime() + 7 * 86400000).toISOString()));
-        limit = plan === "basic" ? (sub.billing_cycle === "yearly" ? 3600 : 300) : plan === "pro" ? (sub.billing_cycle === "yearly" ? 6000 : 500) : 30;
-      } else {
-        await client.query("INSERT INTO public.keeper_workspace_memory(workspace_id) VALUES($1) ON CONFLICT DO NOTHING", [workspaceId]);
-        const memory = await client.query("SELECT free_cycle_anchor FROM public.keeper_workspace_memory WHERE workspace_id=$1 FOR UPDATE", [workspaceId]);
-        const anchor = new Date(String(memory.rows[0].free_cycle_anchor));
-        cycleStart = new Date(anchor.getTime() + Math.floor((Date.now() - anchor.getTime()) / 604800000) * 604800000);
-        cycleEnd = new Date(cycleStart.getTime() + 604800000);
-      }
+      await client.query("INSERT INTO public.keeper_workspace_memory(workspace_id) VALUES($1) ON CONFLICT DO NOTHING", [workspaceId]);
+      const memory = await client.query("SELECT free_cycle_anchor FROM public.keeper_workspace_memory WHERE workspace_id=$1 FOR UPDATE", [workspaceId]);
+      const now = new Date();
+      const cycle = getOssImportCycle(now, new Date(String(memory.rows[0].free_cycle_anchor)));
+      const cycleStart = cycle.cycleStart;
+      const cycleEnd = cycle.cycleEnd;
       const usage = await client.query("SELECT count(*)::int AS used FROM public.keeper_usage_ledger WHERE workspace_id=$1 AND cycle_start=$2 AND cycle_end=$3", [workspaceId, cycleStart, cycleEnd]);
       const used = Number(usage.rows[0]?.used || 0);
-      if (limit >= 0 && used >= limit) throw new Error("CREDIT_LIMIT_REACHED");
       const inserted = await client.query("INSERT INTO public.keeper_media(workspace_id,canonical_url,payload,processing_status,source_platform,source_identifier,content_fingerprint) VALUES($1,$2,$3,'QUEUED',$4,$5,$6) ON CONFLICT DO NOTHING RETURNING id", [workspaceId, canonicalUrl, payload, sourcePlatform || null, sourceIdentifier || null, fingerprint]);
       if (!inserted.rows[0]) throw new Error("IMPORT_CONFLICT");
       const mediaId = inserted.rows[0].id as string;
-      await client.query("INSERT INTO public.keeper_usage_ledger(workspace_id,media_id,event_type,plan,cycle_start,cycle_end) VALUES($1,$2,$3,$4,$5,$6)", [workspaceId, mediaId, plan === "free" ? "FREE_IMPORT" : "IMPORT_CREDIT", plan, cycleStart, cycleEnd]);
+      // The existing BEFORE trigger computes the historical bare hash; overwrite only the fingerprint column afterward.
+      await client.query("UPDATE public.keeper_media SET content_fingerprint=$1 WHERE id=$2 AND workspace_id=$3", [fingerprint, mediaId, workspaceId]);
+      const ledgerEntry = createOssImportLedgerEntry("created", cycle)!;
+      const entitlement = getOssImportEntitlement();
+      await client.query("INSERT INTO public.keeper_usage_ledger(workspace_id,media_id,event_type,plan,amount,cycle_start,cycle_end) VALUES($1,$2,$3,$4,$5,$6,$7)", [workspaceId, mediaId, ledgerEntry.event_type, ledgerEntry.plan, ledgerEntry.amount, ledgerEntry.cycle_start, ledgerEntry.cycle_end]);
       await client.query("INSERT INTO public.keeper_ai_jobs(workspace_id,media_id,idempotency_key,status) VALUES($1,$2,$3,'QUEUED') ON CONFLICT(workspace_id,idempotency_key) DO NOTHING", [workspaceId, mediaId, String(args.p_idempotency_key || randomId())]);
       await client.query("COMMIT");
-      return { duplicate: false, media_id: mediaId, status: "QUEUED", plan, used: used + 1, remaining: limit < 0 ? null : limit - used - 1, cycle_end: cycleEnd.toISOString() };
+      return { duplicate: false, media_id: mediaId, status: "QUEUED", plan: entitlement.plan, used: used + 1, remaining: entitlement.limit, unlimited: entitlement.unlimited, cycle_end: cycleEnd.toISOString() };
     } catch (error) { await client.query("ROLLBACK"); throw error; }
   }
   private async claimJob(client: PoolClient): Promise<DatabaseRow[]> {
     await client.query("BEGIN");
     try {
-      const result = await client.query("WITH candidate AS (SELECT id FROM public.keeper_ai_jobs WHERE status IN ('QUEUED','PENDING','EXTRACTING','TRANSCRIBING','ANALYZING','GENERATING_TAGS','MATCHING_COLLECTION','ORGANIZING','INDEXING') AND available_at<=now() AND (locked_until IS NULL OR locked_until<now()) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE public.keeper_ai_jobs j SET status='EXTRACTING',attempts=j.attempts+1,locked_until=now()+interval '5 minutes',updated_at=now() FROM candidate WHERE j.id=candidate.id RETURNING j.*");
+      await client.query(`WITH exhausted AS (
+        UPDATE public.keeper_ai_jobs
+           SET status='FAILED', locked_until=NULL,
+               last_error=coalesce(last_error,'Worker lease expired after the retry limit.'),
+               failure_code=coalesce(failure_code,'RETRY_EXHAUSTED'), updated_at=now()
+         WHERE status=ANY($1::text[]) AND attempts >= $2
+           AND (locked_until IS NULL OR locked_until <= now())
+         RETURNING workspace_id,media_id
+      )
+      UPDATE public.keeper_media AS m SET processing_status='FAILED',updated_at=now()
+        FROM exhausted AS e WHERE m.id=e.media_id AND m.workspace_id=e.workspace_id`,
+      [[...AI_JOB_PROCESSING_STAGES], MAX_AI_JOB_ATTEMPTS]);
+      const result = await client.query(`WITH candidate AS (
+        SELECT id FROM public.keeper_ai_jobs
+         WHERE status=ANY($1::text[]) AND attempts < $2 AND available_at<=now()
+           AND (locked_until IS NULL OR locked_until <= now())
+         ORDER BY available_at ASC,created_at ASC,id ASC
+         FOR UPDATE SKIP LOCKED LIMIT 1
+      )
+      UPDATE public.keeper_ai_jobs AS j
+         SET status='EXTRACTING',attempts=j.attempts+1,
+             locked_until=now()+($3::double precision * interval '1 second'),updated_at=now()
+        FROM candidate WHERE j.id=candidate.id RETURNING j.*`,
+      [[...AI_JOB_PROCESSING_STAGES], MAX_AI_JOB_ATTEMPTS, AI_JOB_LEASE_SECONDS]);
       await client.query("COMMIT"); return result.rows as DatabaseRow[];
     } catch (error) { await client.query("ROLLBACK"); throw error; }
   }
@@ -178,6 +227,7 @@ export class PostgresStore implements BackendStore {
       const collections = collectionId ? [collectionId] : [];
       const next = { ...payload, collectionId, collections, metadata: { ...metadata, aiOrganization: { ...(metadata.aiOrganization as DatabaseRow || {}), aiAssignedCollectionIds: [], manualCollectionIds: collections, autoOrganizationDisabled: collectionId === null } } };
       await client.query("UPDATE public.keeper_media SET payload=$1,updated_at=now() WHERE id=$2 AND workspace_id=$3", [next, id, workspace]);
+      await client.query("UPDATE public.keeper_media SET content_fingerprint=$1 WHERE id=$2 AND workspace_id=$3", [createContentFingerprint(getContentFingerprintFields(next)), id, workspace]);
       await client.query("UPDATE public.keeper_media_analyses SET collection_id=$1,updated_at=now() WHERE media_id=$2 AND workspace_id=$3", [collectionId, id, workspace]);
       await client.query("INSERT INTO public.keeper_organization_corrections(workspace_id,media_id,from_collection_id,to_collection_id,media_tags,media_topic) VALUES($1,$2,$3,$4,$5,$6)", [workspace, id, payload.collectionId || null, collectionId, payload.tags || [], Array.isArray(payload.topics) ? payload.topics[0] || null : null]);
       await client.query("COMMIT"); return null;
@@ -185,12 +235,19 @@ export class PostgresStore implements BackendStore {
   }
   private async updateTags(client: PoolClient, args: DatabaseRow): Promise<null> {
     const id = String(args.p_media_id || ""); const workspace = String(args.p_workspace_id || "");
-    const row = await client.query("SELECT payload FROM public.keeper_media WHERE id=$1 AND workspace_id=$2", [id, workspace]);
-    if (!row.rows[0]) throw Object.assign(new Error("MEDIA_NOT_FOUND"), { code: "P0002" });
-    const payload = row.rows[0].payload as DatabaseRow; const metadata = payload.metadata as DatabaseRow || {};
     const tags = Array.isArray(args.p_tags) ? args.p_tags : []; const userTags = Array.isArray(args.p_user_tags) ? args.p_user_tags : []; const suppressed = Array.isArray(args.p_suppressed_ai_tags) ? args.p_suppressed_ai_tags : [];
     if (tags.length > 24 || userTags.length > 24 || suppressed.length > 24) throw Object.assign(new Error("TAG_LIMIT_EXCEEDED"), { code: "22023" });
-    await client.query("UPDATE public.keeper_media SET payload=$1,updated_at=now() WHERE id=$2 AND workspace_id=$3", [{ ...payload, tags, metadata: { ...metadata, userTags, suppressedAiTags: suppressed } }, id, workspace]); return null;
+    await client.query("BEGIN");
+    try {
+      const row = await client.query("SELECT payload FROM public.keeper_media WHERE id=$1 AND workspace_id=$2 FOR UPDATE", [id, workspace]);
+      if (!row.rows[0]) throw Object.assign(new Error("MEDIA_NOT_FOUND"), { code: "P0002" });
+      const payload = row.rows[0].payload as DatabaseRow; const metadata = payload.metadata as DatabaseRow || {};
+      const next = { ...payload, tags, metadata: { ...metadata, userTags, suppressedAiTags: suppressed } };
+      await client.query("UPDATE public.keeper_media SET payload=$1,updated_at=now() WHERE id=$2 AND workspace_id=$3", [next, id, workspace]);
+      await client.query("UPDATE public.keeper_media SET content_fingerprint=$1 WHERE id=$2 AND workspace_id=$3", [createContentFingerprint(getContentFingerprintFields(next)), id, workspace]);
+      await client.query("COMMIT");
+      return null;
+    } catch (error) { await client.query("ROLLBACK"); throw error; }
   }
   private async reprocess(client: PoolClient, args: DatabaseRow): Promise<DatabaseRow> {
     const id = String(args.p_media_id || ""); const workspace = String(args.p_workspace_id || ""); const payload = args.p_payload;
@@ -201,9 +258,10 @@ export class PostgresStore implements BackendStore {
       if (!row.rows[0]) throw Object.assign(new Error("MEDIA_NOT_FOUND"), { code: "P0002" });
       if ((payload as DatabaseRow).url !== row.rows[0].canonical_url) throw Object.assign(new Error("CANONICAL_URL_IMMUTABLE"), { code: "22023" });
       await client.query("UPDATE public.keeper_media SET payload=$1,processing_status='QUEUED',updated_at=now() WHERE id=$2 AND workspace_id=$3", [payload, id, workspace]);
+      await client.query("UPDATE public.keeper_media SET content_fingerprint=$1 WHERE id=$2 AND workspace_id=$3", [createContentFingerprint(getContentFingerprintFields(payload)), id, workspace]);
       await client.query("INSERT INTO public.keeper_media_transcript_history(workspace_id,media_id,text,language,status,segments,provider,model_version,failure_reason,transcript_updated_at) SELECT workspace_id,media_id,text,language,status,segments,provider,model_version,failure_reason,updated_at FROM public.keeper_media_transcripts WHERE workspace_id=$1 AND media_id=$2", [workspace, id]);
       await client.query("DELETE FROM public.keeper_media_transcripts WHERE workspace_id=$1 AND media_id=$2", [workspace, id]);
-      const result = await client.query("INSERT INTO public.keeper_ai_jobs(workspace_id,media_id,status,attempts,available_at,locked_until,last_error,idempotency_key) VALUES($1,$2,'QUEUED',0,now(),null,null,$3) ON CONFLICT(media_id) DO UPDATE SET status='QUEUED',attempts=0,available_at=now(),locked_until=null,last_error=null,idempotency_key=excluded.idempotency_key,updated_at=now() RETURNING id", [workspace, id, `reprocess:${id}:${randomId()}`]);
+      const result = await client.query("INSERT INTO public.keeper_ai_jobs(workspace_id,media_id,status,attempts,available_at,locked_until,last_error,failure_code,idempotency_key) VALUES($1,$2,'QUEUED',0,now(),null,null,null,$3) ON CONFLICT(media_id) DO UPDATE SET status='QUEUED',attempts=0,available_at=now(),locked_until=null,last_error=null,failure_code=null,idempotency_key=excluded.idempotency_key,updated_at=now() RETURNING id", [workspace, id, `reprocess:${id}:${randomId()}`]);
       await client.query("COMMIT"); return { job_id: result.rows[0].id, media_id: id, status: "QUEUED" };
     } catch (error) { await client.query("ROLLBACK"); throw error; }
   }
@@ -222,9 +280,29 @@ export class PostgresStore implements BackendStore {
     } catch (error) { await client.query("ROLLBACK"); throw error; }
   }
   private async recordAssignment(client: PoolClient, args: DatabaseRow): Promise<null> {
-    const workspace = String(args.p_workspace_id || ""); const mediaId = String(args.p_media_id || "");
+    if (typeof args.p_workspace_id !== "string" || typeof args.p_media_id !== "string") throw Object.assign(new Error("INVALID_ASSIGNMENT"), { code: "22023" });
+    const workspace = args.p_workspace_id; const mediaId = args.p_media_id;
+    if (args.p_collection_id != null && typeof args.p_collection_id !== "string") throw Object.assign(new Error("INVALID_ASSIGNMENT"), { code: "22023" });
+    const collectionId = args.p_collection_id == null ? null : args.p_collection_id;
     const tags = Array.isArray(args.p_tags) ? args.p_tags : [];
-    await client.query("INSERT INTO public.keeper_workspace_assignments(workspace_id,media_id,collection_id,topic,tags,assigned_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(workspace_id,media_id) DO UPDATE SET collection_id=excluded.collection_id,topic=excluded.topic,tags=excluded.tags,assigned_at=now()", [workspace, mediaId, args.p_collection_id ?? null, args.p_topic ?? null, tags]);
+    await persistWorkspaceAssignment({ workspaceId: workspace, mediaId, collectionId }, {
+      transaction: async (operation) => {
+        await client.query("BEGIN");
+        try { const result = await operation(); await client.query("COMMIT"); return result; }
+        catch (error) { await client.query("ROLLBACK"); throw error; }
+      },
+      findMediaWorkspaceId: async (id) => {
+        const result = await client.query("SELECT workspace_id FROM public.keeper_media WHERE id=$1 FOR KEY SHARE", [id]);
+        return result.rows[0]?.workspace_id == null ? null : String(result.rows[0].workspace_id);
+      },
+      findCollectionWorkspaceId: async (workspaceId, id) => {
+        const result = await client.query("SELECT workspace_id FROM public.keeper_collections WHERE workspace_id=$1 AND id=$2 FOR KEY SHARE", [workspaceId, id]);
+        return result.rows[0]?.workspace_id == null ? null : String(result.rows[0].workspace_id);
+      },
+      writeAssignment: async () => {
+        await client.query("INSERT INTO public.keeper_workspace_assignments(workspace_id,media_id,collection_id,topic,tags,assigned_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(workspace_id,media_id) DO UPDATE SET collection_id=excluded.collection_id,topic=excluded.topic,tags=excluded.tags,assigned_at=now()", [workspace, mediaId, collectionId, args.p_topic ?? null, tags]);
+      },
+    });
     return null;
   }
 }

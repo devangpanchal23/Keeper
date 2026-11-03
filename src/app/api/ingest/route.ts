@@ -115,11 +115,9 @@ export async function POST(req: NextRequest) {
       p_idempotency_key: idempotencyKey,
     });
     if (importError) {
-      const quotaReached = importError.message.includes("CREDIT_LIMIT_REACHED");
-      if (!quotaReached) {
-        return NextResponse.json({ success: false, error: "The import could not be committed." }, { status: 503 });
-      }
-      // Open-Source Edition: Legacy database quota triggers are bypassed so imports are never blocked
+      // A rejected persistence RPC is never reported as a successful import. Supabase quota logic
+      // is owned by the database function and requires a reviewed migration to change safely.
+      return NextResponse.json({ success: false, error: "The import could not be committed." }, { status: 503 });
     }
     const committedImport = importResult as { media_id?: string; status?: string; duplicate?: boolean } | null;
     if (committedImport?.media_id) {

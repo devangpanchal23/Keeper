@@ -1,4 +1,15 @@
+import type { AIJobProcessingStage } from "@/types";
+
 export const MAX_AI_JOB_ATTEMPTS = 5;
+export const AI_JOB_LEASE_SECONDS = 5 * 60;
+export const AI_JOB_LEASE_MILLISECONDS = AI_JOB_LEASE_SECONDS * 1000;
+
+/** Legacy PENDING remains readable; new jobs should be created as QUEUED. */
+export const AI_JOB_PROCESSING_STAGES: readonly AIJobProcessingStage[] = [
+  "QUEUED", "PENDING", "EXTRACTING", "MEDIA_FOUND", "EXTRACTING_AUDIO",
+  "TRANSCRIBING", "TRANSCRIPT_READY", "ANALYZING", "GENERATING_TAGS",
+  "MATCHING_COLLECTION", "ORGANIZING", "INDEXING",
+];
 
 export function processingFailureCode(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error || "");

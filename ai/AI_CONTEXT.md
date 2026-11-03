@@ -1,6 +1,15 @@
 # Keeper — AI Context
 
-*Last updated: 2026-10-21 10:44 IST*
+*Last updated: 2026-11-02*
+
+## Local Provider Verification (2026-11-02)
+
+- Work remains on `open_source_keeper`; current worktree changes must be preserved.
+- `docker-compose.local-test.yml` defines isolated loopback-only test PostgreSQL/MongoDB services and dedicated test volumes. Initialization is explicit; no schema reset is automatic. Commands are documented in `ai/TESTING_GUIDE.md`.
+- Current machine lacks a reachable Docker daemon and Compose plugin, so provider services/tests are not verified. Do not connect to local developer databases or use `.env.local` for integration tests.
+- This checkout has no `supabase/config.toml` or Supabase CLI. Supabase local Auth/RLS is unsupported until a reviewed local project setup exists; do not copy it from another branch.
+- Supabase Auth is still required by `createBackendServerClient()` before selecting the data provider. Standalone store checks would not constitute API auth or RLS verification.
+- Phase 1 remains open; see `ai/CURRENT_STATUS.md`, `ai/DATABASE_PROVIDER_MATRIX.md`, and `ai/TESTING_GUIDE.md` for exact verification labels.
 
 > [!IMPORTANT]
 > **START HERE:** Read every Markdown file in `ai/` before beginning work. Then inspect `git status` and `git log -n 30 --stat`. Follow `DEVELOPMENT_RULES.md`, preserve the existing design/theme unless asked otherwise, and ask the user before large structural changes. Verify current behavior in source; code is the technical source of truth.
@@ -20,12 +29,12 @@
 
 ## Technology Stack
 
-- **Framework**: Next.js 16.4.0 (App Router, Turbopack, React Server Components & Client Components)
-- **Runtime / UI Core**: React 19.3.0, React DOM 19.3.0
+- **Framework**: Next.js 16.4.3 (App Router, React Server Components & Client Components)
+- **Runtime / UI Core**: React 19.3.1, React DOM 19.3.1
 - **Language**: TypeScript 5 (Strict Mode enabled in [`tsconfig.json`](file:///Volumes/T7/Devang/Code/Real_Project/Keeper/tsconfig.json))
 - **Styling**: Tailwind CSS v4 (`@tailwindcss/postcss` 4.x, Vanilla CSS tokens in [`src/app/globals.css`](file:///Volumes/T7/Devang/Code/Real_Project/Keeper/src/app/globals.css), `tailwind-merge`, `clsx`)
 - **Visual system**: Editorial landing page uses cream/ink/gold Keeper tokens with Geist; legacy Krackerz display styles also exist in CSS. Preserve route-specific styling and theme behavior rather than assuming every page shares one palette.
-- **Icons & Delight**: `lucide-react` 1.53.0, `canvas-confetti` 1.9.4
+- **Icons & Delight**: `lucide-react` 1.61.0, `canvas-confetti` 1.9.4
 - **Testing**: Native Node.js test runner using `tsx` (`scripts/run-tests.ts`, `scripts/smoke-test.ts`)
 - **Linting**: ESLint 9 (`eslint-config-next` 16.4.0)
 
@@ -51,11 +60,12 @@
 - Public/app config: `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` or `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, optional `NEXT_PUBLIC_SPLINE_HERO_URL`.
 - Platform integrations: `YOUTUBE_API_KEY`, `INSTAGRAM_OEMBED_TOKEN`, `META_APP_ACCESS_TOKEN`.
 - Supabase server access: `SUPABASE_SERVICE_ROLE_KEY`.
-- Auth session expiry signing: `AUTH_SESSION_SECRET` (server-only random value, at least 32 characters; required for fixed seven-day session enforcement).
+- Auth session expiry signing: required independent server-only `AUTH_SESSION_SECRET` (at least 32 UTF-8 bytes; low-diversity and placeholder values are rejected). Generate with `openssl rand -base64 48`; do not substitute Supabase keys or URLs. Missing/weak configuration prevents marker signing; there is no development fallback. Rotation invalidates existing markers.
 - Billing: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`.
 - AI worker: `AI_WORKER_SECRET` (legacy `CRON_SECRET` is also referenced). Transcription names include `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_FALLBACK`, `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_TRANSCRIPTION_API_KEY`, `OPENAI_TRANSCRIPTION_MODEL`, `WHISPER_SERVICE_URL`, `WHISPER_SERVICE_TOKEN`, `WHISPER_MODEL`, and `AUDIO_EXTRACTION_SERVICE_URL`. Analysis names include `CONTENT_AI_PROVIDER`, `CONTENT_AI_API_KEY`, `CONTENT_AI_API_URL`, and `CONTENT_AI_MODEL`. OCR uses `OCR_SERVICE_URL` and `OCR_SERVICE_TOKEN`.
 - OAuth token encryption: `TOKEN_ENCRYPTION_KEY`.
 - Deploy/smoke names include `PRODUCTION_APP_URL`, Vercel GitHub secrets, `DEPLOY_URL`, and `VERCEL_AUTOMATION_BYPASS_SECRET`. These are names only; do not commit values.
+- Default `npm test` is isolated from live databases. Live Supabase RLS validation is explicitly invoked with `npm run test:integration:supabase` and dedicated `KEEPER_TEST_*` variables documented in `ai/TESTING_GUIDE.md`.
 - Migration files are ordered `202610060001_billing.sql`, `202610070001` through `202610070004`, then `202610200001_ai_pipeline_recovery.sql`. The recovery migration is uncommitted and its application status is UNVERIFIED. Do not apply or test migrations against production; a separate project ref and explicit staging identity must be confirmed first.
 
 ## Critical Entry Points
@@ -75,13 +85,15 @@ For required GitHub Actions gates, Vercel production deployment setup, rollback 
 
 ---
 
-## Current State (verified from checkout on 2026-10-21)
+## Current State (verified from checkout on 2026-11-02)
 
-- Runtime versions in `package.json`: Next.js 16.4.0, React/React DOM 19.3.0, TypeScript 5, Tailwind CSS 4, Node 24 in CI.
+- Runtime versions in `package.json`: Next.js 16.4.3, React/React DOM 19.3.1, TypeScript 5, Tailwind CSS 4, Node 24 in CI.
 - Durable Supabase-backed media jobs, billing, authenticated APIs, and localStorage legacy library coexist. Do not describe all user library state as cloud-synced.
-- Working tree has pending application changes in `scripts/run-tests.ts`, `src/app/api/ai/worker/route.ts`, `src/services/content-analysis-service.ts`, `src/services/media/transcription-service.ts`, plus new `src/services/ai-job-retry-policy.ts` and `supabase/migrations/202610200001_ai_pipeline_recovery.sql`. Their state is uncommitted and described in HANDOFF.
-- Latest recorded local validation for this change: type-check passed, tests passed 169/169, lint passed with 0 errors and 262 warnings, and `npm run build -- --webpack` passed. Default Turbopack build was blocked by sandbox process/port permissions. These are prior-session results, not rerun during this documentation-only handoff.
-- The earlier implementation-session record reported 168/168 tests and a Google Fonts DNS build block; a later rerun superseded those results. Live staging, provider, database, and worker checks remain UNVERIFIED.
+- Phase 0 reports are in `ai/audits/phase-0-2026-11-02/`. Phase 1 adds `ai/SECURITY_BASELINE.md`, `ai/PERSISTENCE_ARCHITECTURE.md`, `ai/DATABASE_PROVIDER_MATRIX.md`, and `ai/TESTING_GUIDE.md`.
+- Session expiry markers now require independent `AUTH_SESSION_SECRET`; no Supabase credential/URL or hardcoded development fallback is used.
+- `npm test` no longer reads `.env.local`; live Supabase RLS checks require `npm run test:integration:supabase` and dedicated test configuration. The live integration path was not run in Phase 1.
+- Media and collection reads now return explicit failures rather than treating backend errors as empty/default data. `syncWorkspace` preflights both reads before migration or cache reconciliation. Mutation state is still local-first; failures show a sync error but there is no durable outbox, tombstone queue, or versioned conflict resolver. Do not claim full server-authoritative synchronization; see `ai/PERSISTENCE_ARCHITECTURE.md`.
+- Phase 1 corrective validation on 2026-11-02: `npm test` 292/292 passed (live RLS skipped); `npm run type-check -- --incremental false` passed; `npm run lint` exited 0 with 0 errors and 255 warnings; `git diff --check` passed. Route/provider behavior, production build, live tenant isolation, and database migrations remain unverified. Phase 1 is partial/open.
 
 ## Current Production State
 

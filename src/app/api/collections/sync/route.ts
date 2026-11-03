@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createBackendAdminClient, createBackendServerClient } from "@/lib/database/backend-client";
 import { INITIAL_COLLECTIONS } from "@/data/seed-data";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
+import { assertBackendConfiguration } from "@/lib/database/provider";
 import { Collection, SavedItem } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -19,14 +20,20 @@ function getDefaultCollectionSeeds() {
 export async function GET() {
   const seeds = getDefaultCollectionSeeds();
   if (!isSupabaseConfigured()) {
-    return NextResponse.json({ collections: seeds }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ code: "BACKEND_NOT_CONFIGURED", error: "Workspace collection storage is not configured." }, { status: 503 });
+  }
+  try {
+    assertBackendConfiguration();
+  } catch {
+    return NextResponse.json({ code: "BACKEND_NOT_CONFIGURED", error: "Workspace collection storage is not configured." }, { status: 503 });
   }
 
   try {
     const supabase = await createBackendServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError) return NextResponse.json({ code: "AUTH_SERVICE_UNAVAILABLE", error: "Could not verify your workspace session." }, { status: 503 });
     if (!user) {
-      return NextResponse.json({ collections: seeds }, { headers: { "Cache-Control": "no-store" } });
+      return NextResponse.json({ code: "AUTH_REQUIRED", error: "Sign in to read workspace collections." }, { status: 401 });
     }
 
     const { data, error } = await supabase
@@ -36,24 +43,21 @@ export async function GET() {
       .order("name");
 
     if (error) {
-      return NextResponse.json({ collections: seeds }, { headers: { "Cache-Control": "no-store" } });
+      return NextResponse.json({ code: "COLLECTION_READ_FAILED", error: "Workspace collections are temporarily unavailable." }, { status: 503 });
     }
 
     // If a newly created user has 0 collections on the server, seed initial collections
     if (!data || data.length === 0) {
       const admin = createBackendAdminClient();
       const userSeeds = seeds.map((s) => ({ ...s, workspace_id: user.id }));
-      try {
-        await admin.from("keeper_collections").upsert(userSeeds, { onConflict: "workspace_id,id" });
-      } catch {
-        // ignore seeding error
-      }
+      const { error: seedError } = await admin.from("keeper_collections").upsert(userSeeds, { onConflict: "workspace_id,id" });
+      if (seedError) return NextResponse.json({ code: "COLLECTION_WRITE_FAILED", error: "Default workspace collections could not be initialized." }, { status: 503 });
       return NextResponse.json({ collections: userSeeds }, { headers: { "Cache-Control": "no-store" } });
     }
 
     return NextResponse.json({ collections: data || [] }, { headers: { "Cache-Control": "no-store" } });
   } catch {
-    return NextResponse.json({ collections: seeds }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ code: "COLLECTION_READ_FAILED", error: "Workspace collections are temporarily unavailable." }, { status: 503 });
   }
 }
 
@@ -74,17 +78,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
 
-  const fallbackCount = Array.isArray(body.collections) ? body.collections.length : 1;
-
   if (!isSupabaseConfigured()) {
-    return NextResponse.json({ success: true, count: fallbackCount, localOnly: true });
+    return NextResponse.json({ code: "BACKEND_NOT_CONFIGURED", error: "Workspace collection storage is not configured." }, { status: 503 });
+  }
+  try {
+    assertBackendConfiguration();
+  } catch {
+    return NextResponse.json({ code: "BACKEND_NOT_CONFIGURED", error: "Workspace collection storage is not configured." }, { status: 503 });
   }
 
   try {
     const supabase = await createBackendServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError) return NextResponse.json({ code: "AUTH_SERVICE_UNAVAILABLE", error: "Could not verify your workspace session." }, { status: 503 });
     if (!user) {
-      return NextResponse.json({ success: true, count: fallbackCount, localOnly: true });
+      return NextResponse.json({ code: "AUTH_REQUIRED", error: "Sign in to save workspace collections." }, { status: 401 });
     }
 
     const admin = createBackendAdminClient();
@@ -105,7 +113,7 @@ export async function POST(request: NextRequest) {
 
       if (rows.length > 0) {
         const { error } = await admin.from("keeper_collections").upsert(rows, { onConflict: "workspace_id,id" });
-        if (error) return NextResponse.json({ success: true, count: rows.length, localOnly: true });
+        if (error) return NextResponse.json({ code: "COLLECTION_WRITE_FAILED", error: "Workspace collections could not be saved." }, { status: 503 });
       }
 
       return NextResponse.json({ success: true, count: rows.length });
@@ -125,10 +133,10 @@ export async function POST(request: NextRequest) {
       updated_at: new Date().toISOString(),
     }, { onConflict: "workspace_id,id" });
 
-    if (error) return NextResponse.json({ success: true, localOnly: true });
+    if (error) return NextResponse.json({ code: "COLLECTION_WRITE_FAILED", error: "Workspace collection could not be saved." }, { status: 503 });
     return NextResponse.json({ success: true });
   } catch {
-    return NextResponse.json({ success: true, count: fallbackCount, localOnly: true });
+    return NextResponse.json({ code: "COLLECTION_WRITE_FAILED", error: "Workspace collection could not be saved." }, { status: 503 });
   }
 }
 
@@ -146,13 +154,19 @@ export async function DELETE(request: NextRequest) {
   }
 
   if (!isSupabaseConfigured()) {
-    return NextResponse.json({ success: true, localOnly: true });
+    return NextResponse.json({ code: "BACKEND_NOT_CONFIGURED", error: "Workspace collection storage is not configured." }, { status: 503 });
+  }
+  try {
+    assertBackendConfiguration();
+  } catch {
+    return NextResponse.json({ code: "BACKEND_NOT_CONFIGURED", error: "Workspace collection storage is not configured." }, { status: 503 });
   }
 
   try {
     const supabase = await createBackendServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ success: true, localOnly: true });
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError) return NextResponse.json({ code: "AUTH_SERVICE_UNAVAILABLE", error: "Could not verify your workspace session." }, { status: 503 });
+    if (!user) return NextResponse.json({ code: "AUTH_REQUIRED", error: "Sign in to delete workspace collections." }, { status: 401 });
 
     const admin = createBackendAdminClient();
 
@@ -163,14 +177,15 @@ export async function DELETE(request: NextRequest) {
       .eq("workspace_id", user.id)
       .eq("id", collectionId);
 
-    if (error) return NextResponse.json({ success: true, localOnly: true });
+    if (error) return NextResponse.json({ code: "COLLECTION_DELETE_FAILED", error: "Workspace collection could not be deleted." }, { status: 503 });
 
     // Unlink deleted collection from all items in keeper_media for this user
     try {
-      const { data: rows } = await admin
+      const { data: rows, error: mediaReadError } = await admin
         .from("keeper_media")
         .select("id,payload")
         .eq("workspace_id", user.id);
+      if (mediaReadError) return NextResponse.json({ code: "COLLECTION_DELETE_PARTIAL", error: "Collection was deleted, but related media could not be updated." }, { status: 503 });
 
       for (const row of rows || []) {
         const payload = row.payload as SavedItem | undefined;
@@ -195,7 +210,7 @@ export async function DELETE(request: NextRequest) {
           collectionId: nextCollectionId,
           collections: nextCollections,
         };
-        await admin
+        const { error: mediaUpdateError } = await admin
           .from("keeper_media")
           .update({
             payload: updatedPayload,
@@ -203,14 +218,15 @@ export async function DELETE(request: NextRequest) {
           })
           .eq("id", row.id)
           .eq("workspace_id", user.id);
+        if (mediaUpdateError) return NextResponse.json({ code: "COLLECTION_DELETE_PARTIAL", error: "Collection was deleted, but related media could not be updated." }, { status: 503 });
       }
     }
-  } catch (unlinkError) {
-    console.warn("Could not unlink items from deleted collection:", unlinkError);
+  } catch {
+    return NextResponse.json({ code: "COLLECTION_DELETE_PARTIAL", error: "Collection was deleted, but related media could not be updated." }, { status: 503 });
   }
 
   return NextResponse.json({ success: true, deletedId: collectionId });
   } catch {
-    return NextResponse.json({ success: true, localOnly: true });
+    return NextResponse.json({ code: "COLLECTION_DELETE_FAILED", error: "Workspace collection could not be deleted." }, { status: 503 });
   }
 }

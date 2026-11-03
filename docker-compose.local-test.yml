@@ -1,0 +1,53 @@
+name: keeper-local-verification
+
+# Disposable local verification services only. This file has no app service,
+# no production credentials, and does not initialize or reset schemas/volumes.
+services:
+  keeper-test-postgres:
+    image: postgres:17-alpine
+    container_name: keeper-local-test-postgres
+    environment:
+      POSTGRES_USER: keeper_test_admin
+      POSTGRES_PASSWORD: keeper_test_only_password
+      POSTGRES_DB: keeper_test
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - keeper_local_test_pgdata:/var/lib/postgresql/data
+      - ./database/postgres/001_keeper.sql:/test-schema/001_keeper.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keeper_test_admin -d keeper_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  keeper-test-mongodb:
+    image: mongo:8
+    container_name: keeper-local-test-mongodb
+    profiles: [mongodb]
+    command: ["mongod", "--replSet", "keeperTestRs", "--bind_ip_all", "--port", "27017"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: keeper_test_admin
+      MONGO_INITDB_ROOT_PASSWORD: keeper_test_only_password
+    ports:
+      - "127.0.0.1:27018:27017"
+    volumes:
+      - keeper_local_test_mongodata:/data/db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --host 127.0.0.1 --port 27017
+          --username keeper_test_admin --password keeper_test_only_password
+          --authenticationDatabase admin --eval 'db.adminCommand({ping:1}).ok' | grep 1
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  keeper_local_test_pgdata:
+    name: keeper_local_verification_postgres_data
+  keeper_local_test_mongodata:
+    name: keeper_local_verification_mongodb_data

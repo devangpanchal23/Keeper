@@ -9,6 +9,7 @@
     "lint": "eslint",
     "type-check": "tsc --noEmit",
     "test": "node --import tsx scripts/run-tests.ts",
+    "test:integration:supabase": "node --import tsx scripts/run-tests.ts --live-db",
     "smoke-test": "node --import tsx scripts/smoke-test.ts",
     "audit:design": "node --import tsx scripts/palette-audit.ts"
   },

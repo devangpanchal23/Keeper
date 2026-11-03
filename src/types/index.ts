@@ -101,11 +101,23 @@ export interface GeneratedContent {
   collectionReason: string | null;
 }
 
-export type AIProcessingState =
-  | "QUEUED" | "PENDING" | "EXTRACTING" | "TRANSCRIBING" | "ANALYZING"
-  | "GENERATING_TAGS" | "MATCHING_COLLECTION" | "ORGANIZING" | "INDEXING"
-  | "COMPLETED" | "FAILED" | "EXTRACTION_FAILED" | "TRANSCRIPTION_FAILED"
-  | "ANALYSIS_FAILED" | "ORGANIZATION_FAILED" | "INDEXING_FAILED";
+/** Queue and active processing states shared by persisted AI jobs and media. */
+export type AIJobProcessingStage =
+  | "QUEUED" | "PENDING" | "EXTRACTING" | "MEDIA_FOUND" | "EXTRACTING_AUDIO"
+  | "TRANSCRIBING" | "TRANSCRIPT_READY" | "ANALYZING" | "GENERATING_TAGS"
+  | "MATCHING_COLLECTION" | "ORGANIZING" | "INDEXING";
+
+/** AI jobs have only generic terminal outcomes; stage failures belong to media. */
+export type AIJobStatus = AIJobProcessingStage | "COMPLETED" | "FAILED";
+
+export type MediaProcessingFailureStatus =
+  | "EXTRACTION_FAILED" | "TRANSCRIPTION_FAILED" | "ANALYSIS_FAILED"
+  | "ORGANIZATION_FAILED" | "INDEXING_FAILED";
+
+export type MediaProcessingStatus = AIJobStatus | MediaProcessingFailureStatus;
+
+/** Backward-compatible name used by SavedItem and existing UI/API consumers. */
+export type AIProcessingState = MediaProcessingStatus;
 
 export type GeneratedTagCategory = "Topic" | "Technology" | "Industry" | "Concept" | "Skill" | "Person" | "Product" | "Content Type" | "Intent";
 

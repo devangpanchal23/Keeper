@@ -26,7 +26,7 @@ export async function GET(
     .select("id,payload,processing_status")
     .eq("workspace_id", user.id);
 
-  if (error) return NextResponse.json({ error: "Could not query media." }, { status: 503 });
+  if (error) return NextResponse.json({ code: "MEDIA_READ_FAILED", error: "Workspace media is temporarily unavailable." }, { status: 503 });
 
   const matchingRow = (rows || []).find((row) => {
     if (row.id === id) return true;
@@ -71,10 +71,11 @@ export async function PATCH(
     const updates = "updates" in body && body.updates ? body.updates : body;
 
     const admin = createBackendAdminClient();
-    const { data: rows } = await admin
+    const { data: rows, error: readError } = await admin
       .from("keeper_media")
       .select("id,payload,processing_status")
       .eq("workspace_id", user.id);
+    if (readError) return NextResponse.json({ code: "MEDIA_READ_FAILED", error: "Workspace media is temporarily unavailable." }, { status: 503 });
 
     const matchingRow = (rows || []).find((row) => {
       if (row.id === id) return true;
@@ -103,7 +104,7 @@ export async function PATCH(
     }
 
     if (Object.prototype.hasOwnProperty.call(updates, "collectionId")) {
-      await admin
+      const { error: analysisUpdateError } = await admin
         .from("keeper_media_analyses")
         .update({
           collection_id: (updates as Partial<SavedItem>).collectionId ?? null,
@@ -111,6 +112,7 @@ export async function PATCH(
         })
         .eq("media_id", matchingRow.id)
         .eq("workspace_id", user.id);
+      if (analysisUpdateError) return NextResponse.json({ code: "MEDIA_UPDATE_PARTIAL", error: "Item was updated, but collection analysis could not be synchronized." }, { status: 503 });
     }
 
     return NextResponse.json({
@@ -124,9 +126,8 @@ export async function PATCH(
         },
       },
     }, { headers: { "Cache-Control": "no-store" } });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "Failed to update item.";
-    return NextResponse.json({ error: message }, { status: 500 });
+  } catch {
+    return NextResponse.json({ code: "MEDIA_WRITE_FAILED", error: "Workspace media could not be updated." }, { status: 503 });
   }
 }
 
@@ -146,10 +147,11 @@ export async function DELETE(
   const { id } = await context.params;
   const admin = createBackendAdminClient();
 
-  const { data: rows } = await admin
+  const { data: rows, error: readError } = await admin
     .from("keeper_media")
     .select("id,payload")
     .eq("workspace_id", user.id);
+  if (readError) return NextResponse.json({ code: "MEDIA_READ_FAILED", error: "Workspace media is temporarily unavailable." }, { status: 503 });
 
   const matchingRow = (rows || []).find((row) => {
     if (row.id === id) return true;

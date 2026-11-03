@@ -20,19 +20,31 @@ Comprehensive technical, architecture, and security reports are available in the
 - [**CONTRIBUTING.md**](CONTRIBUTING.md) — Community contribution guidelines and development workflow.
 - [**SECURITY.md**](SECURITY.md) — Vulnerability reporting policy and responsible disclosure.
 
+Phase 1 security and persistence references:
+
+- [**ai/SECURITY_BASELINE.md**](ai/SECURITY_BASELINE.md) — Session signing and live-test safety baseline.
+- [**ai/PERSISTENCE_ARCHITECTURE.md**](ai/PERSISTENCE_ARCHITECTURE.md) — Current data flows, ownership rules, and known sync limitations.
+- [**ai/DATABASE_PROVIDER_MATRIX.md**](ai/DATABASE_PROVIDER_MATRIX.md) — Source-level provider capability comparison and parity limits.
+- [**ai/TESTING_GUIDE.md**](ai/TESTING_GUIDE.md) — Isolated default validation and explicit Supabase integration setup.
+
 ---
 
 ## 🚀 Quick Start with Docker Compose (Recommended)
 
-Start Keeper and a dedicated PostgreSQL database with a single command:
+Create a server-only session signing secret, then start Keeper and PostgreSQL:
 
 ```bash
 # Clone and enter directory
 git checkout open_source_keeper
 
+# Export a strong secret for this Compose invocation; persist it in your secret manager
+export AUTH_SESSION_SECRET="$(openssl rand -base64 48)"
+
 # Start Keeper and PostgreSQL
 docker compose up -d
 ```
+
+Keeper requires an independent `AUTH_SESSION_SECRET` of at least 32 bytes to issue its seven-day session marker. The secret must not be a Supabase URL, publishable key, anon key, or service-role key. Keep the same secret across application instances and restarts; rotating it invalidates existing Keeper session markers. For local Next.js development, set it in the ignored `.env.local` file. For Compose, provide it from a secret manager or a protected environment file.
 
 Open [http://localhost:3000](http://localhost:3000) to access your self-hosted Keeper instance.
 
@@ -61,7 +73,7 @@ npm ci
 npm run dev
 ```
 
-Use the Supabase project’s publishable/anon key for browser authentication. Keep database passwords, private keys, and service-role keys server-side. Restart the Next.js server after changing `.env.local`.
+Use the Supabase project’s publishable/anon key for browser authentication. Set an independently generated `AUTH_SESSION_SECRET` (for example, `openssl rand -base64 48`) in `.env.local`. Keep database passwords, private keys, session signing secrets, and service-role keys server-side. Restart the Next.js server after changing `.env.local`.
 
 ### Supabase-managed Postgres
 

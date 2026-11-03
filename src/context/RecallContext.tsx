@@ -9,6 +9,7 @@ import { AIService } from "@/services/ai-service";
 import { AuthService } from "@/services/auth-service";
 import { MigrationService } from "@/services/migration-service";
 import { getCanonicalIdentityKey, isSameContentItem } from "@/lib/media-identity";
+import { readWorkspaceMedia } from "@/services/workspace-media-read";
 
 export interface RecallContextType {
   // Auth State
@@ -189,11 +190,22 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
    */
   const syncWorkspace = useCallback(async (targetUserId?: string): Promise<void> => {
     const activeId = targetUserId || user?.id || StorageService.getActiveUserId();
-    if (!activeId || activeId === "anonymous") return;
+    if (!activeId || activeId === "anonymous" || activeId.startsWith("user-demo")) return;
 
     setSyncStatus("syncing");
 
     try {
+      // Establish a successful authenticated server read before migration,
+      // uploads, local reconciliation, or cache replacement.
+      const serverRead = await readWorkspaceMedia();
+      if (serverRead.kind !== "success") {
+        throw new Error(serverRead.message);
+      }
+      const collectionsPreflight = await fetch("/api/collections/sync", { cache: "no-store" });
+      if (!collectionsPreflight.ok) throw new Error("Workspace collections could not be read.");
+      const preflightPayload = await collectionsPreflight.json() as { collections?: unknown };
+      if (!Array.isArray(preflightPayload.collections)) throw new Error("Workspace collections response was invalid.");
+
       // 1. Repair any corrupted entity records safely and idempotently
       MigrationService.repairUserData(activeId);
 
@@ -204,44 +216,44 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
       const syncCollections = async () => {
         try {
           if (migration.collectionsToSync.length > 0) {
-            await fetch("/api/collections/sync", {
+            const uploadResponse = await fetch("/api/collections/sync", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ collections: migration.collectionsToSync }),
             });
+            if (!uploadResponse.ok) throw new Error("Local collections could not be synchronized.");
           }
 
           const colRes = await fetch("/api/collections/sync", { cache: "no-store" });
-          if (colRes.ok) {
-            const colData = await colRes.json() as {
-              collections?: Array<{
-                id: string;
-                name: string;
-                description?: string | null;
-                profile?: Record<string, unknown>;
-                updated_at?: string;
-              }>;
+          if (!colRes.ok) throw new Error("Workspace collections could not be read after synchronization.");
+          const colData = await colRes.json() as {
+            collections?: Array<{
+              id: string;
+              name: string;
+              description?: string | null;
+              profile?: Record<string, unknown>;
+              updated_at?: string;
+            }>;
+          };
+          if (!Array.isArray(colData.collections)) throw new Error("Workspace collections response was invalid.");
+          const serverCols: Collection[] = colData.collections.map((entry) => {
+            const profile = entry.profile || {};
+            return {
+              id: entry.id,
+              name: entry.name,
+              description: entry.description || "",
+              color: typeof profile.color === "string" ? profile.color : "#d9ad32",
+              icon: typeof profile.icon === "string" ? profile.icon : "Folder",
+              createdAt: entry.updated_at || new Date().toISOString(),
+              updatedAt: entry.updated_at || new Date().toISOString(),
+              ...(profile.isSystem === true ? { isSystem: true } : {}),
             };
-            if (Array.isArray(colData.collections)) {
-              const serverCols: Collection[] = colData.collections.map((entry) => {
-                const profile = entry.profile || {};
-                return {
-                  id: entry.id,
-                  name: entry.name,
-                  description: entry.description || "",
-                  color: typeof profile.color === "string" ? profile.color : "#d9ad32",
-                  icon: typeof profile.icon === "string" ? profile.icon : "Folder",
-                  createdAt: entry.updated_at || new Date().toISOString(),
-                  updatedAt: entry.updated_at || new Date().toISOString(),
-                  ...(profile.isSystem === true ? { isSystem: true } : {}),
-                };
-              });
-              StorageService.saveCollections(serverCols, activeId);
-              setCollections(serverCols);
-            }
-          }
+          });
+          StorageService.saveCollections(serverCols, activeId);
+          setCollections(serverCols);
         } catch (colErr) {
           console.warn("Could not synchronize collections with server; using local collections:", colErr);
+          throw colErr;
         }
       };
 
@@ -254,67 +266,52 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ localItems: migration.itemsToSync }),
             });
-            if (syncRes.ok) {
-              const syncPayload = await syncRes.json() as { items?: SavedItem[] };
-              if (Array.isArray(syncPayload.items)) {
-                currentItems = syncPayload.items;
-                StorageService.saveItems(currentItems, activeId);
-                setItems(currentItems);
-              }
-            }
+            if (!syncRes.ok) throw new Error("Legacy workspace media could not be synchronized.");
+            const syncPayload = await syncRes.json() as { items?: SavedItem[] };
+            if (!Array.isArray(syncPayload.items)) throw new Error("Legacy workspace sync returned an invalid response.");
+            currentItems = syncPayload.items;
+            StorageService.saveItems(currentItems, activeId);
+            setItems(currentItems);
           } else {
-            const mediaRes = await fetch("/api/media", { cache: "no-store" });
-            if (mediaRes.ok) {
-              const mediaPayload = await mediaRes.json() as { items?: SavedItem[] };
-              if (Array.isArray(mediaPayload.items)) {
-                // Index local items by canonical identity key to prevent cross-device duplicates
-                const localByKey = new Map<string, SavedItem>();
-                for (const item of currentItems) {
-                  const key = getCanonicalIdentityKey(item.url) || item.url.toLowerCase().trim();
-                  localByKey.set(key, item);
-                }
-
-                const serverItems = mediaPayload.items.map((serverItem) => {
-                  const key = getCanonicalIdentityKey(serverItem.url) || serverItem.url.toLowerCase().trim();
-                  const localItem = localByKey.get(key);
-                  if (localItem) localByKey.delete(key);
-                  return localItem ? ContentService.safeMerge(localItem, serverItem) : serverItem;
-                });
-
-                // Check remaining local items: do not re-upload if already matched by content equivalence
-                const unSyncedLocal: SavedItem[] = [];
-                for (const localItem of localByKey.values()) {
-                  const alreadyMatched = serverItems.some((s) => isSameContentItem(s, localItem));
-                  if (!alreadyMatched) {
-                    unSyncedLocal.push(localItem);
-                  }
-                }
-
-                if (unSyncedLocal.length > 0) {
-                  void fetch("/api/media", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ items: unSyncedLocal }),
-                  });
-                }
-
-                // Final deduplication pass to ensure local state and storage are completely clean
-                const combined = [...serverItems, ...unSyncedLocal];
-                const seenKeys = new Set<string>();
-                const deduped: SavedItem[] = [];
-                for (const item of combined) {
-                  const key = getCanonicalIdentityKey(item.url) || item.url.toLowerCase().trim();
-                  if (!seenKeys.has(key)) {
-                    seenKeys.add(key);
-                    deduped.push(item);
-                  }
-                }
-
-                currentItems = deduped;
-                StorageService.saveItems(currentItems, activeId);
-                setItems(currentItems);
-              }
+            // Index local items only after the server read succeeded.
+            const localByKey = new Map<string, SavedItem>();
+            for (const item of currentItems) {
+              const key = getCanonicalIdentityKey(item.url) || item.url.toLowerCase().trim();
+              localByKey.set(key, item);
             }
+
+            const serverItems = serverRead.items.map((serverItem) => {
+              const key = getCanonicalIdentityKey(serverItem.url) || serverItem.url.toLowerCase().trim();
+              const localItem = localByKey.get(key);
+              if (localItem) localByKey.delete(key);
+              return localItem ? ContentService.safeMerge(localItem, serverItem) : serverItem;
+            });
+
+            const unSyncedLocal: SavedItem[] = [];
+            for (const localItem of localByKey.values()) {
+              const alreadyMatched = serverItems.some((serverItem) => isSameContentItem(serverItem, localItem));
+              if (!alreadyMatched) unSyncedLocal.push(localItem);
+            }
+
+            if (unSyncedLocal.length > 0) {
+              const uploadRes = await fetch("/api/media", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ items: unSyncedLocal }),
+              });
+              if (!uploadRes.ok) throw new Error("Local workspace items could not be synchronized.");
+            }
+
+            const combined = [...serverItems, ...unSyncedLocal];
+            const seenKeys = new Set<string>();
+            currentItems = combined.filter((item) => {
+              const key = getCanonicalIdentityKey(item.url) || item.url.toLowerCase().trim();
+              if (seenKeys.has(key)) return false;
+              seenKeys.add(key);
+              return true;
+            });
+            StorageService.saveItems(currentItems, activeId);
+            setItems(currentItems);
           }
         } catch (mediaErr) {
           console.warn("Could not synchronize media with server; using local storage:", mediaErr);
@@ -637,6 +634,17 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     }, 4000);
   };
 
+  const reportServerMutationFailure = () => {
+    setSyncStatus("error");
+    addToast("Sync needs attention", "Your local change is retained, but the server did not confirm it. Check synchronization before using another device.", "warning");
+  };
+
+  const observeServerMutation = (request: Promise<Response>) => {
+    void request.then((response) => {
+      if (!response.ok) throw new Error("Server did not confirm the mutation.");
+    }).catch(reportServerMutationFailure);
+  };
+
   const removeToast = (id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
@@ -731,28 +739,27 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ item: created }),
       }).then(async (res) => {
-        if (res.ok) {
-          const payload = await res.json() as { items?: SavedItem[] };
-          const serverItem = payload.items?.[0];
-          if (serverItem?.metadata?.serverMediaId) {
-            ContentService.updateItem(created.id, {
-              metadata: {
-                ...created.metadata,
-                serverMediaId: serverItem.metadata.serverMediaId,
-                aiProcessingStatus: serverItem.metadata.aiProcessingStatus || "PENDING",
-              },
-            }, activeUserId);
-            setItems(ContentService.getAll(activeUserId));
-          }
+        if (!res.ok) throw new Error("Server did not confirm the new item.");
+        const payload = await res.json() as { items?: SavedItem[] };
+        const serverItem = payload.items?.[0];
+        if (serverItem?.metadata?.serverMediaId) {
+          ContentService.updateItem(created.id, {
+            metadata: {
+              ...created.metadata,
+              serverMediaId: serverItem.metadata.serverMediaId,
+              aiProcessingStatus: serverItem.metadata.aiProcessingStatus || "PENDING",
+            },
+          }, activeUserId);
+          setItems(ContentService.getAll(activeUserId));
+        } else {
+          throw new Error("Server response did not include the saved media ID.");
         }
-      }).catch((err) => {
-        console.warn("Could not immediately sync item to server:", err);
-      });
+      }).catch(reportServerMutationFailure);
     }
 
     addToast(
-      "Item saved to Recall",
-      `"${created.title}" is now analyzed and indexed.`,
+      "Saved on this device",
+      `"${created.title}" is available locally. Server synchronization may still be pending.`,
       "success"
     );
     return created;
@@ -767,26 +774,22 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     // Asynchronously synchronize update to server
     if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
       const serverTargetId = previousItem?.metadata?.serverMediaId || id;
-      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+      observeServerMutation(fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ updates }),
-      }).catch((error: unknown) => {
-        console.warn("Could not sync item update to server:", error);
-      });
+      }));
 
       if (Object.prototype.hasOwnProperty.call(updates, "collectionId") && updates.collectionId !== previousItem?.collectionId && previousItem?.metadata?.serverMediaId) {
-        void fetch(`/api/media/${encodeURIComponent(previousItem.metadata.serverMediaId)}/collection`, {
+        observeServerMutation(fetch(`/api/media/${encodeURIComponent(previousItem.metadata.serverMediaId)}/collection`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ collectionId: updates.collectionId ?? null }),
-        }).catch((err) => {
-          console.warn("Could not sync AI organization correction:", err);
-        });
+        }));
       }
     }
 
-    addToast("Updated successfully", undefined, "info");
+    addToast("Updated on this device", "Server synchronization may still be pending.", "info");
   };
 
   const toggleFavorite = (id: string) => {
@@ -797,11 +800,11 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
       const targetItem = items.find((i) => i.id === id);
       const serverTargetId = targetItem?.metadata?.serverMediaId || id;
-      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+      observeServerMutation(fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ updates: { favorite: isFav } }),
-      }).catch((err) => console.warn("Could not sync favorite to server:", err));
+      }));
     }
 
     addToast(isFav ? "Added to Favorites" : "Removed from Favorites", undefined, "info");
@@ -815,11 +818,11 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
       const targetItem = items.find((i) => i.id === id);
       const serverTargetId = targetItem?.metadata?.serverMediaId || id;
-      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+      observeServerMutation(fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ updates: { archived: true, trashed: false } }),
-      }).catch((err) => console.warn("Could not sync archive state to server:", err));
+      }));
     }
 
     addToast("Archived item", "Item moved to your archive.", "info");
@@ -833,11 +836,11 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
       const targetItem = items.find((i) => i.id === id);
       const serverTargetId = targetItem?.metadata?.serverMediaId || id;
-      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+      observeServerMutation(fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ updates: { archived: false } }),
-      }).catch((err) => console.warn("Could not sync unarchive state to server:", err));
+      }));
     }
 
     addToast("Restored from archive", "Item is back in your active library.", "success");
@@ -851,11 +854,11 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
       const targetItem = items.find((i) => i.id === id);
       const serverTargetId = targetItem?.metadata?.serverMediaId || id;
-      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+      observeServerMutation(fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ updates: { trashed: true } }),
-      }).catch((err) => console.warn("Could not sync trash state to server:", err));
+      }));
     }
 
     addToast("Moved to Trash", "Item can be restored from Trash.", "warning");
@@ -869,11 +872,11 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
       const targetItem = items.find((i) => i.id === id);
       const serverTargetId = targetItem?.metadata?.serverMediaId || id;
-      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+      observeServerMutation(fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ updates: { trashed: false } }),
-      }).catch((err) => console.warn("Could not sync restore state to server:", err));
+      }));
     }
 
     addToast("Restored item", "Item returned to your library.", "success");
@@ -887,9 +890,9 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
 
     if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
       const serverTargetId = targetItem?.metadata?.serverMediaId || id;
-      void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+      observeServerMutation(fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
         method: "DELETE",
-      }).catch((err) => console.warn("Could not sync permanent deletion to server:", err));
+      }));
     }
 
     addToast("Permanently deleted", "Item removed forever.", "warning");
@@ -901,9 +904,9 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     setItems(ContentService.getAll(activeUserId));
 
     if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
-      void fetch("/api/media?trashed=true", {
+      observeServerMutation(fetch("/api/media?trashed=true", {
         method: "DELETE",
-      }).catch((err) => console.warn("Could not sync empty trash to server:", err));
+      }));
     }
 
     addToast("Trash emptied", `Permanently removed ${count} items.`, "info");
@@ -927,11 +930,11 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
 
       if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
         const serverTargetId = item.metadata?.serverMediaId || id;
-        void fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
+        observeServerMutation(fetch(`/api/media/${encodeURIComponent(serverTargetId)}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ updates: updated }),
-        }).catch((err) => console.warn("Could not sync reprocessed item to server:", err));
+        }));
       }
 
       addToast("Content Reprocessed", `Updated metadata & grounded AI summary for "${updated.title}".`, "success");
@@ -952,11 +955,11 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
       setItems(updatedAll);
 
       if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
-        void fetch("/api/media", {
+        observeServerMutation(fetch("/api/media", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ items: updatedAll }),
-        }).catch((err) => console.warn("Could not sync reprocessed batch to server:", err));
+        }));
       }
 
       addToast("Reprocess Complete", `Successfully verified and reprocessed ${updatedAll.length} items.`, "success");
@@ -976,7 +979,7 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
 
     // Asynchronously synchronize created collection to server
     if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
-      void fetch("/api/collections/sync", {
+      observeServerMutation(fetch("/api/collections/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -987,9 +990,7 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
           icon: newCol.icon,
           isSystem: newCol.isSystem,
         }),
-      }).catch((err) => {
-        console.warn("Could not sync collection creation to server:", err);
-      });
+      }));
     }
 
     addToast("Collection created", `Collection "${newCol.name}" is ready.`, "success");
@@ -1038,7 +1039,7 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     setCollections(CollectionService.getAll(activeUserId));
 
     if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo") && updated) {
-      void fetch("/api/collections/sync", {
+      observeServerMutation(fetch("/api/collections/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1049,9 +1050,7 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
           icon: updated.icon,
           isSystem: updated.isSystem,
         }),
-      }).catch((err) => {
-        console.warn("Could not sync collection update to server:", err);
-      });
+      }));
     }
 
     addToast("Collection updated", undefined, "info");
@@ -1064,11 +1063,9 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     setItems(ContentService.getAll(activeUserId));
 
     if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
-      void fetch(`/api/collections/sync?id=${encodeURIComponent(id)}`, {
+      observeServerMutation(fetch(`/api/collections/sync?id=${encodeURIComponent(id)}`, {
         method: "DELETE",
-      }).catch((err) => {
-        console.warn("Could not sync collection deletion to server:", err);
-      });
+      }));
     }
 
     addToast("Collection deleted", "Items have been unlinked.", "warning");
@@ -1089,13 +1086,11 @@ export function RecallProvider({ children }: { children: React.ReactNode }) {
     setItems(ContentService.getAll(activeUserId));
 
     if (typeof window !== "undefined" && isAuthenticated && !activeUserId.startsWith("user-demo")) {
-      void fetch(`/api/collections/${encodeURIComponent(collectionId)}/items`, {
+      observeServerMutation(fetch(`/api/collections/${encodeURIComponent(collectionId)}/items`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ itemIds, selectAll }),
-      }).catch((err) => {
-        console.warn("Could not sync collection items delete to server:", err);
-      });
+      }));
     }
 
     const totalCount = result.deleted + result.removedFromCollection;

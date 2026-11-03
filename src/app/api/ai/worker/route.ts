@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { createBackendAdminClient } from "@/lib/database/backend-client";
 import { logServerError } from "@/lib/monitoring";
-import { Collection, SavedItem } from "@/types";
+import { AIJobStatus, Collection, MediaProcessingFailureStatus, MediaProcessingStatus, SavedItem } from "@/types";
 import type { GroundedContentAnalysis } from "@/services/content-analysis-service";
 import { MediaAcquisitionService, type MediaAcquisitionResult } from "@/services/media/media-acquisition-service";
 import { TranscriptionService } from "@/services/media/transcription-service";
@@ -65,13 +65,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (claimError) return NextResponse.json({ error: "Could not claim a processing job." }, { status: 503 });
   const job = (Array.isArray(claimed) ? claimed[0] : null) as ClaimedJob | null;
   if (!job) return NextResponse.json({ processed: false, message: "No due jobs." });
-  let failureStatus = "EXTRACTION_FAILED";
+  let failureStatus: MediaProcessingFailureStatus = "EXTRACTION_FAILED";
   let processingItem: SavedItem | null = null;
 
   const failJob = async (error: unknown) => {
     const message = error instanceof Error ? error.message : "Media processing failed.";
     const terminal = !shouldRetryAiJob(job.attempts, error);
-    const nextStatus = terminal ? "FAILED" : "QUEUED";
+    const nextStatus: AIJobStatus = terminal ? "FAILED" : "QUEUED";
     const delaySeconds = aiJobRetryDelaySeconds(job.attempts);
     await admin.from("keeper_ai_jobs").update({
       status: nextStatus,
@@ -81,7 +81,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       locked_until: null,
       updated_at: new Date().toISOString(),
     }).eq("id", job.id);
-    const persistedStatus = terminal ? failureStatus : "QUEUED";
+    const persistedStatus: MediaProcessingStatus = terminal ? failureStatus : "QUEUED";
     await admin.from("keeper_media").update({ processing_status: persistedStatus, updated_at: new Date().toISOString() }).eq("id", job.media_id).eq("workspace_id", job.workspace_id);
     const failedItem = processingItem;
     if (failedItem?.id) {
